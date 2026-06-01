@@ -1,0 +1,49 @@
+{
+  "repo": "StackExchange/StackExchange.Redis",
+  "pull_number": 3049,
+  "instance_id": "StackExchange__StackExchange.Redis-3049",
+  "issue_numbers": [
+    3048
+  ],
+  "base_commit": "9281ca6fc53800c4af0bc574d47e3a22630affc9",
+  "patch": "diff --git a/docs/ReleaseNotes.md b/docs/ReleaseNotes.md\nindex ed83bfddf..113680601 100644\n--- a/docs/ReleaseNotes.md\n+++ b/docs/ReleaseNotes.md\n@@ -8,7 +8,7 @@ Current package versions:\n \n ## Unreleased\n \n-- none\n+- Critical fix for high-integrity mode in cluster scenarios ([#3049 by @mgravell](https://github.com/StackExchange/StackExchange.Redis/issues/3049))\n \n ## 2.12.8\n \ndiff --git a/src/StackExchange.Redis/PhysicalConnection.cs b/src/StackExchange.Redis/PhysicalConnection.cs\nindex 201de6281..f72a63ae5 100644\n--- a/src/StackExchange.Redis/PhysicalConnection.cs\n+++ b/src/StackExchange.Redis/PhysicalConnection.cs\n@@ -1914,19 +1914,25 @@ private void MatchResult(in RawResult result)\n \n             Trace(\"Response to: \" + msg);\n             _readStatus = ReadStatus.ComputeResult;\n-            if (msg.ComputeResult(this, result))\n+\n+            // need to capture HIT promptly, as -MOVED could cause a resend with a new high-integrity token\n+            // (a lazy approach would be to not rotate, but: we'd rather avoid that; the -MOVED case is rare)\n+            var highIntegrityToken = msg.HighIntegrityToken;\n+\n+            bool computed = msg.ComputeResult(this, result);\n+            if (computed)\n             {\n                 _readStatus = msg.ResultBoxIsAsync ? ReadStatus.CompletePendingMessageAsync : ReadStatus.CompletePendingMessageSync;\n-                if (!msg.IsHighIntegrity)\n+                if (highIntegrityToken == 0)\n                 {\n                     // can't complete yet if needs checksum\n                     msg.Complete();\n                 }\n             }\n-            if (msg.IsHighIntegrity)\n+            if (highIntegrityToken != 0)\n             {\n-                // stash this for the next non-OOB response\n-                Volatile.Write(ref _awaitingToken, msg);\n+                // stash this for the next non-OOB response, retaining the old HIT iff we had a -MOVED etc\n+                Volatile.Write(ref _awaitingToken, computed ? msg : new DummyHighIntegrityMessage(msg, highIntegrityToken));\n             }\n \n             _readStatus = ReadStatus.MatchResultComplete;\n@@ -2455,4 +2461,17 @@ internal bool HasPendingCallerFacingItems()\n             }\n         }\n     }\n+\n+    internal sealed class DummyHighIntegrityMessage : Message\n+    {\n+        // note: we don't create this message very often - only when a HIT gets a -MOVED or similar\n+        public DummyHighIntegrityMessage(Message msg, uint highIntegrityToken) : base(msg.Db, msg.Flags, msg.Command)\n+        {\n+            WithHighIntegrity(highIntegrityToken);\n+        }\n+\n+        public override int ArgCount => 0;\n+        protected override void WriteImpl(PhysicalConnection physical)\n+            => throw new NotSupportedException(\"This message cannot be written; it is a place-holder for high-integrity scenarios.\");\n+    }\n }\n",
+  "test_patch": "diff --git a/tests/StackExchange.Redis.Tests/HighIntegrityMovedUnitTests.cs b/tests/StackExchange.Redis.Tests/HighIntegrityMovedUnitTests.cs\nnew file mode 100644\nindex 000000000..9826c8f41\n--- /dev/null\n+++ b/tests/StackExchange.Redis.Tests/HighIntegrityMovedUnitTests.cs\n@@ -0,0 +1,40 @@\n+\ufeffusing System.Threading.Tasks;\n+using Xunit;\n+\n+namespace StackExchange.Redis.Tests;\n+\n+public class HighIntegrityMovedUnitTests(ITestOutputHelper log)\n+{\n+    [Theory]\n+    [InlineData(false)]\n+    [InlineData(true)]\n+    public async Task HighIntegritySurvivesMovedResponse(bool highIntegrity)\n+    {\n+        using var server = new InProcessTestServer(log) { ServerType = ServerType.Cluster };\n+        var secondary = server.AddEmptyNode();\n+\n+        var config = server.GetClientConfig();\n+        config.HighIntegrity = highIntegrity;\n+        using var client = await ConnectionMultiplexer.ConnectAsync(config);\n+\n+        RedisKey a = \"a\", b = \"b\"; // known to be in different slots\n+        Assert.NotEqual(ServerSelectionStrategy.GetClusterSlot(a), ServerSelectionStrategy.GetClusterSlot(b));\n+\n+        var db = client.GetDatabase();\n+        var x = db.StringIncrementAsync(a);\n+        var y = db.StringIncrementAsync(b);\n+        await x;\n+        await y;\n+        Assert.Equal(1, await db.StringGetAsync(a));\n+        Assert.Equal(1, await db.StringGetAsync(b));\n+\n+        // now force a -MOVED response\n+        server.Migrate(a, secondary);\n+        x = db.StringIncrementAsync(a);\n+        y = db.StringIncrementAsync(b);\n+        await x;\n+        await y;\n+        Assert.Equal(2, await db.StringGetAsync(a));\n+        Assert.Equal(2, await db.StringGetAsync(b));\n+    }\n+}\n",
+  "problem_statement": "Error with high-integrity mode overlapping a MOVED response\nWhen high-integrity mode receives a -MOVED response, the connection can break, incorrectly reporting a high-integrity-mode failure; the trailing high-integrity marker is not dequeued correctly. Failing test inbound in PR:\n\n<img width=\"1286\" height=\"101\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/93772c03-2f40-4c05-8403-cefdd9752995\" />\n\nUntil recently this was almost impossible to reliably repro in tests, so the scenario was overlooked. The new toy-server infrastructure allows us to trivially force this scenario.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "https://github.com/StackExchange/StackExchange.Redis/releases/tag/2.12.14\n\n",
+  "commit_urls": [
+    "https://github.com/StackExchange/StackExchange.Redis/commit/3c654727f71ad4e1d6aee12722ce40a3d68bf828",
+    "https://github.com/StackExchange/StackExchange.Redis/commit/249a1cb01e077f87505db7e5d4fc97c3c79c7f9a",
+    "https://github.com/StackExchange/StackExchange.Redis/commit/db790c80377f601abf0542b858d7c7b2af429068"
+  ],
+  "created_at": "2026-04-02T13:01:47Z",
+  "language": "C#",
+  "commit_url": "https://github.com/StackExchange/StackExchange.Redis/tree/9281ca6fc53800c4af0bc574d47e3a22630affc9",
+  "setup_cmds": [
+    "dotnet restore Build.csproj  (exit code: 0)",
+    "dotnet build Build.csproj -c Release  (exit code: 1)",
+    "git fetch --unshallow  (exit code: 0)",
+    "dotnet build Build.csproj -c Release  (exit code: 0)",
+    "apt-get update && apt-get install -y redis-server  (exit code: 0)",
+    "bash tests/RedisConfigs/start-all.sh  (exit code: 0)",
+    "cd tests/RedisConfigs && bash start-all.sh  (exit code: 0)",
+    "cd /testbed && dotnet test tests/StackExchange.Redis.Tests/StackExchange.Redis.Tests.csproj -c Release  (exit code: 0)",
+    "dotnet restore Build.csproj  (exit code: 0)",
+    "dotnet build Build.csproj -c Release  (exit code: 1)",
+    "git fetch --unshallow  (exit code: 0)",
+    "dotnet build Build.csproj -c Release  (exit code: 0)",
+    "apt-get update && apt-get install -y redis-server  (exit code: 0)",
+    "bash tests/RedisConfigs/start-all.sh  (exit code: 0)",
+    "cd tests/RedisConfigs && bash start-all.sh  (exit code: 0)",
+    "cd /testbed && dotnet test tests/StackExchange.Redis.Tests/StackExchange.Redis.Tests.csproj -c Release  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "dotnet test tests/StackExchange.Redis.Tests/StackExchange.Redis.Tests.csproj -c Release --logger \"console;verbosity=detailed\"",
+    "dotnet test tests/StackExchange.Redis.Tests/StackExchange.Redis.Tests.csproj -c Release --logger \"trx;LogFileName=test-results.trx\" --results-directory ./test-results",
+    "find . -maxdepth 3 -name \"*.trx\" -print",
+    "cat ./test-results/test-results.trx"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:StackExchange__StackExchange.Redis-3049_linux"
+}

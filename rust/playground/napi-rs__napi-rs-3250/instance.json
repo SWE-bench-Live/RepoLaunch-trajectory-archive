@@ -1,0 +1,44 @@
+{
+  "repo": "napi-rs/napi-rs",
+  "pull_number": 3250,
+  "instance_id": "napi-rs__napi-rs-3250",
+  "issue_numbers": [
+    3249
+  ],
+  "base_commit": "4ed1dcbfb07e34b808afee371fba4697dfefb7b5",
+  "patch": "diff --git a/wasm-runtime/fs-proxy.js b/wasm-runtime/fs-proxy.js\nindex 83079294c2..4daf897876 100644\n--- a/wasm-runtime/fs-proxy.js\n+++ b/wasm-runtime/fs-proxy.js\n@@ -6,6 +6,7 @@\n const getType = (value) => {\n   if (value === undefined) return 0\n   if (value === null) return 1\n+  if (isBuffer(value)) return 10\n   const t = typeof value\n   if (t === 'boolean') return 2\n   if (t === 'number') return 3\n@@ -15,6 +16,18 @@ const getType = (value) => {\n   return -1\n }\n \n+/**\n+ * @param {unknown} value\n+ * @returns {value is Uint8Array}\n+ */\n+const isBuffer = (value) => {\n+  const BufferCtor = globalThis.Buffer\n+  if (typeof BufferCtor?.isBuffer === 'function') {\n+    return BufferCtor.isBuffer(value)\n+  }\n+  return value instanceof Uint8Array && value.constructor?.name === 'Buffer'\n+}\n+\n const RESPONSE_HEADER_SIZE = 16\n const RESPONSE_PAYLOAD_SIZE = 10240\n const RESPONSE_BUFFER_SIZE = RESPONSE_HEADER_SIZE + RESPONSE_PAYLOAD_SIZE\n@@ -55,6 +68,8 @@ const encodeValue = (memfs, value, type) => {\n       const view = new TextEncoder().encode(value)\n       return view\n     }\n+    case 10:\n+      return new Uint8Array(value)\n     case 6: {\n       function storeConstructor(obj, memfs, processed = new WeakSet()) {\n         if (!obj || typeof obj !== 'object') {\n@@ -126,6 +141,13 @@ const decodeValue = (memfs, payload, type) => {\n   if (type === 3)\n     return new Float64Array(payload.buffer, payload.byteOffset, 1)[0]\n   if (type === 4) return new TextDecoder().decode(payload.slice())\n+  if (type === 10) {\n+    const BufferCtor = globalThis.Buffer\n+    if (typeof BufferCtor?.from === 'function') {\n+      return BufferCtor.from(payload)\n+    }\n+    return payload.slice()\n+  }\n   if (type === 6) {\n     const obj = JSON.parse(\n       new TextDecoder().decode(payload.slice()),\n@@ -205,7 +227,7 @@ export const createOnMessage = (fs) =>\n     if (e.data.__fs__) {\n       /**\n        * 0..4                    status(int32_t):        21(waiting) 0(success) 1(error)\n-       * 5..8                    type(napi_valuetype):   0(undefined) 1(null) 2(boolean) 3(number) 4(string) 6(jsonstring) 9(bigint) -1(unsupported)\n+       * 5..8                    type(napi_valuetype):   0(undefined) 1(null) 2(boolean) 3(number) 4(string) 6(jsonstring) 9(bigint) 10(buffer) -1(unsupported)\n        * 9..16                   payload_size(uint32_t)  <= 10240\n        * 16..16 + payload_size   payload_content\n        */\n",
+  "test_patch": "diff --git a/wasm-runtime/fs-proxy.test.js b/wasm-runtime/fs-proxy.test.js\nindex 8a925efccb..2782b411a8 100644\n--- a/wasm-runtime/fs-proxy.test.js\n+++ b/wasm-runtime/fs-proxy.test.js\n@@ -49,6 +49,9 @@ await test(`fs-proxy between main and worker (${isMainThread ? 'main' : 'worker'\n         parentPort.postMessage(data)\n       },\n     })\n+    const buffer = fs.readFileSync('/test.txt')\n+    assert.ok(Buffer.isBuffer(buffer))\n+    assert.ok(buffer.equals(Buffer.from('test')))\n     assert.strictEqual(fs.readFileSync('/test.txt', 'utf8'), 'test')\n     assert.strictEqual(fs.readFileSync('/test.json', 'utf8'), '{\"a\":\"b\"}')\n     assert.throws(() => fs.readFileSync('/notexist', 'utf8'), /ENOENT/)\n",
+  "problem_statement": "wasm-runtime/fs-proxy: Buffer return values are decoded as plain objects instead of Buffer\n## Describe the bug\n\n`@napi-rs/wasm-runtime1 does not preserve Buffer return values across `createOnMessage()` / `createFsProxy()`.\n\nWhen a proxied fs method returns a `Buffer` such as `readFileSync(path)` without an encoding, the value comes back as a plain object like `{ type: 'Buffer', data: [...] }` instead of a real Buffer. That makes proxied fs behavior diverge from Node\u2019s `fs` API.\n\n## Steps to reproduce\n\nCreate the following file in project root\n```js\nimport * as memfs from 'memfs'\nimport { createFsProxy, createOnMessage } from './wasm-runtime/fs-proxy.js'\n\nconst realFs = memfs.createFsFromVolume(\n  memfs.Volume.fromJSON({ '/buf.bin': 'abc' }),\n)\n\nconst onMessage = createOnMessage(realFs)\nglobalThis.postMessage = (data) => onMessage({ data })\n\nconst fs = createFsProxy(memfs)\nconst value = fs.readFileSync('/buf.bin')\n\nconsole.log(value)\nconsole.log(value.constructor.name)\nconsole.log(Buffer.isBuffer(value))\n```\n\n#### Observed behavior\n\n```console\n{ type: 'Buffer', data: [97, 98, 99] }\nBuffer\ntrue\n```\n\n#### Expected behavior\n\n```console\n<Buffer 61 62 63>\n\n```\n\n#### Screenshots\nIf applicable, add screenshots to help explain your problem.\n\n## Additional context\nAdd any other context about the problem here.\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/napi-rs/napi-rs/commit/6f20f6817d5a71d32c49333792ecacc9d78894bc"
+  ],
+  "created_at": "2026-04-19T02:52:03Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/napi-rs/napi-rs/tree/4ed1dcbfb07e34b808afee371fba4697dfefb7b5",
+  "setup_cmds": [
+    "cargo check --workspace --all-targets  (exit code: 0)",
+    "cargo build --workspace  (exit code: 0)",
+    "cargo test --workspace  (exit code: 0)",
+    "cargo check --workspace --all-targets  (exit code: 0)",
+    "cargo build --workspace  (exit code: 0)",
+    "cargo test --workspace  (exit code: 0)",
+    "cargo test --workspace -- --format=pretty  (exit code: 0)",
+    "cargo test --workspace -- --list  (exit code: 0)",
+    "cargo check --workspace --all-targets  (exit code: 0)",
+    "cargo build --workspace  (exit code: 0)",
+    "cargo test --workspace  (exit code: 0)",
+    "cargo check --workspace --all-targets  (exit code: 0)",
+    "cargo build --workspace  (exit code: 0)",
+    "cargo test --workspace  (exit code: 0)",
+    "cargo test --workspace -- --format=pretty  (exit code: 0)",
+    "cargo test --workspace -- --list  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo test --workspace -- --format=pretty"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:napi-rs__napi-rs-3250_linux"
+}

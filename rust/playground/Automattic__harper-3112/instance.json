@@ -1,0 +1,49 @@
+{
+  "repo": "Automattic/harper",
+  "pull_number": 3112,
+  "instance_id": "Automattic__harper-3112",
+  "issue_numbers": [
+    3111
+  ],
+  "base_commit": "2e0ab60381f833d0c48536471dcdef4c8f1028ae",
+  "patch": "diff --git a/packages/lint-framework/src/lint/SuggestionBox.ts b/packages/lint-framework/src/lint/SuggestionBox.ts\nindex ab977dad6..990cba36e 100644\n--- a/packages/lint-framework/src/lint/SuggestionBox.ts\n+++ b/packages/lint-framework/src/lint/SuggestionBox.ts\n@@ -17,7 +17,53 @@ function iconSvg(definition: IconDefinition): string {\n const settingsIconSvg = iconSvg(faSliders);\n const disableIconSvg = iconSvg(faToggleOff);\n \n-let previouslyActiveElement: null | HTMLElement = null;\n+/** Saved cursor restore function, captured when the popup steals focus. */\n+let savedRestore: (() => void) | null = null;\n+\n+function saveCursorState() {\n+\tconst el = document.activeElement;\n+\tif (!el || el === document.body || el.tagName.toLowerCase() === 'harper-render-box') return;\n+\n+\tif (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {\n+\t\tconst start = el.selectionStart;\n+\t\tconst end = el.selectionEnd;\n+\t\tconst dir = el.selectionDirection ?? undefined;\n+\t\tsavedRestore =\n+\t\t\tstart != null\n+\t\t\t\t? () => {\n+\t\t\t\t\t\tel.focus({ preventScroll: true });\n+\t\t\t\t\t\tel.setSelectionRange(start, end, dir);\n+\t\t\t\t\t}\n+\t\t\t\t: () => el.focus({ preventScroll: true });\n+\t} else if (el instanceof HTMLElement) {\n+\t\tconst sel = window.getSelection();\n+\t\tconst range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;\n+\t\tsavedRestore = () => {\n+\t\t\tel.focus({ preventScroll: true });\n+\t\t\tif (range) {\n+\t\t\t\tconst s = window.getSelection();\n+\t\t\t\tif (s) {\n+\t\t\t\t\ts.removeAllRanges();\n+\t\t\t\t\ts.addRange(range);\n+\t\t\t\t}\n+\t\t\t}\n+\t\t};\n+\t}\n+}\n+\n+/** Deferred so in-flight key events (e.g. Escape) finish before the editor regains focus. */\n+function restoreCursorState() {\n+\tconst restore = savedRestore;\n+\tif (!restore) return;\n+\tsavedRestore = null;\n+\tsetTimeout(() => {\n+\t\ttry {\n+\t\t\trestore();\n+\t\t} catch {\n+\t\t\t// Range may reference nodes removed by a framework reconciler.\n+\t\t}\n+\t}, 0);\n+}\n \n var FocusHook: any = function () {};\n FocusHook.prototype.hook = function (node: any, _propertyName: any, _previousValue: any) {\n@@ -26,9 +72,7 @@ FocusHook.prototype.hook = function (node: any, _propertyName: any, _previousVal\n \t}\n \n \trequestAnimationFrame(() => {\n-\t\tif (document.activeElement?.tagName.toLowerCase() != 'harper-render-box') {\n-\t\t\tpreviouslyActiveElement = document.activeElement as HTMLElement;\n-\t\t}\n+\t\tsaveCursorState();\n \n \t\tnode.focus();\n \t\tObject.defineProperty(node, '__harperAutofocused', {\n@@ -478,7 +522,7 @@ export default function SuggestionBox(\n \tconst ignoreLintCallback = box.ignoreLint;\n \n \tconst refocusClose = () => {\n-\t\tpreviouslyActiveElement?.focus();\n+\t\trestoreCursorState();\n \t\tclose();\n \t};\n \n@@ -503,7 +547,7 @@ export default function SuggestionBox(\n \t\t\tfooter(\n \t\t\t\tsuggestions(box.lint.lint_kind, box.lint.suggestions, (v) => {\n \t\t\t\t\tbox.applySuggestion(v);\n-\t\t\t\t\trefocusClose();\n+\t\t\t\t\tclose();\n \t\t\t\t}),\n \t\t\t\t[\n \t\t\t\t\tbox.lint.lint_kind === 'Spelling' && actions.addToUserDictionary\n",
+  "test_patch": "diff --git a/packages/chrome-plugin/tests/testUtils.ts b/packages/chrome-plugin/tests/testUtils.ts\nindex 2a9397510..58795f01d 100644\n--- a/packages/chrome-plugin/tests/testUtils.ts\n+++ b/packages/chrome-plugin/tests/testUtils.ts\n@@ -259,6 +259,16 @@ export async function testCanIgnoreSuggestion(\n \t\tawait assertEditorText(editor, cacheSalt);\n \t\texpect(await clickHarperHighlight(page)).toBe(false);\n \t\tawait assertLocatorIsFocused(page, editor);\n+\n+\t\t// Backspace at position 0 is a no-op; unchanged text means cursor jumped.\n+\t\tawait page.waitForTimeout(300);\n+\t\tawait page.keyboard.press('Backspace');\n+\t\tawait page.waitForTimeout(300);\n+\t\tif (await isFormElement(editor)) {\n+\t\t\tawait expect(editor).not.toHaveValue(cacheSalt);\n+\t\t} else {\n+\t\t\tawait expect(editor).not.toHaveText(cacheSalt);\n+\t\t}\n \t});\n }\n \n",
+  "problem_statement": "Cursor jumps to start of editor after dismissing suggestion popup\n**Describe the bug**\nWhen you click on an underlined word to see the suggestion popup, then dismiss it without applying a suggestion, the cursor jumps to the beginning of the editor instead of staying where you were typing.\n\n**To Reproduce**\n1. Open a page with a Draft.js, Slate, or Lexical editor\n2. Type something with a spelling error like \"This is an test\"\n3. Click the underlined word to open the popup\n4. Click Dismiss or Close (or press Escape on Lexical)\n5. Cursor is now at position 0\n\n**Expected behavior**\nCursor stays where it was before the popup opened.\n\n**Platform**\nChrome extension. Affects Draft.js, Slate, and Lexical editors. Textareas and ProseMirror work fine.\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/Automattic/harper/commit/2b983c84833938dca3b9627a07f60fb265163267",
+    "https://github.com/Automattic/harper/commit/a7bc89dd5bd6e0a93f9d6b7d8ee4287fc06ef9f0"
+  ],
+  "created_at": "2026-04-04T03:48:14Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/Automattic/harper/tree/2e0ab60381f833d0c48536471dcdef4c8f1028ae",
+  "setup_cmds": [
+    "cargo test -q  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=1.86.0 cargo test -q  (exit code: 101)",
+    "cargo test -q  (exit code: 124)",
+    "rustup toolchain install stable  (exit code: 0)",
+    "RUSTUP_TOOLCHAIN=stable cargo test -q  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=stable cargo check -q  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=stable cargo test -q -p harper-core  (exit code: 0)",
+    "RUSTUP_TOOLCHAIN=stable cargo test -q  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=stable cargo test -q -p harper-cli  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=stable cargo build -q  (exit code: 124)",
+    "cargo test -q  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=1.86.0 cargo test -q  (exit code: 101)",
+    "cargo test -q  (exit code: 124)",
+    "rustup toolchain install stable  (exit code: 0)",
+    "RUSTUP_TOOLCHAIN=stable cargo test -q  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=stable cargo check -q  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=stable cargo test -q -p harper-core  (exit code: 0)",
+    "RUSTUP_TOOLCHAIN=stable cargo test -q  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=stable cargo test -q -p harper-cli  (exit code: 124)",
+    "RUSTUP_TOOLCHAIN=stable cargo build -q  (exit code: 124)"
+  ],
+  "test_cmds": [
+    "RUSTUP_TOOLCHAIN=stable cargo test -p harper-core -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:Automattic__harper-3112_linux"
+}

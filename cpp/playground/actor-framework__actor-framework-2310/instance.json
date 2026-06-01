@@ -1,0 +1,39 @@
+{
+  "repo": "actor-framework/actor-framework",
+  "pull_number": 2310,
+  "instance_id": "actor-framework__actor-framework-2310",
+  "issue_numbers": [
+    2309
+  ],
+  "base_commit": "cb0e123ccfb0e8acb1fac15e919ae6c9da0fa77e",
+  "patch": "diff --git a/libcaf_net/caf/net/http/with.cpp b/libcaf_net/caf/net/http/with.cpp\nindex b8d4cdb86f..f064b4cbb7 100644\n--- a/libcaf_net/caf/net/http/with.cpp\n+++ b/libcaf_net/caf/net/http/with.cpp\n@@ -13,6 +13,7 @@\n \n #include \"caf/actor_system.hpp\"\n #include \"caf/add_ref.hpp\"\n+#include \"caf/defaults.hpp\"\n #include \"caf/detail/connection_acceptor.hpp\"\n #include \"caf/detail/connection_guard.hpp\"\n #include \"caf/internal/accept_handler.hpp\"\n@@ -21,6 +22,7 @@\n #include \"caf/make_counted.hpp\"\n \n #include <atomic>\n+#include <variant>\n \n namespace caf::net::http {\n \n@@ -430,6 +432,27 @@ void with_t::client::do_add_header_field(std::string name, std::string value) {\n   config_->fields.insert(std::pair{std::move(name), std::move(value)});\n }\n \n+namespace {\n+\n+// Builds the RFC 7230 `Host` header value from @p endpoint.\n+// The port is omitted when it is unset, or equal to the default (80 or 443).\n+std::string host_header_value(const uri& endpoint) {\n+  const auto& scheme = endpoint.scheme();\n+  auto auth = endpoint.authority();\n+  if (auth.userinfo) {\n+    auth.userinfo = std::nullopt; // suppress userinfo in 'Host' header field\n+  }\n+  if (scheme == \"http\" && auth.port == defaults::net::http_default_port) {\n+    auth.port = 0; // suppress default HTTP port in 'Host' Header field\n+  }\n+  if (scheme == \"https\" && auth.port == defaults::net::https_default_port) {\n+    auth.port = 0; // suppress default HTTPS port in 'Host' Header field\n+  }\n+  return to_string(auth);\n+}\n+\n+} // namespace\n+\n expected<std::pair<async::future<response>, disposable>>\n with_t::client::request(http::method method, const_byte_span payload) {\n   // Handle an error that could've been created by the DSL during client setup.\n@@ -448,7 +471,7 @@ with_t::client::request(http::method method, const_byte_span payload) {\n   config_->path = endpoint.path_query_fragment();\n   config_->method = method;\n   config_->payload = payload;\n-  do_add_header_field(\"Host\", endpoint.authority().host_str());\n+  do_add_header_field(\"Host\", host_header_value(endpoint));\n   auto lift = [this](disposable&& disp) {\n     return std::pair(std::move(config_->resp), std::move(disp));\n   };\ndiff --git a/libcaf_net/caf/net/http/with.hpp b/libcaf_net/caf/net/http/with.hpp\nindex 2d80932118..8aa041cb5d 100644\n--- a/libcaf_net/caf/net/http/with.hpp\n+++ b/libcaf_net/caf/net/http/with.hpp\n@@ -16,6 +16,7 @@\n #include \"caf/fwd.hpp\"\n \n #include <cstdint>\n+#include <string>\n \n namespace caf::net::http {\n \n",
+  "test_patch": "diff --git a/libcaf_net/caf/net/http/with.test.cpp b/libcaf_net/caf/net/http/with.test.cpp\nindex b8d7434907..e93176e70a 100644\n--- a/libcaf_net/caf/net/http/with.test.cpp\n+++ b/libcaf_net/caf/net/http/with.test.cpp\n@@ -16,6 +16,7 @@\n #include \"caf/actor_system_config.hpp\"\n #include \"caf/detail/scope_guard.hpp\"\n #include \"caf/fwd.hpp\"\n+#include \"caf/uri.hpp\"\n \n #include <chrono>\n #include <future>\n@@ -348,3 +349,46 @@ TEST(\"GH-2226 regression\") {\n   hdl->dispose();\n   check_eq(elog->errors(), std::vector<error>{});\n }\n+\n+// TODO: refactor the test to use a connected socket pair and improve test\n+// coverage for different host formats.\n+TEST(\"GH-2309 regression: Host header contains explicit non-default port\") {\n+  caf::actor_system_config cfg;\n+  cfg.load<caf::net::middleman>();\n+  caf::actor_system sys{cfg};\n+  auto acceptor = unbox(net::make_tcp_accept_socket(0));\n+  auto port = unbox(net::local_port(acceptor));\n+  auto uri_str = net::is_ipv4(acceptor)\n+                   ? detail::format(\"http://127.0.0.1:{}/host-check\", port)\n+                   : detail::format(\"http://[::1]:{}/host-check\", port);\n+  auto expected_host = net::is_ipv4(acceptor)\n+                         ? detail::format(\"127.0.0.1:{}\", port)\n+                         : detail::format(\"[::1]:{}\", port);\n+  std::promise<std::string> prom;\n+  auto host_fut = prom.get_future();\n+  auto hdl\n+    = net::http::with(sys)\n+        .accept(acceptor)\n+        .route(\"/host-check\", net::http::method::get,\n+               [prom = std::move(prom)](net::http::responder& res) mutable {\n+                 prom.set_value(std::string{res.header().field(\"Host\")});\n+                 res.respond(net::http::status::ok, \"text/plain\", \"\");\n+               })\n+        .start();\n+  require_has_value(hdl);\n+  detail::scope_guard hdl_guard{[hdl]() mutable noexcept { hdl->dispose(); }};\n+  uri endpoint;\n+  require(parse(uri_str, endpoint).empty());\n+  auto client_res = net::http::with(sys)\n+                      .connect(endpoint)\n+                      .connection_timeout(2s)\n+                      .max_retry_count(1)\n+                      .get();\n+  require_has_value(client_res);\n+  auto maybe_resp = client_res->first.get(5s);\n+  require_has_value(maybe_resp);\n+  check_eq(maybe_resp->code(), net::http::status::ok);\n+\n+  require(host_fut.wait_for(1s) == std::future_status::ready);\n+  check_eq(host_fut.get(), expected_host);\n+}\n",
+  "problem_statement": "Include explicitly given port number in the HTTP Host header field\nReported in chat by @lava (thanks): \nWhen using caf's http client with an URL that includes an explicit port (eg. `https://foo.example:4444`) the `Host` header sent by caf does not include the port. This breaks e.g. S3 presigned URLs, where the Host header is part of the url signature.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/actor-framework/actor-framework/commit/1916fefbeb701479db57954cccbe4f88ac65d674",
+    "https://github.com/actor-framework/actor-framework/commit/f832be88b86b39d3968d72b48a58d277bfd996e9"
+  ],
+  "created_at": "2026-03-31T15:28:22Z",
+  "language": "C++",
+  "commit_url": "https://github.com/actor-framework/actor-framework/tree/cb0e123ccfb0e8acb1fac15e919ae6c9da0fa77e",
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "ctest --test-dir build --output-on-failure --verbose"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:actor-framework__actor-framework-2310_linux"
+}

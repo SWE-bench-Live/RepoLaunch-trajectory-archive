@@ -1,0 +1,53 @@
+{
+  "repo": "github/gh-aw",
+  "pull_number": 24758,
+  "instance_id": "github__gh-aw-24758",
+  "issue_numbers": [
+    24724
+  ],
+  "base_commit": "edba550a66eee141a40baf140f6b89866e3ede26",
+  "patch": "diff --git a/actions/setup/js/github_rate_limit_logger.cjs b/actions/setup/js/github_rate_limit_logger.cjs\nindex 1ddd7d717c1..4959c4a4c17 100644\n--- a/actions/setup/js/github_rate_limit_logger.cjs\n+++ b/actions/setup/js/github_rate_limit_logger.cjs\n@@ -183,11 +183,23 @@ function createRateLimitAwareGithub(github) {\n       get(target, method) {\n         const fn = target[method];\n         if (typeof fn !== \"function\") return fn;\n-        return async (/** @type {any[]} */ ...args) => {\n+        const wrapper = async (/** @type {any[]} */ ...args) => {\n           const response = await fn.apply(target, args);\n           logRateLimitFromResponse(response, `${namespaceName}.${String(method)}`);\n           return response;\n         };\n+        // Wrap the wrapper in a Proxy so that Octokit-specific property accesses\n+        // (e.g. .endpoint, used by github.paginate()) fall back to the original fn.\n+        // Without this, github.paginate(github.rest.checks.listForRef, ...) throws\n+        // \"route.endpoint is not a function\" because the wrapper does not have\n+        // the .endpoint decorator that Octokit endpoint methods carry.\n+        return new Proxy(wrapper, {\n+          get(wrapperTarget, prop) {\n+            const own = Reflect.get(wrapperTarget, prop);\n+            if (own !== undefined) return own;\n+            return Reflect.get(fn, prop);\n+          },\n+        });\n       },\n     });\n   }\ndiff --git a/actions/setup/setup.sh b/actions/setup/setup.sh\nindex 50c0c80f3f0..4f3f823f19c 100755\n--- a/actions/setup/setup.sh\n+++ b/actions/setup/setup.sh\n@@ -216,6 +216,7 @@ MCP_SCRIPTS_FILES=(\n   \"read_buffer.cjs\"\n   \"generate_mcp_scripts_config.cjs\"\n   \"setup_globals.cjs\"\n+  \"github_rate_limit_logger.cjs\"\n   \"error_helpers.cjs\"\n   \"error_codes.cjs\"\n   \"constants.cjs\"\n@@ -288,6 +289,7 @@ SAFE_OUTPUTS_FILES=(\n   \"write_large_content_to_file.cjs\"\n   \"generate_compact_schema.cjs\"\n   \"setup_globals.cjs\"\n+  \"github_rate_limit_logger.cjs\"\n   \"error_helpers.cjs\"\n   \"error_codes.cjs\"\n   \"constants.cjs\"\n",
+  "test_patch": "diff --git a/actions/setup/js/github_rate_limit_logger.test.cjs b/actions/setup/js/github_rate_limit_logger.test.cjs\nindex 2f695c7124a..eea782cc148 100644\n--- a/actions/setup/js/github_rate_limit_logger.test.cjs\n+++ b/actions/setup/js/github_rate_limit_logger.test.cjs\n@@ -354,4 +354,49 @@ describe(\"createRateLimitAwareGithub\", () => {\n     expect(first.remaining).toBe(4999);\n     expect(second.remaining).toBe(4998);\n   });\n+\n+  it(\"preserves .endpoint on the wrapped method for github.paginate() compatibility\", () => {\n+    // Octokit endpoint-decorated methods (e.g. github.rest.checks.listForRef) carry\n+    // a .endpoint property used by github.paginate() internally.  The proxy must\n+    // forward .endpoint to the original function so paginate() doesn't throw\n+    // \"route.endpoint is not a function\".\n+    const endpointObj = { merge: vi.fn(), defaults: vi.fn() };\n+    const mockListForRef = vi.fn().mockResolvedValue({ data: [], headers: {} });\n+    mockListForRef.endpoint = endpointObj;\n+\n+    const mockGithub = {\n+      rest: {\n+        checks: { listForRef: mockListForRef },\n+      },\n+    };\n+\n+    const gh = createRateLimitAwareGithub(mockGithub);\n+    const wrapped = gh.rest.checks.listForRef;\n+\n+    // The wrapped function must expose .endpoint from the original\n+    expect(typeof wrapped).toBe(\"function\");\n+    expect(wrapped.endpoint).toBe(endpointObj);\n+    expect(wrapped.endpoint.merge).toBe(endpointObj.merge);\n+  });\n+\n+  it(\"allows github.paginate() to call endpoint.merge on the wrapped method\", () => {\n+    // Simulate how @octokit/plugin-paginate-rest v9+ uses the endpoint method:\n+    //   const options = route.endpoint.merge(parameters)\n+    const mergedOptions = { url: \"/repos/o/r/commits/main/check-runs\", per_page: 100 };\n+    const endpointObj = { merge: vi.fn().mockReturnValue(mergedOptions) };\n+    const mockListForRef = vi.fn().mockResolvedValue({ data: [], headers: {} });\n+    mockListForRef.endpoint = endpointObj;\n+\n+    const mockGithub = {\n+      rest: { checks: { listForRef: mockListForRef } },\n+    };\n+\n+    const gh = createRateLimitAwareGithub(mockGithub);\n+    const wrapped = gh.rest.checks.listForRef;\n+\n+    // paginate() would call this internally\n+    const result = wrapped.endpoint.merge({ owner: \"o\", repo: \"r\", ref: \"main\", per_page: 100 });\n+    expect(result).toBe(mergedOptions);\n+    expect(endpointObj.merge).toHaveBeenCalledWith({ owner: \"o\", repo: \"r\", ref: \"main\", per_page: 100 });\n+  });\n });\n",
+  "problem_statement": "Issue Monster: pre_activation failure \u2014 route.endpoint is not a function\n**Workflow:** Issue Monster (`issue-monster`)\n**Priority:** P1\n**First seen:** 2026-04-05T09:48 UTC (run #3715)\n**Status:** 5+ consecutive failures (runs #3715\u2013#3719 as of this report)\n\n### Failure Pattern\n\nThe workflow started failing in its `pre_activation` job with:\n\n```\nERR_API: Failed to fetch check runs for ref \"main\": route.endpoint is not a function\n```\n\nThis error began at run #3715 (~09:48 UTC) after 3 successful runs earlier in the day (#3712\u2013#3714 at 07:31\u201308:49 UTC).\n\n### Timeline\n\n| Run | Time | Status |\n|-----|------|--------|\n| #3712 | 08:19 | \u2705 success |\n| #3713 | 08:49 | \u2705 success |\n| #3714 | 09:20 | \u2705 success |\n| #3715 | 09:48 | \u274c failure |\n| #3716 | 10:16 | \u274c failure |\n| #3717 | 10:47 | \u274c failure |\n| #3718 | 11:14 | \u274c failure |\n| #3719 | 11:43 | \u274c failure |\n\n### Error Details\n\n- **Job:** `pre_activation`\n- **Error message:** `ERR_API: Failed to fetch check runs for ref \"main\": route.endpoint is not a function`\n- **Step:** \"Checking CI checks on ref: main (github/gh-aw)\"\n- **Example failing run:** [\u00a724000805890](https://github.com/github/gh-aw/actions/runs/24000805890)\n\n### Analysis\n\nThe error `route.endpoint is not a function` typically indicates a JavaScript SDK method call issue \u2014 either:\n1. A breaking change in the `@octokit/rest` or `@actions/github` SDK\n2. A recent change to the `actions/setup` JavaScript code that broke the `check_runs` API call\n3. A GitHub API endpoint change\n\nThe error occurs in the CI check validation step, which calls the GitHub Checks API to verify CI status before activating.\n\nNote: The lock file for `issue-monster` is also listed as stale (`.md` modified after `.lock.yml`), which may be related.\n\n### Suggested Investigation\n\n1. Check if any recent commits changed `actions/setup/js/*.cjs` files, especially the check-runs logic\n2. Verify the Octokit API call for `check_runs` in the pre-activation script\n3. Compare the `issue-monster.lock.yml` and `issue-monster.md` to see what changed\n4. Check if other workflows using CI check validation are also failing\n\n### Impact\n\nIssue Monster runs every ~30 minutes. With 5+ consecutive failures, it has been non-functional for 2+ hours, missing approximately 5 issue processing cycles.\n\n**References:**\n- Failing run: [\u00a724000805890](https://github.com/github/gh-aw/actions/runs/24000805890)\n- WHM detection run: [\u00a724001031380](https://github.com/github/gh-aw/actions/runs/24001031380)\n\n\n\n\n> Generated by [Workflow Health Manager - Meta-Orchestrator](https://github.com/github/gh-aw/actions/runs/24001031380/agentic_workflow) \u00b7 \u25cf 1.4M \u00b7 [\u25f7](https://github.com/search?q=repo%3Agithub%2Fgh-aw+is%3Aissue+%22gh-aw-workflow-call-id%3A+github%2Fgh-aw%2Fworkflow-health-manager%22&type=issues)\n> - [x] expires <!-- gh-aw-expires: 2026-04-06T12:05:05.079Z --> on Apr 6, 2026, 12:05 PM UTC\n\n<!-- gh-aw-agentic-workflow: Workflow Health Manager - Meta-Orchestrator, engine: copilot, model: auto, id: 24001031380, workflow_id: workflow-health-manager, run: https://github.com/github/gh-aw/actions/runs/24001031380 -->\n\n<!-- gh-aw-workflow-id: workflow-health-manager -->\n<!-- gh-aw-workflow-call-id: github/gh-aw/workflow-health-manager -->\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/github/gh-aw/commit/f1d59cc19fd1dead5a049f31b4ca009dfe9281b3",
+    "https://github.com/github/gh-aw/commit/e10117dba01b07035e4e53f02f317c9bdbbf63a5"
+  ],
+  "created_at": "2026-04-05T16:31:38Z",
+  "language": "Go",
+  "commit_url": "https://github.com/github/gh-aw/tree/edba550a66eee141a40baf140f6b89866e3ede26",
+  "setup_cmds": [
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "apt-get update  (exit code: 124)",
+    "DEBIAN_FRONTEND=noninteractive apt-get update  (exit code: 0)",
+    "apt-get install -y nodejs npm  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "sed -n '200,320p' pkg/cli/remote_workflow_test.go  (exit code: 124)",
+    "sed -n '220,280p' pkg/cli/remote_workflow_test.go  (exit code: 0)",
+    "GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true go test ./...  (exit code: 1)",
+    "apt-get install -y gh  (exit code: 0)",
+    "GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "apt-get update  (exit code: 124)",
+    "DEBIAN_FRONTEND=noninteractive apt-get update  (exit code: 0)",
+    "apt-get install -y nodejs npm  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "sed -n '200,320p' pkg/cli/remote_workflow_test.go  (exit code: 124)",
+    "sed -n '220,280p' pkg/cli/remote_workflow_test.go  (exit code: 0)",
+    "GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true go test ./...  (exit code: 1)",
+    "apt-get install -y gh  (exit code: 0)",
+    "GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:github__gh-aw-24758_linux"
+}

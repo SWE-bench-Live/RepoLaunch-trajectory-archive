@@ -1,0 +1,52 @@
+{
+  "repo": "uutils/coreutils",
+  "pull_number": 11438,
+  "instance_id": "uutils__coreutils-11438",
+  "issue_numbers": [
+    11352
+  ],
+  "base_commit": "ac72aa83540264f4c766b60c6f19acdd1d64a5d5",
+  "patch": "diff --git a/src/uu/chown/locales/en-US.ftl b/src/uu/chown/locales/en-US.ftl\nindex 0dfe8301e9d..9bcb725a6c3 100644\n--- a/src/uu/chown/locales/en-US.ftl\n+++ b/src/uu/chown/locales/en-US.ftl\n@@ -21,3 +21,6 @@ chown-error-failed-to-get-attributes = failed to get attributes of { $file }\n chown-error-invalid-user = invalid user: { $user }\n chown-error-invalid-group = invalid group: { $group }\n chown-error-invalid-spec = invalid spec: { $spec }\n+\n+# Warning messages\n+chown-warning-dot-separator = '.' should be ':': { $spec }\ndiff --git a/src/uu/chown/locales/fr-FR.ftl b/src/uu/chown/locales/fr-FR.ftl\nindex 48e39853a3e..deaa7a620e9 100644\n--- a/src/uu/chown/locales/fr-FR.ftl\n+++ b/src/uu/chown/locales/fr-FR.ftl\n@@ -21,3 +21,6 @@ chown-error-failed-to-get-attributes = \u00e9chec de l'obtention des attributs de {\n chown-error-invalid-user = utilisateur invalide : { $user }\n chown-error-invalid-group = groupe invalide : { $group }\n chown-error-invalid-spec = sp\u00e9cification invalide : { $spec }\n+\n+# Messages d'avertissement\n+chown-warning-dot-separator = '.' devrait \u00eatre ':' : { $spec }\ndiff --git a/src/uu/chown/src/chown.rs b/src/uu/chown/src/chown.rs\nindex 6f0599ce811..23372742817 100644\n--- a/src/uu/chown/src/chown.rs\n+++ b/src/uu/chown/src/chown.rs\n@@ -9,6 +9,7 @@ use uucore::display::Quotable;\n pub use uucore::entries::{self, Group, Locate, Passwd};\n use uucore::format_usage;\n use uucore::perms::{GidUidOwnerFilter, IfFrom, chown_base, options};\n+use uucore::show_warning;\n use uucore::translate;\n \n use uucore::error::{FromIo, UResult, USimpleError};\n@@ -151,7 +152,7 @@ pub fn uu_app() -> Command {\n }\n \n /// Parses the user string to extract the UID.\n-fn parse_uid(user: &str, spec: &str, sep: char) -> UResult<Option<u32>> {\n+fn parse_uid(user: &str, spec: &str) -> UResult<Option<u32>> {\n     if user.is_empty() {\n         return Ok(None);\n     }\n@@ -160,11 +161,6 @@ fn parse_uid(user: &str, spec: &str, sep: char) -> UResult<Option<u32>> {\n         return Ok(Some(u.uid));\n     }\n \n-    // Handle `username.groupname` syntax (e.g. when sep is ':' but spec contains '.')\n-    if spec.contains('.') && !spec.contains(':') && sep == ':' {\n-        return parse_spec(spec, '.').map(|(uid, _)| uid);\n-    }\n-\n     // Fallback: `user` string contains a numeric user ID\n     user.parse().map(Some).map_err(|_| {\n         USimpleError::new(\n@@ -209,7 +205,20 @@ fn parse_spec(spec: &str, sep: char) -> UResult<(Option<u32>, Option<u32>)> {\n     let user = args.next().unwrap_or(\"\");\n     let group = args.next().unwrap_or(\"\");\n \n-    let uid = parse_uid(user, spec, sep)?;\n+    // dot separator: try as username first, fall back to owner.group (like GNU)\n+    if sep == ':' && !spec.contains(':') && spec.contains('.') {\n+        if let Ok(uid) = parse_uid(user, spec) {\n+            let gid = parse_gid(group, spec)?;\n+            return Ok((uid, gid));\n+        }\n+        show_warning!(\n+            \"{}\",\n+            translate!(\"chown-warning-dot-separator\", \"spec\" => spec.quote())\n+        );\n+        return parse_spec(spec, '.');\n+    }\n+\n+    let uid = parse_uid(user, spec)?;\n     let gid = parse_gid(group, spec)?;\n \n     if user.chars().next().is_some_and(char::is_numeric) && group.is_empty() && spec != user {\n",
+  "test_patch": "diff --git a/tests/by-util/test_chown.rs b/tests/by-util/test_chown.rs\nindex 2602aabde06..7e8cb58c16b 100644\n--- a/tests/by-util/test_chown.rs\n+++ b/tests/by-util/test_chown.rs\n@@ -149,7 +149,8 @@ fn test_chown_only_owner_colon() {\n         .arg(\"--verbose\")\n         .arg(file1)\n         .succeeds()\n-        .stderr_contains(\"retained as\");\n+        .stderr_contains(\"retained as\")\n+        .stderr_contains(\"warning: '.' should be ':'\");\n \n     scene\n         .ucmd()\n@@ -160,6 +161,66 @@ fn test_chown_only_owner_colon() {\n         .stderr_contains(\"failed to change\");\n }\n \n+#[test]\n+fn test_chown_dot_separator_warning() {\n+    // test that using '.' as separator emits a warning\n+\n+    let scene = TestScenario::new(util_name!());\n+    let at = &scene.fixtures;\n+\n+    let result = scene.cmd(\"whoami\").run();\n+    if skipping_test_is_okay(&result, \"whoami: cannot find name for user ID\") {\n+        return;\n+    }\n+    let user_name = String::from(result.stdout_str().trim());\n+    assert!(!user_name.is_empty());\n+\n+    let file1 = \"test_chown_dot_warn\";\n+    at.touch(file1);\n+\n+    let result = scene.cmd(\"id\").arg(\"-gn\").run();\n+    if skipping_test_is_okay(&result, \"id: cannot find name for group ID\") {\n+        return;\n+    }\n+    let group_name = String::from(result.stdout_str().trim());\n+    assert!(!group_name.is_empty());\n+\n+    // chown user. file should warn about '.' separator\n+    scene\n+        .ucmd()\n+        .arg(format!(\"{user_name}.\"))\n+        .arg(file1)\n+        .succeeds()\n+        .stderr_contains(\"warning: '.' should be ':'\");\n+\n+    // chown user.group file should warn AND apply both owner and group\n+    let result = scene\n+        .ucmd()\n+        .arg(format!(\"{user_name}.{group_name}\"))\n+        .arg(\"--verbose\")\n+        .arg(file1)\n+        .run();\n+    if skipping_test_is_okay(&result, \"chown: invalid group:\") {\n+        return;\n+    }\n+    result.stderr_contains(\"warning: '.' should be ':'\");\n+    // \"retained as\" on Linux, \"changed ownership\" on BSDs (group inherited from parent dir)\n+    assert!(\n+        result.stderr_str().contains(\"retained as\")\n+            || result.stderr_str().contains(\"changed ownership\"),\n+        \"expected verbose ownership output, got: {}\",\n+        result.stderr_str()\n+    );\n+\n+    // chown user: file should not warn\n+    scene\n+        .ucmd()\n+        .arg(format!(\"{user_name}:\"))\n+        .arg(file1)\n+        .succeeds()\n+        .stderr_does_not_contain(\"warning\");\n+}\n+\n #[test]\n fn test_chown_only_colon() {\n     // test chown : file.txt\n",
+  "problem_statement": "chown: warning message\nuutil chown missing warning message\n\nchown (GNU coreutils) 9.10\n```\n> chown holes. x.txt\nchown: warning: '.' should be ':': \u2018holes.\u2019\n```\n\n`cargo run -p uu_chown holes. x.txt`\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/uutils/coreutils/commit/3c4d72e9b3a21061ad4dbd3a32f47c04ec5c8f72"
+  ],
+  "created_at": "2026-03-21T04:06:43Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/uutils/coreutils/tree/ac72aa83540264f4c766b60c6f19acdd1d64a5d5",
+  "setup_cmds": [
+    "cargo check  (exit code: 0)",
+    "cargo build  (exit code: 0)",
+    "cargo test  (exit code: -1)",
+    "cargo test test_more::test_invalid_file_perms -- --nocapture  (exit code: 101)",
+    "useradd -m -u 1000 tester || true  (exit code: 101)",
+    "su - tester -c 'cd /testbed && env PAGER=cat MORE=-f COLUMNS=80 LINES=24 cargo test'  (exit code: 127)",
+    "su - tester -c 'cd /testbed && env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PAGER=cat MORE=-f COLUMNS=80 LINES=24 cargo test'  (exit code: 1)",
+    "su - tester -c 'cd /testbed && env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PAGER=cat MORE=-f COLUMNS=80 LINES=24 /usr/local/cargo/bin/cargo test'  (exit code: 1)",
+    "su - tester -c 'env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin rustup default stable'  (exit code: 0)",
+    "su - tester -c 'cd /testbed && env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PAGER=cat MORE=-f COLUMNS=80 LINES=24 cargo test'  (exit code: 101)",
+    "chown -R tester:tester /testbed  (exit code: 0)",
+    "su - tester -c 'cd /testbed && env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PAGER=cat MORE=-f COLUMNS=80 LINES=24 cargo test'  (exit code: 0)",
+    "cargo check  (exit code: 0)",
+    "cargo build  (exit code: 0)",
+    "cargo test  (exit code: -1)",
+    "cargo test test_more::test_invalid_file_perms -- --nocapture  (exit code: 101)",
+    "useradd -m -u 1000 tester || true  (exit code: 101)",
+    "su - tester -c 'cd /testbed && env PAGER=cat MORE=-f COLUMNS=80 LINES=24 cargo test'  (exit code: 127)",
+    "su - tester -c 'cd /testbed && env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PAGER=cat MORE=-f COLUMNS=80 LINES=24 cargo test'  (exit code: 1)",
+    "su - tester -c 'cd /testbed && env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PAGER=cat MORE=-f COLUMNS=80 LINES=24 /usr/local/cargo/bin/cargo test'  (exit code: 1)",
+    "su - tester -c 'env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin rustup default stable'  (exit code: 0)",
+    "su - tester -c 'cd /testbed && env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PAGER=cat MORE=-f COLUMNS=80 LINES=24 cargo test'  (exit code: 101)",
+    "chown -R tester:tester /testbed  (exit code: 0)",
+    "su - tester -c 'cd /testbed && env PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin PAGER=cat MORE=-f COLUMNS=80 LINES=24 cargo test'  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo test -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:uutils__coreutils-11438_linux"
+}

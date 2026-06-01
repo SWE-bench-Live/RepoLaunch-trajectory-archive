@@ -1,0 +1,20 @@
+{
+  "repo": "dagger/dagger",
+  "pull_number": 12020,
+  "instance_id": "dagger__dagger-12020",
+  "issue_numbers": [
+    12865
+  ],
+  "base_commit": "02d3e607ec66aa49b00f92c241eb4e655a086aea",
+  "patch": "diff --git a/.changes/unreleased/Fixed-20260318-050000.yaml b/.changes/unreleased/Fixed-20260318-050000.yaml\nnew file mode 100644\nindex 00000000000..3260944f396\n--- /dev/null\n+++ b/.changes/unreleased/Fixed-20260318-050000.yaml\n@@ -0,0 +1,7 @@\n+kind: Fixed\n+body: |\n+  Fix Dockerfile RUN heredoc failing with \"command not found\" (exit 127) by preserving /dev/pipes/ mounts in the OCI spec.\n+time: 2026-03-18T05:00:00.000000000+08:00\n+custom:\n+  Author: majiayu000\n+  PR: \"12020\"\ndiff --git a/engine/buildkit/executor_spec.go b/engine/buildkit/executor_spec.go\nindex 8bf7e6eba33..1acb79d84fd 100644\n--- a/engine/buildkit/executor_spec.go\n+++ b/engine/buildkit/executor_spec.go\n@@ -452,9 +452,11 @@ func (w *Worker) setupRootfs(ctx context.Context, state *execState) error {\n \t\tcase mnt.Destination == MetaMountDestPath:\n \t\t\tmetaMount = &mnt\n \n-\t\tcase mnt.Destination == BuildkitQemuEmulatorMountPoint:\n-\t\t\t// buildkit puts the qemu emulator under /dev, which we aren't mounting now, so just\n-\t\t\t// leave it be\n+\t\tcase mnt.Destination == BuildkitQemuEmulatorMountPoint,\n+\t\t\tstrings.HasPrefix(mnt.Destination, \"/dev/pipes/\"):\n+\t\t\t// Keep specific sub-mounts of /dev in the OCI spec so that runc processes\n+\t\t\t// them after the /dev tmpfs mount. The qemu emulator is at\n+\t\t\t// /dev/.buildkit_qemu_emulator and /dev/pipes/ is used by heredoc processing.\n \t\t\tfilteredMounts = append(filteredMounts, mnt)\n \n \t\tcase containerfs.IsSpecialMountType(mnt.Type):\n",
+  "test_patch": "diff --git a/core/integration/dockerfile_test.go b/core/integration/dockerfile_test.go\nindex d54e60af4e4..b1330a273db 100644\n--- a/core/integration/dockerfile_test.go\n+++ b/core/integration/dockerfile_test.go\n@@ -183,6 +183,32 @@ CMD echo \"stage2\"\n \t\trequire.NotContains(t, output, \"stage2\\n\")\n \t})\n \n+\tt.Run(\"with heredoc\", func(ctx context.Context, t *testctx.T) {\n+\t\tdockerfile := `FROM ` + alpineImage + `\n+RUN <<EOF\n+#!/bin/sh\n+echo \"hello from heredoc\" > /heredoc-output\n+EOF\n+CMD cat /heredoc-output\n+`\n+\n+\t\tt.Run(\"builtin frontend\", func(ctx context.Context, t *testctx.T) {\n+\t\t\tdir := baseDir.WithNewFile(\"Dockerfile\", dockerfile)\n+\n+\t\t\tstdout, err := dir.DockerBuild().WithExec(nil).Stdout(ctx)\n+\t\t\trequire.NoError(t, err)\n+\t\t\trequire.Contains(t, stdout, \"hello from heredoc\")\n+\t\t})\n+\n+\t\tt.Run(\"remote frontend\", func(ctx context.Context, t *testctx.T) {\n+\t\t\tdir := baseDir.WithNewFile(\"Dockerfile\", \"#syntax=docker/dockerfile:1\\n\"+dockerfile)\n+\n+\t\t\tstdout, err := dir.DockerBuild().WithExec(nil).Stdout(ctx)\n+\t\t\trequire.NoError(t, err)\n+\t\t\trequire.Contains(t, stdout, \"hello from heredoc\")\n+\t\t})\n+\t})\n+\n \tt.Run(\"with build secrets\", func(ctx context.Context, t *testctx.T) {\n \t\tsec := c.SetSecret(\"my-secret\", \"barbar\")\n \n",
+  "problem_statement": "Dockerfile RUN heredoc fails with exit 127\nReported in #11972 (converted to discussion #12811).\n\nDockerfile heredoc syntax (`RUN <<EOF ... EOF`) fails with exit 127 because `/dev/pipes/` bind mounts get shadowed by runc's `/dev` tmpfs mount.\n\nFix: PR #12020.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/dagger/dagger/commit/595d3777b0e42f8e4ad2f0ac3739f518a6d57381"
+  ],
+  "created_at": "2026-03-18T05:02:49Z",
+  "language": "Go",
+  "commit_url": "https://github.com/dagger/dagger/tree/02d3e607ec66aa49b00f92c241eb4e655a086aea"
+}

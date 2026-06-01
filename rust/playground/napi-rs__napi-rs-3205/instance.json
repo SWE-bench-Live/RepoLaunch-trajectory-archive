@@ -1,0 +1,32 @@
+{
+  "repo": "napi-rs/napi-rs",
+  "pull_number": 3205,
+  "instance_id": "napi-rs__napi-rs-3205",
+  "issue_numbers": [
+    3202
+  ],
+  "base_commit": "a6de9007c7ef0e5b25b0b2fdba7c0c3dc75c7ee3",
+  "patch": "diff --git a/cli/src/api/build.ts b/cli/src/api/build.ts\nindex 6b8cf4b089..4ec58c9bc3 100644\n--- a/cli/src/api/build.ts\n+++ b/cli/src/api/build.ts\n@@ -1093,19 +1093,21 @@ export async function generateTypeDef(\n     return { exports: [], dts: '' }\n   }\n \n-  for (const file of files) {\n-    if (!file.isFile()) {\n-      continue\n-    }\n-\n-    const { dts: fileDts, exports: fileExports } = await processTypeDef(\n-      join(options.typeDefDir, file.name),\n-      options.constEnum ?? true,\n-    )\n+  const typeDefFiles = files\n+    .filter((file) => file.isFile())\n+    .sort((a, b) => a.name.localeCompare(b.name))\n+\n+  const processedTypeDefs = await Promise.all(\n+    typeDefFiles.map((file) =>\n+      processTypeDef(\n+        join(options.typeDefDir, file.name),\n+        options.constEnum ?? true,\n+      ),\n+    ),\n+  )\n \n-    dts += fileDts\n-    exports.push(...fileExports)\n-  }\n+  dts = processedTypeDefs.map(({ dts }) => dts).join('')\n+  exports = processedTypeDefs.flatMap(({ exports }) => exports)\n \n   if (dts.indexOf('ExternalObject<') > -1) {\n     header += `\n",
+  "test_patch": "diff --git a/cli/src/api/__tests__/build.spec.ts b/cli/src/api/__tests__/build.spec.ts\nindex 828edab056..cc82aa23d5 100644\n--- a/cli/src/api/__tests__/build.spec.ts\n+++ b/cli/src/api/__tests__/build.spec.ts\n@@ -184,6 +184,31 @@ napi-build = { path = \"${napiBuildPath}\" }\n   t.regex(jsContent, /module\\.exports\\.sum = nativeBinding\\.sum/)\n })\n \n+test('generateTypeDef preserves deterministic file order', async (t) => {\n+  const { projectDir, typeDefDir } = t.context\n+\n+  await mkdir(join(typeDefDir, 'nested'), { recursive: true })\n+  await writeFile(\n+    join(typeDefDir, 'b.type'),\n+    '{\"kind\":\"fn\",\"name\":\"zeta\",\"def\":\"function zeta(): void\"}\\n',\n+  )\n+  await writeFile(\n+    join(typeDefDir, 'a.type'),\n+    '{\"kind\":\"fn\",\"name\":\"alpha\",\"def\":\"function alpha(): void\"}\\n',\n+  )\n+\n+  const { exports, dts } = await generateTypeDef({\n+    typeDefDir,\n+    cwd: projectDir,\n+  })\n+\n+  t.deepEqual(exports, ['alpha', 'zeta'])\n+  t.true(\n+    dts.indexOf('function alpha(): void') <\n+      dts.indexOf('function zeta(): void'),\n+  )\n+})\n+\n test('should throw on emnapi version mismatch in wasm build', async (t) => {\n   const { projectDir } = t.context\n   const crateName = 'wasm_version_check'\n",
+  "problem_statement": "Parallelize `.d.ts` generation and reduce intermediate parsing overhead\nThe `.d.ts` generation is currently serialized per intermediate file, and each file is reparsed from scratch.\n\nToday, `generateTypeDef` loops files one by one and awaits `processTypeDef` for each file:\n\nhttps://github.com/napi-rs/napi-rs/blob/99be12c1aa265bd9a2484a91bfc090f95d13e51c/cli/src/api/build.ts#L1096\n\nThen `processTypeDef` reads the whole file, splits lines, JSON.parses each line, sorts, groups, and pretty-prints:\n\n* https://github.com/napi-rs/napi-rs/blob/99be12c1aa265bd9a2484a91bfc090f95d13e51c/cli/src/utils/typegen.ts#L100\n* https://github.com/napi-rs/napi-rs/blob/99be12c1aa265bd9a2484a91bfc090f95d13e51c/cli/src/utils/typegen.ts#L151\n\nThis seems like a good candidate for:\n* `Promise.all` across files, while preserving deterministic output order\n* a less chatty intermediate format to reduce split/parse/string-processing overhead\n\nThis would likely help projects that emit many intermediate type files without changing generated output.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/napi-rs/napi-rs/commit/8c175ec1929e06da7b4d0ac2534b9aaf54ab3cfb"
+  ],
+  "created_at": "2026-04-10T02:00:06Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/napi-rs/napi-rs/tree/a6de9007c7ef0e5b25b0b2fdba7c0c3dc75c7ee3",
+  "setup_cmds": [
+    "cargo check --workspace --all-targets  (exit code: 0)",
+    "cargo test --workspace  (exit code: 0)",
+    "cargo check --workspace --all-targets  (exit code: 0)",
+    "cargo test --workspace  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo test --workspace -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:napi-rs__napi-rs-3205_linux"
+}

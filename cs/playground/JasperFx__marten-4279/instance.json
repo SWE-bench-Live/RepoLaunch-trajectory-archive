@@ -1,0 +1,56 @@
+{
+  "repo": "JasperFx/marten",
+  "pull_number": 4279,
+  "instance_id": "JasperFx__marten-4279",
+  "issue_numbers": [
+    4277
+  ],
+  "base_commit": "847e14f89013f258320592b5ce91833794c4f6c8",
+  "patch": "diff --git a/Directory.Packages.props b/Directory.Packages.props\nindex 9f90370d58..d8cf98790e 100644\n--- a/Directory.Packages.props\n+++ b/Directory.Packages.props\n@@ -14,7 +14,7 @@\n     <PackageVersion Include=\"FSharp.Core\" Version=\"9.0.100\" />\n     <PackageVersion Include=\"FSharp.SystemTextJson\" Version=\"1.3.13\" />\n     <PackageVersion Include=\"JasperFx\" Version=\"1.26.0\" />\n-    <PackageVersion Include=\"JasperFx.Events\" Version=\"1.29.0\" />\n+    <PackageVersion Include=\"JasperFx.Events\" Version=\"1.29.1\" />\n     <PackageVersion Include=\"JasperFx.Events.SourceGenerator\" Version=\"1.5.0\">\n       <PrivateAssets>all</PrivateAssets>\n       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>\n",
+  "test_patch": "diff --git a/src/EventSourcingTests/Bugs/Bug_4197_fetch_for_writing_natural_key.cs b/src/EventSourcingTests/Bugs/Bug_4197_fetch_for_writing_natural_key.cs\nindex 1d18149a40..d1f060773c 100644\n--- a/src/EventSourcingTests/Bugs/Bug_4197_fetch_for_writing_natural_key.cs\n+++ b/src/EventSourcingTests/Bugs/Bug_4197_fetch_for_writing_natural_key.cs\n@@ -92,4 +92,39 @@ public async Task fetch_for_writing_with_natural_key_with_inline_snapshot()\n         stream.Aggregate.ShouldNotBeNull();\n         stream.Aggregate.Key.ShouldBe(aggregateKey);\n     }\n+\n+    // Regression coverage for https://github.com/JasperFx/marten/issues/4277.\n+    // Self-aggregating aggregate (record) with a static [NaturalKeySource] factory.\n+    public sealed record Bug4277SelfAggregate(Guid Id, [property: NaturalKey] Bug4197AggregateKey Key)\n+    {\n+        [NaturalKeySource]\n+        public static Bug4277SelfAggregate Create(Bug4197AggregateCreatedEvent e)\n+            => new(e.Id, new Bug4197AggregateKey(e.Key));\n+    }\n+\n+    [Fact]\n+    public async Task fetch_for_writing_with_natural_key_on_self_aggregating_record_with_static_source()\n+    {\n+        StoreOptions(opts =>\n+        {\n+            opts.Projections.Snapshot<Bug4277SelfAggregate>(SnapshotLifecycle.Inline);\n+        });\n+\n+        await using var session = theStore.LightweightSession();\n+\n+        var aggregateId = Guid.NewGuid();\n+        var aggregateKey = new Bug4197AggregateKey(\"another-key-value\");\n+        var e = new Bug4197AggregateCreatedEvent(aggregateId, aggregateKey.Value);\n+\n+        session.Events.StartStream<Bug4277SelfAggregate>(aggregateId, e);\n+        await session.SaveChangesAsync();\n+\n+        // Before the fix, the natural-key lookup row was never written, so this\n+        // FetchForWriting by natural key returned a null aggregate.\n+        var stream = await session.Events.FetchForWriting<Bug4277SelfAggregate, Bug4197AggregateKey>(aggregateKey);\n+\n+        stream.ShouldNotBeNull();\n+        stream.Aggregate.ShouldNotBeNull();\n+        stream.Aggregate.Key.ShouldBe(aggregateKey);\n+    }\n }\n",
+  "problem_statement": "NaturalKeySource does not work for \"self-aggregating\" type\nIf I use the [self-aggregating semantics](https://martendb.io/events/projections/single-stream-projections.html#single-stream-projections-and-snapshots) shown in the docs together with the Natural Key feature, then lookup table is not updated correctly (not at all in fact), causing the Natural Key feature to fail.\n\nTo reproduce the issue, I just tried to change the `Bug4197Aggregate` definition found in the `Bug_4197_fetch_for_writing_natural_key` test to this:\n```\n    public sealed record Bug4197Aggregate(Guid Id, [property: NaturalKey] Bug4197AggregateKey Key)\n    {\n        [NaturalKeySource]\n        public static Bug4197Aggregate Create(Bug4197AggregateCreatedEvent e)\n        {\n            return new Bug4197Aggregate(e.Id, new Bug4197AggregateKey(e.Key));\n        }\n    }\n```\n\nHaving a look at the source code, it seems the issue is in [JasperFx.Events](https://github.com/JasperFx/jasperfx/blob/7ebc33a4cfa0286371a7cf1168a98ca0eb266c4a/src/JasperFx.Events/Aggregation/JasperFxAggregationProjectionBase.cs#L423) where static methods are only discovered if the projection type is different from the document type. I'm not sure why this distinction is made and therefore have not submitted a PR as I'm not sure what the proper solution is. It might just be that this scenario is not supported.\n",
+  "hints_text": "Might the solution be to just add discovery of static methods on the `docType` as well?\n\n",
+  "all_hints_text": "Might the solution be to just add discovery of static methods on the `docType` as well?\n\n",
+  "commit_urls": [
+    "https://github.com/JasperFx/marten/commit/5e4d42073fa7444f17bc36312530dbfb6a1f9dc8"
+  ],
+  "created_at": "2026-04-22T21:44:35Z",
+  "language": "C#",
+  "commit_url": "https://github.com/JasperFx/marten/tree/847e14f89013f258320592b5ce91833794c4f6c8",
+  "setup_cmds": [
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y postgresql  (exit code: 0)",
+    "pg_ctlcluster 15 main start  (exit code: 0)",
+    "su postgres -c \"psql -c \\\"ALTER USER postgres PASSWORD 'postgres';\\\"\"  (exit code: 0)",
+    "su postgres -c \"createdb marten_testing\"  (exit code: 0)",
+    "dotnet restore src/Marten.sln  (exit code: 1)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && bash /tmp/dotnet-install.sh --channel 9.0 --install-dir /usr/share/dotnet  (exit code: 0)",
+    "dotnet --list-sdks  (exit code: 0)",
+    "rg -n \"net10.0\" -S src Directory.Build.props Directory.Packages.props  (exit code: 127)",
+    "grep -R -n \"net10.0\" src Directory.Build.props Directory.Packages.props  (exit code: 0)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet  (exit code: 0)",
+    "dotnet restore src/Marten.sln  (exit code: 0)",
+    "dotnet build src/Marten.sln -c Release  (exit code: 0)",
+    "marten_testing_database=\"Host=localhost;Port=5432;Database=marten_testing;Username=postgres;Password=postgres\" dotnet test src/CoreTests/CoreTests.csproj -c Release --framework net8.0  (exit code: 0)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y postgresql  (exit code: 0)",
+    "pg_ctlcluster 15 main start  (exit code: 0)",
+    "su postgres -c \"psql -c \\\"ALTER USER postgres PASSWORD 'postgres';\\\"\"  (exit code: 0)",
+    "su postgres -c \"createdb marten_testing\"  (exit code: 0)",
+    "dotnet restore src/Marten.sln  (exit code: 1)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && bash /tmp/dotnet-install.sh --channel 9.0 --install-dir /usr/share/dotnet  (exit code: 0)",
+    "dotnet --list-sdks  (exit code: 0)",
+    "rg -n \"net10.0\" -S src Directory.Build.props Directory.Packages.props  (exit code: 127)",
+    "grep -R -n \"net10.0\" src Directory.Build.props Directory.Packages.props  (exit code: 0)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && bash /tmp/dotnet-install.sh --channel 10.0 --install-dir /usr/share/dotnet  (exit code: 0)",
+    "dotnet restore src/Marten.sln  (exit code: 0)",
+    "dotnet build src/Marten.sln -c Release  (exit code: 0)",
+    "marten_testing_database=\"Host=localhost;Port=5432;Database=marten_testing;Username=postgres;Password=postgres\" dotnet test src/CoreTests/CoreTests.csproj -c Release --framework net8.0  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "marten_testing_database=\"Host=localhost;Port=5432;Database=marten_testing;Username=postgres;Password=postgres\" dotnet test src/CoreTests/CoreTests.csproj -c Release --framework net8.0 --logger \"console;verbosity=detailed\""
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:JasperFx__marten-4279_linux"
+}

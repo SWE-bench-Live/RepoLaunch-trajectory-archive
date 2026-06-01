@@ -1,0 +1,48 @@
+{
+  "repo": "gfx-rs/wgpu",
+  "pull_number": 9367,
+  "instance_id": "gfx-rs__wgpu-9367",
+  "issue_numbers": [
+    8876
+  ],
+  "base_commit": "41bb9cbd25fca25b398c0ccb203164fe1ff8c0b8",
+  "patch": "diff --git a/CHANGELOG.md b/CHANGELOG.md\nindex 8ece886a084..050305c898e 100644\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -90,6 +90,7 @@ Bottom level categories:\n - Naga no longer allows derivative operations on `f16`. WGSL does not currently allow this, although [it may be added in the future](https://github.com/gpuweb/gpuweb/issues/5482). By @andyleiserson in [#9154](https://github.com/gfx-rs/wgpu/pull/9154).\n - Disallow direct access to atomic variables in WGSL front-end (e.g. `let x = myAtomic;`). By @ecoricemon in [#9262](https://github.com/gfx-rs/wgpu/pull/9262).\n - Fixed handling of unterminated block comments. By @BKDaugherty in [#9356](https://github.com/gfx-rs/wgpu/pull/9356).\n+- Enforce that `@must_use` appear only on function declarations. By @dnsn021 in [#9367](https://github.com/gfx-rs/wgpu/pull/9367).\n \n #### dx12\n \ndiff --git a/cts_runner/fail.lst b/cts_runner/fail.lst\nindex a46978c7bca..fea9e119e41 100644\n--- a/cts_runner/fail.lst\n+++ b/cts_runner/fail.lst\n@@ -125,7 +125,6 @@ webgpu:shader,validation,parse,blankspace:* // 95%, null in comments, https://gi\n webgpu:shader,validation,parse,comments:* // 93%, unterminated block comments, https://github.com/gfx-rs/wgpu/issues/8877\n webgpu:shader,validation,parse,diagnostic:* // 50%, https://github.com/gfx-rs/wgpu/issues/6458\n webgpu:shader,validation,parse,literal:* // 96%, https://github.com/gfx-rs/wgpu/issues/7046\n-webgpu:shader,validation,parse,must_use:* // 97%, https://github.com/gfx-rs/wgpu/issues/8876\n webgpu:shader,validation,parse,shadow_builtins:* // 83%, function param shadowing parser issue; determinant const-eval; texture_external capability missing\n webgpu:shader,validation,shader_io,align:* // 98%, @align(2^31) accepted but exceeds i32::MAX per WGSL spec\n webgpu:shader,validation,shader_io,id:* // 97%, @id on const\ndiff --git a/naga/src/front/wgsl/error.rs b/naga/src/front/wgsl/error.rs\nindex 538215c1e44..59d2268333f 100644\n--- a/naga/src/front/wgsl/error.rs\n+++ b/naga/src/front/wgsl/error.rs\n@@ -362,6 +362,7 @@ pub(crate) enum Error<'a> {\n     FunctionReturnsVoid(Span),\n     FunctionMustUseUnused(Span),\n     FunctionMustUseReturnsVoid(Span, Span),\n+    FunctionMustUseOnNonFunction(Span),\n     InvalidWorkGroupUniformLoad(Span),\n     Internal(&'static str),\n     ExpectedConstExprConcreteIntegerScalar(Span),\n@@ -1077,6 +1078,13 @@ impl<'a> Error<'a> {\n                     \"declare a return type or remove the attribute\".into(),\n                 ],\n             },\n+            Error::FunctionMustUseOnNonFunction(attr) => ParseError {\n+                message: \"attribute `@must_use` is only valid on function declarations\".into(),\n+                labels: vec![(attr, \"\".into())],\n+                notes: vec![\n+                    \"place `@must_use` on a function declaration with a return type\".into(),\n+                ],\n+            },\n             Error::InvalidWorkGroupUniformLoad(span) => ParseError {\n                 message: \"incorrect type passed to workgroupUniformLoad\".into(),\n                 labels: vec![(span, \"\".into())],\ndiff --git a/naga/src/front/wgsl/parse/mod.rs b/naga/src/front/wgsl/parse/mod.rs\nindex 45c5514ae63..5f503ef2207 100644\n--- a/naga/src/front/wgsl/parse/mod.rs\n+++ b/naga/src/front/wgsl/parse/mod.rs\n@@ -2203,6 +2203,12 @@ impl Parser {\n             }\n         };\n \n+        if let Some(must_use_span) = must_use.value {\n+            if !matches!(kind.as_ref(), Some(ast::GlobalDeclKind::Fn(_))) {\n+                return Err(Box::new(Error::FunctionMustUseOnNonFunction(must_use_span)));\n+            }\n+        }\n+\n         if let Some(kind) = kind {\n             out.decls.append(\n                 ast::GlobalDecl { kind, dependencies },\n",
+  "test_patch": "diff --git a/cts_runner/test.lst b/cts_runner/test.lst\nindex 834473651fe..031ced0b639 100644\n--- a/cts_runner/test.lst\n+++ b/cts_runner/test.lst\n@@ -450,6 +450,7 @@ webgpu:shader,validation,parse,blankspace:null_characters:contains_null=true;pla\n webgpu:shader,validation,parse,comments:unterminated_block_comment:terminated=false\n webgpu:shader,validation,parse,enable:*\n webgpu:shader,validation,parse,identifiers:*\n+webgpu:shader,validation,parse,must_use:*\n webgpu:shader,validation,parse,requires:*\n webgpu:shader,validation,parse,semicolon:*\n webgpu:shader,validation,parse,shadow_builtins:function_param:*\ndiff --git a/naga/tests/naga/wgsl_errors.rs b/naga/tests/naga/wgsl_errors.rs\nindex ec98311f34e..97bed72b7ad 100644\n--- a/naga/tests/naga/wgsl_errors.rs\n+++ b/naga/tests/naga/wgsl_errors.rs\n@@ -3158,6 +3158,27 @@ struct S {\n     )\n }\n \n+#[test]\n+fn global_var_must_use() {\n+    check(\n+        r#\"\n+@must_use\n+@group(0)\n+@binding(0)\n+var<storage> x : array<u32>;\n+\"#,\n+        r#\"error: attribute `@must_use` is only valid on function declarations\n+  \u250c\u2500 wgsl:2:2\n+  \u2502\n+2 \u2502 @must_use\n+  \u2502  ^^^^^^^^\n+  \u2502\n+  = note: place `@must_use` on a function declaration with a return type\n+\n+\"#,\n+    )\n+}\n+\n #[test]\n fn function_param_redefinition_as_param() {\n     check(\n",
+  "problem_statement": "naga does not validate `must_use` for global declarations\n```\n[fail] webgpu:shader,validation,parse,must_use:declaration:test=\"var\" (44ms). Log:\n  - EXPECTATION FAILED: Expected validation error\n      at (elided: below max severity)\n  - VALIDATION FAILED: Missing expected compilationInfo 'error' message.\n\n\n    ---- shader ----\n    @must_use @group(0) @binding(0)\n        var<storage> x : array<u32>;\n        at ShaderValidationTest.expectCompileResult (file:///Users/Andy/Development/wgpu2/cts/out/webgpu/shader/validation/shader_validation_test.js:74:19)\n        at RunCaseSpecific.fn (file:///Users/Andy/Development/wgpu2/cts/out/webgpu/shader/validation/parse/must_use.spec.js:60:5)\n```\n",
+  "hints_text": "I noticed that the [spec](https://gpuweb.github.io/gpuweb/wgsl/#must-use-attr) seems to describe `@must_use` only in the context of functions, so maybe there is something that needs to be clarified here.\nHi, according to the WGSL spec, `@must_use` is restricted to functions with a return type, so applying it to a `var` is invalid. I'd like to work on fixing this validation if that's okay \u2014 could you assign this to me?\n@dnsn021: Assigned! \ud83e\udee1 \n\n",
+  "all_hints_text": "I noticed that the [spec](https://gpuweb.github.io/gpuweb/wgsl/#must-use-attr) seems to describe `@must_use` only in the context of functions, so maybe there is something that needs to be clarified here.\nHi, according to the WGSL spec, `@must_use` is restricted to functions with a return type, so applying it to a `var` is invalid. I'd like to work on fixing this validation if that's okay \u2014 could you assign this to me?\n@dnsn021: Assigned! \ud83e\udee1 \n\n",
+  "commit_urls": [
+    "https://github.com/gfx-rs/wgpu/commit/e45116fbb159bb2e5ad2779ea6c94bc19981c937",
+    "https://github.com/gfx-rs/wgpu/commit/ddc0d16c58951767078731afe9644413e83c0475",
+    "https://github.com/gfx-rs/wgpu/commit/5266015e4e85f372870ade40ef1789646a223370"
+  ],
+  "created_at": "2026-04-03T09:27:24Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/gfx-rs/wgpu/tree/41bb9cbd25fca25b398c0ccb203164fe1ff8c0b8",
+  "setup_cmds": [
+    "apt-get update -y  (exit code: 0)",
+    "apt-get install -y --no-install-recommends pkg-config clang lld cmake ninja-build git ca-certificates curl libvulkan1 vulkan-tools mesa-vulkan-drivers libx11-dev libxkbcommon-dev libwayland-dev wayland-protocols libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev  (exit code: 0)",
+    "rustc -V && cargo -V  (exit code: 0)",
+    "cargo install cargo-nextest --locked  (exit code: 0)",
+    "cargo check --all-targets --all-features  (exit code: 0)",
+    "cargo xtask test  (exit code: 1)",
+    "apt-get install -y --no-install-recommends spirv-tools glslang-tools  (exit code: 0)",
+    "cargo xtask test  (exit code: 1)",
+    "WGPU_BACKEND=gl cargo xtask test  (exit code: 0)",
+    "apt-get update -y  (exit code: 0)",
+    "apt-get install -y --no-install-recommends pkg-config clang lld cmake ninja-build git ca-certificates curl libvulkan1 vulkan-tools mesa-vulkan-drivers libx11-dev libxkbcommon-dev libwayland-dev wayland-protocols libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev  (exit code: 0)",
+    "rustc -V && cargo -V  (exit code: 0)",
+    "cargo install cargo-nextest --locked  (exit code: 0)",
+    "cargo check --all-targets --all-features  (exit code: 0)",
+    "cargo xtask test  (exit code: 1)",
+    "apt-get install -y --no-install-recommends spirv-tools glslang-tools  (exit code: 0)",
+    "cargo xtask test  (exit code: 1)",
+    "WGPU_BACKEND=gl cargo xtask test  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "WGPU_BACKEND=gl cargo xtask test -v"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:gfx-rs__wgpu-9367_linux"
+}

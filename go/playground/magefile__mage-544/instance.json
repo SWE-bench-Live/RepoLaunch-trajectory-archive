@@ -1,0 +1,37 @@
+{
+  "repo": "magefile/mage",
+  "pull_number": 544,
+  "instance_id": "magefile__mage-544",
+  "issue_numbers": [
+    537
+  ],
+  "base_commit": "00dd13d9f6e84a3d212618dc1456cef0c661b231",
+  "patch": "diff --git a/parse/parse.go b/parse/parse.go\nindex a124937..2e9de79 100644\n--- a/parse/parse.go\n+++ b/parse/parse.go\n@@ -51,8 +51,8 @@ type Function struct {\n \tReceiver   string\n \tIsError    bool\n \tIsContext  bool\n-\tSynopsis   string\n-\tComment    string\n+\tSynopsis   string // Synopsis is a one sentence description of the function, without its leading function name.\n+\tComment    string // Comment is the full comment on the function, with newlines replaced by spaces and trimmed.\n \tArgs       []Arg\n }\n \n@@ -504,7 +504,7 @@ func Package(path string, files []string, multiline bool) (*PkgInfo, error) {\n \tif multiline {\n \t\tpi.Description = strings.TrimSuffix(p.Doc, \"\\n\")\n \t} else {\n-\t\tpi.Description = toOneLine(p.Doc)\n+\t\tpi.Description = oneLineDoc(p.Doc)\n \t}\n \n \tsetNamespaces(pi, fieldComments)\n@@ -645,7 +645,7 @@ func funcFromDoc(f *doc.Func, importpath, funcname string, multiline bool, field\n \tif multiline {\n \t\tfn.Comment = strings.TrimSuffix(f.Doc, \"\\n\")\n \t} else {\n-\t\tfn.Comment = toOneLine(f.Doc)\n+\t\tfn.Comment = oneLineDoc(f.Doc)\n \t}\n \tfn.Synopsis = sanitizeSynopsis(f)\n \treturn fn, true\n@@ -810,6 +810,7 @@ func checkDupeTargets(info *PkgInfo) (hasDupes bool, names map[string][]string)\n // sanitizeSynopsis sanitizes function Doc to create a summary.\n func sanitizeSynopsis(f *doc.Func) string {\n \tsynopsis := doc.Synopsis(f.Doc)\n+\tsynopsis = sanitizeDocComment(synopsis)\n \n \t// If the synopsis begins with the function name, remove it. This is done to\n \t// not repeat the text.\n@@ -817,8 +818,12 @@ func sanitizeSynopsis(f *doc.Func) string {\n \t// clean\tClean removes the temporarily generated files\n \t// To:\n \t// clean \tremoves the temporarily generated files\n-\tif syns := strings.Split(synopsis, \" \"); strings.EqualFold(f.Name, syns[0]) {\n-\t\treturn strings.Join(syns[1:], \" \")\n+\tstart, rest, found := strings.Cut(synopsis, \" \")\n+\tif !found {\n+\t\treturn synopsis\n+\t}\n+\tif strings.EqualFold(f.Name, start) {\n+\t\treturn rest\n \t}\n \n \treturn synopsis\n@@ -1111,8 +1116,18 @@ func funcType(ft *ast.FuncType, fieldComments map[*ast.Field]string) (*Function,\n \treturn f, nil\n }\n \n-func toOneLine(s string) string {\n-\treturn strings.TrimSpace(strings.ReplaceAll(s, \"\\n\", \" \"))\n+// sanitizeDocComment sanitizes a doc comment by replacing characters that would screw up formatting\n+// in the output file.\n+func sanitizeDocComment(s string) string {\n+\ts = strings.ReplaceAll(s, \"`\", \"'\")\n+\treturn s\n+}\n+\n+// oneLineDoc converts a doc comment to a single line, and sanitizes it for output.\n+func oneLineDoc(s string) string {\n+\ts = strings.ReplaceAll(s, \"\\n\", \" \")\n+\ts = strings.TrimSpace(s)\n+\treturn sanitizeDocComment(s)\n }\n \n // hasComment reports whether any file in the package contains a comment\n",
+  "test_patch": "diff --git a/parse/parse_test.go b/parse/parse_test.go\nindex 0d3567d..91bdc9f 100644\n--- a/parse/parse_test.go\n+++ b/parse/parse_test.go\n@@ -57,6 +57,12 @@ func TestParse(t *testing.T) {\n \t\t\tReceiver: \"Build\",\n \t\t\tIsError:  false,\n \t\t},\n+\t\t{\n+\t\t\tName:     \"WithBackticks\",\n+\t\t\tIsError:  false,\n+\t\t\tComment:  \"WithBackticks has a synopsis that includes 'backticks' which were a problem once.\",\n+\t\t\tSynopsis: \"has a synopsis that includes 'backticks' which were a problem once.\",\n+\t\t},\n \t}\n \n \tif info.DefaultFunc == nil {\n@@ -92,11 +98,14 @@ func TestParse(t *testing.T) {\n \tfor _, fn := range expected {\n \t\tfound := false\n \t\tfor _, infoFn := range info.Funcs {\n-\t\t\tif reflect.DeepEqual(fn, *infoFn) {\n-\t\t\t\tfound = true\n+\t\t\tif fn.Name == infoFn.Name && fn.Receiver == infoFn.Receiver {\n+\t\t\t\tif reflect.DeepEqual(fn, *infoFn) {\n+\t\t\t\t\tfound = true\n+\t\t\t\t\tbreak\n+\t\t\t\t}\n+\t\t\t\tt.Errorf(\"expected:\\n%#v\\n\\nto equal:\\n%#v\", fn, *infoFn)\n \t\t\t\tbreak\n \t\t\t}\n-\t\t\tt.Logf(\"%#v\", infoFn)\n \t\t}\n \t\tif !found {\n \t\t\tt.Fatalf(\"expected:\\n%#v\\n\\nto be in:\\n%#v\", fn, info.Funcs)\ndiff --git a/parse/testdata/func.go b/parse/testdata/func.go\nindex ffc81fd..56992fb 100644\n--- a/parse/testdata/func.go\n+++ b/parse/testdata/func.go\n@@ -13,3 +13,6 @@ func ReturnsNilError() error {\n }\n \n func nonexported() {}\n+\n+// WithBackticks has a synopsis that includes `backticks` which were a problem once.\n+func WithBackticks() {}\n",
+  "problem_statement": "Bug: Backticks in magefile package comment breaks mage_output_file.go\n**Bug Description**\nI wrote this as a package comment in my magefile.go:\n\n```\n// This is a magefile, to be called with `go tool mage` (github.com/magefile/mage).\npackage main\n```\n\n**What did you do?**\nI called `go tool mage`.\n\n**What did you expect to happen?**\nSuccessful run.\n\n**What actually happened?**\nmage_output_file.go didn't compile.\n\n**Environment**\n```\n$ go tool mage --version\nMage Build Tool <not set>\nBuild Date: <not set>\nCommit: <not set>\nbuilt with: go1.26.0\n```\n(latest as of today)\n\n**Additional context**\nThe line that breaks in mage_output_file.go is:\n\n```go\n_fmt.Println(`This is a magefile, to be called with `go tool mage` (github.com/magefile/mage).\n`)\n```\n\nThe string needs escaping.\n",
+  "hints_text": "Oof yep.  I'll get on it. \n\n",
+  "all_hints_text": "Oof yep.  I'll get on it. \n\n",
+  "commit_urls": [
+    "https://github.com/magefile/mage/commit/24d740a9d616dc6f1d391b635d2f7e8e8ba5cccb",
+    "https://github.com/magefile/mage/commit/a3ed98066d79ba62897a92f49f544bad31102609",
+    "https://github.com/magefile/mage/commit/2151c443c8630fb55897479f2d0622386f6ba5cc",
+    "https://github.com/magefile/mage/commit/a79c4660d99c3689df86e8b39f0beffcb68db8bd"
+  ],
+  "created_at": "2026-03-15T13:51:21Z",
+  "language": "Go",
+  "commit_url": "https://github.com/magefile/mage/tree/00dd13d9f6e84a3d212618dc1456cef0c661b231",
+  "setup_cmds": [
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:magefile__mage-544_linux"
+}

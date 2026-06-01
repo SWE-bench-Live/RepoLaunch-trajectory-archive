@@ -1,0 +1,61 @@
+{
+  "repo": "apache/iggy",
+  "pull_number": 2945,
+  "instance_id": "apache__iggy-2945",
+  "issue_numbers": [
+    2943
+  ],
+  "base_commit": "07c9c7cca2c44a65dc4e22f7f4efae9d9f453035",
+  "patch": "diff --git a/core/integration/src/harness/handle/server.rs b/core/integration/src/harness/handle/server.rs\nindex a265f4ece8..2c64ac5c45 100644\n--- a/core/integration/src/harness/handle/server.rs\n+++ b/core/integration/src/harness/handle/server.rs\n@@ -410,7 +410,13 @@ impl ServerHandle {\n             }\n \n             if config_path.exists() {\n-                return self.verify_bound_ports(&config_path);\n+                match self.verify_bound_ports(&config_path) {\n+                    Ok(()) => return Ok(()),\n+                    Err(TestBinaryError::InvalidState { message })\n+                        if message.starts_with(\"Failed to read server config at \")\n+                            || message.starts_with(\"Failed to parse server config:\") => {}\n+                    Err(err) => return Err(err),\n+                }\n             }\n \n             if Instant::now() >= deadline {\n",
+  "test_patch": "diff --git a/core/integration/tests/data_integrity/mod.rs b/core/integration/tests/data_integrity/mod.rs\nindex 7df802e247..6be9ba30da 100644\n--- a/core/integration/tests/data_integrity/mod.rs\n+++ b/core/integration/tests/data_integrity/mod.rs\n@@ -18,4 +18,5 @@\n \n mod verify_after_server_restart;\n mod verify_consumer_group_partition_assignment;\n+mod verify_no_plaintext_credentials_on_disk;\n mod verify_user_login_after_restart;\ndiff --git a/core/integration/tests/data_integrity/verify_no_plaintext_credentials_on_disk.rs b/core/integration/tests/data_integrity/verify_no_plaintext_credentials_on_disk.rs\nnew file mode 100644\nindex 0000000000..2307e00ebc\n--- /dev/null\n+++ b/core/integration/tests/data_integrity/verify_no_plaintext_credentials_on_disk.rs\n@@ -0,0 +1,107 @@\n+/* Licensed to the Apache Software Foundation (ASF) under one\n+ * or more contributor license agreements.  See the NOTICE file\n+ * distributed with this work for additional information\n+ * regarding copyright ownership.  The ASF licenses this file\n+ * to you under the Apache License, Version 2.0 (the\n+ * \"License\"); you may not use this file except in compliance\n+ * with the License.  You may obtain a copy of the License at\n+ *\n+ *   http://www.apache.org/licenses/LICENSE-2.0\n+ *\n+ * Unless required by applicable law or agreed to in writing,\n+ * software distributed under the License is distributed on an\n+ * \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n+ * KIND, either express or implied.  See the License for the\n+ * specific language governing permissions and limitations\n+ * under the License.\n+ */\n+\n+use iggy::prelude::*;\n+use integration::iggy_harness;\n+use secrecy::ExposeSecret;\n+use std::fs;\n+use std::path::{Path, PathBuf};\n+\n+const USERNAME: &str = \"plaintext-regression-user\";\n+const PLAINTEXT_PASSWORD: &str = \"plaintext-password-regression-2943\";\n+const PAT_NAME: &str = \"plaintext-regression-pat\";\n+\n+#[iggy_harness]\n+async fn should_not_persist_plaintext_password_or_pat_to_disk(harness: &mut TestHarness) {\n+    let root_client = harness.root_client().await.unwrap();\n+    root_client\n+        .create_user(USERNAME, PLAINTEXT_PASSWORD, UserStatus::Active, None)\n+        .await\n+        .unwrap();\n+\n+    let raw_pat = root_client\n+        .create_personal_access_token(PAT_NAME, IggyExpiry::NeverExpire)\n+        .await\n+        .unwrap();\n+    let raw_pat_token = raw_pat.token.expose_secret();\n+\n+    assert!(!raw_pat_token.is_empty(), \"Expected non-empty PAT value\");\n+\n+    let data_path = harness.server().data_path();\n+\n+    drop(root_client);\n+    harness.stop().await.unwrap();\n+\n+    assert_secret_not_persisted(&data_path, PLAINTEXT_PASSWORD, \"plaintext password\");\n+    assert_secret_not_persisted(&data_path, raw_pat_token, \"raw PAT\");\n+}\n+\n+fn assert_secret_not_persisted(root: &Path, secret: &str, secret_name: &str) {\n+    let secret = secret.as_bytes();\n+    for path in collect_files(root) {\n+        let contents = fs::read(&path).unwrap_or_else(|e| {\n+            panic!(\"Failed to read persisted file {}: {e}\", path.display());\n+        });\n+        assert!(\n+            !contains_subslice(&contents, secret),\n+            \"Found {secret_name} persisted in file {}\",\n+            path.display()\n+        );\n+    }\n+}\n+\n+fn collect_files(root: &Path) -> Vec<PathBuf> {\n+    let mut files = Vec::new();\n+    collect_files_recursive(root, &mut files);\n+    files\n+}\n+\n+fn collect_files_recursive(path: &Path, files: &mut Vec<PathBuf>) {\n+    let entries = fs::read_dir(path).unwrap_or_else(|e| {\n+        panic!(\"Failed to read persisted directory {}: {e}\", path.display());\n+    });\n+\n+    for entry in entries {\n+        let entry = entry.unwrap_or_else(|e| {\n+            panic!(\n+                \"Failed to read entry in persisted directory {}: {e}\",\n+                path.display()\n+            );\n+        });\n+        let entry_path = entry.path();\n+        let file_type = entry.file_type().unwrap_or_else(|e| {\n+            panic!(\"Failed to get file type for {}: {e}\", entry_path.display());\n+        });\n+\n+        if file_type.is_dir() {\n+            collect_files_recursive(&entry_path, files);\n+        } else if file_type.is_file() {\n+            files.push(entry_path);\n+        }\n+    }\n+}\n+\n+fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {\n+    if needle.is_empty() {\n+        return true;\n+    }\n+\n+    haystack\n+        .windows(needle.len())\n+        .any(|window| window == needle)\n+}\n",
+  "problem_statement": "Add regression test to verify secrets are never persisted as plaintext\nAdd an integration test that verifies plaintext passwords and raw PAT values are never written to disk. Currently, hashing before persistence is a convention enforced in shard/execution.rs (calling crypto::hash_password before state.apply()), but there's no compile-time enforcement or runtime verification.\n\n**Proposed Test**\n\n1. Create a user with a known password\n2. Create a personal access token\n3. Shut down the server (flush all state to disk)\n4. Scan all files under local_data for the plaintext password and raw PAT value\n5. Assert neither appears anywhere on disk\n\nA simple content grep across all persisted files should be sufficient.\n\n**Motivation**\n\nThis came up during #2728 (SecretString migration). The SecretString wrapper prevents accidental leaks in logs and debug output, but doesn't guarantee the persistence layer always hashes before writing. A grep-based regression test would catch it if someone ever bypasses crypto::hash_password before state.apply().\n",
+  "hints_text": "@grainier thanks. do you want to do it?\nI'd like to work on this if that's okay.\n\n",
+  "all_hints_text": "@grainier thanks. do you want to do it?\nI'd like to work on this if that's okay.\n\n",
+  "commit_urls": [
+    "https://github.com/apache/iggy/commit/3b95b258c2bc51e5dcb0621851a6384e91dfe28a",
+    "https://github.com/apache/iggy/commit/1e12b63c05bbfdde62762cf71398b3e2aac6d85d",
+    "https://github.com/apache/iggy/commit/4064868ba4c69671e79086493b6c875b58b87db5",
+    "https://github.com/apache/iggy/commit/34d3017a2ef7245a10ea0074478511fd5d115173",
+    "https://github.com/apache/iggy/commit/102fa851f938f05cb86e250c864fda1e3930e8fb",
+    "https://github.com/apache/iggy/commit/f3c74a20add2e6bcabeead58332c5068fe38bc05",
+    "https://github.com/apache/iggy/commit/8f5fdaeef31ae1f259394780704647e87be705f2",
+    "https://github.com/apache/iggy/commit/2bbdb03f6233a39030b3cb7de761fd374e0b1a97",
+    "https://github.com/apache/iggy/commit/81454faf3a91ca3982105f168bf28cde789d959b"
+  ],
+  "created_at": "2026-03-16T14:50:33Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/apache/iggy/tree/07c9c7cca2c44a65dc4e22f7f4efae9d9f453035",
+  "setup_cmds": [
+    "apt-get update && apt-get install -y build-essential pkg-config libssl-dev libhwloc-dev libudev-dev ca-certificates curl  (exit code: 0)",
+    "cargo check  (exit code: 0)",
+    "cargo build  (exit code: 0)",
+    "cargo test  (exit code: 101)",
+    "rg -n \"io_uring|uring|io-uring|I/O uring|COMP\\\\w*IO|IGGY_.*URING|uring_enabled|io_uring_enabled|runtime.*uring|io_uring.*enabled\" core/server core/integration core/common core/configs  (exit code: 127)",
+    "apt-get update && apt-get install -y ripgrep  (exit code: 0)",
+    "rg -n \"io_uring|uring_enabled|io_uring_enabled|IGGY_.*URING|seccomp|Operation not permitted|Cannot create runtime\" core/server core/integration core/common core/configs  (exit code: 0)",
+    "sed -n '1,220p' core/server/src/main.rs  (exit code: 0)",
+    "rg -n \"COMPIO|compio.*env|runtime::Runtime::new\\\\(|io_uring\" core/server core  (exit code: 0)",
+    "cargo test --workspace --exclude integration  (exit code: 101)",
+    "cargo test --workspace --exclude integration --exclude server  (exit code: 0)",
+    "apt-get update && apt-get install -y build-essential pkg-config libssl-dev libhwloc-dev libudev-dev ca-certificates curl  (exit code: 0)",
+    "cargo check  (exit code: 0)",
+    "cargo build  (exit code: 0)",
+    "cargo test  (exit code: 101)",
+    "rg -n \"io_uring|uring|io-uring|I/O uring|COMP\\\\w*IO|IGGY_.*URING|uring_enabled|io_uring_enabled|runtime.*uring|io_uring.*enabled\" core/server core/integration core/common core/configs  (exit code: 127)",
+    "apt-get update && apt-get install -y ripgrep  (exit code: 0)",
+    "rg -n \"io_uring|uring_enabled|io_uring_enabled|IGGY_.*URING|seccomp|Operation not permitted|Cannot create runtime\" core/server core/integration core/common core/configs  (exit code: 0)",
+    "sed -n '1,220p' core/server/src/main.rs  (exit code: 0)",
+    "rg -n \"COMPIO|compio.*env|runtime::Runtime::new\\\\(|io_uring\" core/server core  (exit code: 0)",
+    "cargo test --workspace --exclude integration  (exit code: 101)",
+    "cargo test --workspace --exclude integration --exclude server  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo nextest run --workspace --exclude integration --exclude server",
+    "cargo test --workspace --exclude integration --exclude server -- --format json",
+    "cargo test -p bench-dashboard-frontend -- --list",
+    "cargo test --workspace --exclude integration --exclude server -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:apache__iggy-2945_linux"
+}

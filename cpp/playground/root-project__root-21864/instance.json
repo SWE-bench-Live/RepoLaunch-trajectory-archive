@@ -1,0 +1,58 @@
+{
+  "repo": "root-project/root",
+  "pull_number": 21864,
+  "instance_id": "root-project__root-21864",
+  "issue_numbers": [
+    21863
+  ],
+  "base_commit": "5fa71c8ecdecae4c1d0332087e67257a427d0cb9",
+  "patch": "diff --git a/io/io/src/TFileMerger.cxx b/io/io/src/TFileMerger.cxx\nindex 270515168ed96..fbc7bfbf24e5a 100644\n--- a/io/io/src/TFileMerger.cxx\n+++ b/io/io/src/TFileMerger.cxx\n@@ -661,6 +661,13 @@ Bool_t TFileMerger::MergeOne(TDirectory *target, TList *sourcelist, Int_t type,\n                if (!hobj) {\n                   TKey *key2 = (TKey*)ndir->GetListOfKeys()->FindObject(keyname);\n                   if (key2) {\n+                     if (strcmp(key2->GetClassName(), keyclassname) != 0) {\n+                        Error(\"MergeRecursive\",\n+                              \"Object type mismatch for key '%s' in file '%s': expected '%s' but found '%s'.\", keyname,\n+                              nextsource->GetName(), keyclassname, key2->GetClassName());\n+                        nextsource = (TFile *)sourcelist->After(nextsource);\n+                        return kFALSE;\n+                     }\n                      hobj = key2->ReadObj();\n                      if (!hobj) {\n                         switch (fErrBehavior) {\n",
+  "test_patch": "diff --git a/io/io/test/TFileMergerTests.cxx b/io/io/test/TFileMergerTests.cxx\nindex b32c6e321c3af..db58eedb1a209 100644\n--- a/io/io/test/TFileMergerTests.cxx\n+++ b/io/io/test/TFileMergerTests.cxx\n@@ -18,6 +18,8 @@\n \n #include \"gtest/gtest.h\"\n \n+#include <ROOT/TestSupport.hxx>\n+\n static void CreateATuple(TMemFile &file, const char *name, double value)\n {\n    auto mytree = new TTree(name, \"A tree\");\n@@ -396,3 +398,45 @@ TEST(TFileMerger, MergeSelectiveTutorial)\n       EXPECT_NE(file.Get<TNtuple>(\"ntuple\"), nullptr);\n    }\n }\n+\n+TEST(TFileMerger, TypeMismatchErrorTObjectWithNonTObject)\n+{\n+   struct PathRAII {\n+      std::string fPath;\n+      PathRAII(const char *path) : fPath(path) {}\n+      ~PathRAII() { std::remove(fPath.c_str()); }\n+   };\n+\n+   PathRAII input1(\"ErrorIfTypeMismatch_input1.root\");\n+   const auto objname{\"myobj\"};\n+   PathRAII input2(\"ErrorIfTypeMismatch_input2.root\");\n+   PathRAII outputfile(\"ErrorIfTypeMismatch_output.root\");\n+\n+   // Create two files with objects of different types, one must be a TObject-derived type and other a\n+   // non-TObject-derived type\n+   {\n+      auto f = std::make_unique<TFile>(input1.fPath.c_str(), \"RECREATE\");\n+      auto t = std::make_unique<TTree>(objname, objname);\n+      f->Write();\n+   }\n+\n+   {\n+      auto f = std::make_unique<TFile>(input2.fPath.c_str(), \"RECREATE\");\n+      std::vector<int> v{1, 2, 3};\n+      f->WriteObject(&v, objname);\n+   }\n+\n+   // Ensure that TFileMerger detects the type mismatch and errors out.\n+   {\n+      ROOT::TestSupport::CheckDiagsRAII diagRAII;\n+      diagRAII.requiredDiag(kError, \"TFileMerger::MergeRecursive\", \"expected 'TTree' but found 'vector<int>'\",\n+                            /*matchFullMessage*/ false);\n+      diagRAII.requiredDiag(kError, \"TFileMerger::Merge\", \"error during merge of your ROOT files\");\n+\n+      TFileMerger fm;\n+      fm.OutputFile(outputfile.fPath.c_str());\n+      fm.AddFile(input1.fPath.c_str(), /*cpProgress*/ false);\n+      fm.AddFile(input2.fPath.c_str(), /*cpProgress*/ false);\n+      fm.PartialMerge();\n+   }\n+}\n",
+  "problem_statement": "hadd does not perform type checks of objects to be merged\n### Check duplicate issues.\n\n- [ ] Checked for duplicates\n\n### Description\n\nThe TFileMerger logic implementing hadd retrieves an object with a name from the first input file, then looks for objects with the same name in the other input files. When trying to merge objects with the same name from the other input files, it does not perform any type checks, leading to merging of incompatible objects. Depending on the object type, this check may or may not be performed later on. For example:\n\n* if the first object is a TTree and following objects are all of derived types of TObject, then `TTree::Add` will run this check down the line\n* If the first object is a TObject-derived type and the other files have at least one non-TObject derived type, a segfault is always triggered because TFileMerger expects `key->ReadObj` to always return a true TObject-derived object.\n\nWith the reproducer below, I see the following on my machine:\n\n```\n===========================================================\n#30 0x000000002fbb4f80 in ?? ()\n#31 0x00007effcccccd45 in TFileMerger::MergeOne (this=0x7ffc2129ec60, target=0x2de9b1c0, sourcelist=0x7ffc2129ecb8, type=14, info=..., oldkeyname=\"\", allNames=..., status=\n0x7ffc2129e85f: true, onlyListed=\n0x7ffc2129e85e: false, path=\"\", current_sourcedir=0x2f8ddff0, current_file=0x2f8ddff0, key=0x2fb6cbd0, obj=0x2dedf9b0, nextkey=...) at /home/vpadulan/Programs/rootproject/root/io/io/src/TFileMerger.cxx:690\n#32 0x00007effcccce189 in TFileMerger::MergeRecursive (this=0x7ffc2129ec60, target=0x2de9b1c0, sourcelist=0x7ffc2129ecb8, type=14) at /home/vpadulan/Programs/rootproject/root/io/io/src/TFileMerger.cxx:922\n#33 0x00007effccccea23 in TFileMerger::PartialMerge (this=0x7ffc2129ec60, in_type=14) at /home/vpadulan/Programs/rootproject/root/io/io/src/TFileMerger.cxx:1018\n#34 0x0000000000400e79 in merge (outputfile=0x429e9d \"merged_ttree_rntuple.root\", input1=0x429e61 \"file_ttree.root\", input2=0x429e8f \"file_vec.root\") at merge_ttree_rntuple.cxx:55\n#35 0x0000000000400f35 in main () at merge_ttree_rntuple.cxx:70\n===========================================================\n```\n\n\n\n\n### Reproducer\n\n```cpp\nvoid write_ttree(const char *datasetname, const char *filename) {\n  auto f = std::make_unique<TFile>(filename, \"RECREATE\");\n  auto t = std::make_unique<TTree>(datasetname, datasetname);\n  f->Write();\n}\n\nvoid write_vec(const char *objname, const char *filename)\n{\n        // std::vector is just an example of a non-TObject\n        auto f = std::make_unique<TFile>(filename, \"RECREATE\");\n        std::vector<int> v{1,2,3,4,5};\n        f->WriteObject(&v, objname);\n}\n\nvoid merge(const char *outputfile, const char *input1, const char *input2) {\n  TFileMerger fm;\n  fm.OutputFile(outputfile);\n  fm.AddFile(input1, /*cpProgress*/ false);\n  fm.AddFile(input2, /*cpProgress*/ false);\n  fm.PartialMerge();\n}\n\nint main() {\n  const auto datasetname{\"dataset\"};\n  const auto treefile{\"file_ttree.root\"};\n  const auto vecfile{\"file_vec.root\"};\n  const auto outputfile{\"merged_ttree_rntuple.root\"};\n\n  write_ttree(datasetname, treefile);\n  write_vec(datasetname, vecfile);\n  merge(outputfile, treefile, vecfile);\n}\n```\n\n\n\n### ROOT version\n\nAny\n\n### Installation method\n\nAny\n\n### Operating system\n\nAny\n\n### Additional context\n\n_No response_\n",
+  "hints_text": "This is related (not sure if it is the same as) https://github.com/root-project/root/issues/21858\n\n",
+  "all_hints_text": "This is related (not sure if it is the same as) https://github.com/root-project/root/issues/21858\n\n",
+  "commit_urls": [
+    "https://github.com/root-project/root/commit/1f70bda2234224622bc5e4800abdb87add12f698"
+  ],
+  "created_at": "2026-04-09T13:10:44Z",
+  "language": "C++",
+  "commit_url": "https://github.com/root-project/root/tree/5fa71c8ecdecae4c1d0332087e67257a427d0cb9",
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -Dtesting=ON -Dminimal=ON -Dasimage=OFF -Dx11=OFF -Dopengl=OFF -Dpyroot=OFF -Dtmva=OFF -Droofit=OFF -Dmathmore=OFF  (exit code: 1)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -Dtesting=ON -Dminimal=ON -Dasimage=OFF -Dx11=OFF -Dopengl=OFF -Dpyroot=OFF -Dtmva=OFF -Droofit=OFF -Dmathmore=OFF -Dbuiltin_lz4=ON -Dbuiltin_lzma=ON -Dbuiltin_zstd=ON  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1 -- -v  (exit code: 1)",
+    "apt-get update && apt-get install -y liblz4-dev liblzma-dev libzstd-dev  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -Dtesting=ON -Dminimal=ON -Dasimage=OFF -Dx11=OFF -Dopengl=OFF -Dpyroot=OFF -Dtmva=OFF -Droofit=OFF -Dmathmore=OFF -Dbuiltin_lz4=OFF -Dbuiltin_lzma=OFF -Dbuiltin_zstd=OFF  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1  (exit code: 124)",
+    "cmake --build build --parallel 1  (exit code: 124)",
+    "grep -n \"cling\" -n cmake/modules/RootBuildOptions.cmake | head -n 40  (exit code: 0)",
+    "grep -n \"ROOT_BUILD_OPTION(.*cling\" -n cmake/modules/RootBuildOptions.cmake  (exit code: 0)",
+    "grep -n \"ROOT_BUILD_OPTION(.*clang\" -n cmake/modules/RootBuildOptions.cmake  (exit code: 0)",
+    "cmake --build build --parallel 2  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -Dtesting=ON -Dminimal=ON -Dasimage=OFF -Dx11=OFF -Dopengl=OFF -Dpyroot=OFF -Dtmva=OFF -Droofit=OFF -Dmathmore=OFF  (exit code: 1)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -Dtesting=ON -Dminimal=ON -Dasimage=OFF -Dx11=OFF -Dopengl=OFF -Dpyroot=OFF -Dtmva=OFF -Droofit=OFF -Dmathmore=OFF -Dbuiltin_lz4=ON -Dbuiltin_lzma=ON -Dbuiltin_zstd=ON  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1 -- -v  (exit code: 1)",
+    "apt-get update && apt-get install -y liblz4-dev liblzma-dev libzstd-dev  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -Dtesting=ON -Dminimal=ON -Dasimage=OFF -Dx11=OFF -Dopengl=OFF -Dpyroot=OFF -Dtmva=OFF -Droofit=OFF -Dmathmore=OFF -Dbuiltin_lz4=OFF -Dbuiltin_lzma=OFF -Dbuiltin_zstd=OFF  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1  (exit code: 124)",
+    "cmake --build build --parallel 1  (exit code: 124)",
+    "grep -n \"cling\" -n cmake/modules/RootBuildOptions.cmake | head -n 40  (exit code: 0)",
+    "grep -n \"ROOT_BUILD_OPTION(.*cling\" -n cmake/modules/RootBuildOptions.cmake  (exit code: 0)",
+    "grep -n \"ROOT_BUILD_OPTION(.*clang\" -n cmake/modules/RootBuildOptions.cmake  (exit code: 0)",
+    "cmake --build build --parallel 2  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "ctest --test-dir build -V"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:root-project__root-21864_linux"
+}

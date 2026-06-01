@@ -1,0 +1,61 @@
+{
+  "repo": "Azure/azure-sdk-for-net",
+  "pull_number": 57842,
+  "instance_id": "Azure__azure-sdk-for-net-57842",
+  "issue_numbers": [
+    54717
+  ],
+  "base_commit": "22e0451be080297a886b859c74217f74600c73c1",
+  "patch": "diff --git a/eng/packages/http-client-csharp-mgmt/emitter/src/emitter.ts b/eng/packages/http-client-csharp-mgmt/emitter/src/emitter.ts\nindex 2cf0aef7293f..c71d5db59cdb 100644\n--- a/eng/packages/http-client-csharp-mgmt/emitter/src/emitter.ts\n+++ b/eng/packages/http-client-csharp-mgmt/emitter/src/emitter.ts\n@@ -12,7 +12,10 @@ import {\n } from \"./sdk-context-options.js\";\n import { updateClients } from \"./resource-detection.js\";\n import { DecoratorInfo } from \"@azure-tools/typespec-client-generator-core\";\n-import { AzureMgmtEmitterOptions } from \"./options.js\";\n+import {\n+  AzureMgmtEmitterOptions,\n+  filterSuppressedDiagnostics\n+} from \"./options.js\";\n import { transformSubscriptionIdParameters } from \"./subscription-id-transformer.js\";\n import {\n   deduplicateApiVersionEnums,\n@@ -25,7 +28,7 @@ export async function $onEmit(context: EmitContext<AzureMgmtEmitterOptions>) {\n   context.options[\"sdk-context-options\"] ??= azureSDKContextOptions;\n   context.options[\"model-namespace\"] ??= true;\n   const [, diagnostics] = await emitAzureCodeModel(context, updateCodeModel);\n-  context.program.reportDiagnostics(diagnostics);\n+  context.program.reportDiagnostics(filterSuppressedDiagnostics(diagnostics));\n \n   function updateCodeModel(\n     codeModel: CodeModel,\ndiff --git a/eng/packages/http-client-csharp-mgmt/emitter/src/options.ts b/eng/packages/http-client-csharp-mgmt/emitter/src/options.ts\nindex 098eb84405ca..e1fbe752b968 100644\n--- a/eng/packages/http-client-csharp-mgmt/emitter/src/options.ts\n+++ b/eng/packages/http-client-csharp-mgmt/emitter/src/options.ts\n@@ -5,7 +5,29 @@ import {\n   AzureEmitterOptions,\n   AzureEmitterOptionsSchema\n } from \"@azure-typespec/http-client-csharp\";\n-import { JSONSchemaType } from \"@typespec/compiler\";\n+import { Diagnostic, JSONSchemaType } from \"@typespec/compiler\";\n+\n+/**\n+ * Upstream diagnostic codes that are not meaningful for management plane code generation\n+ * and should be suppressed to avoid noisy output.\n+ */\n+export const suppressedUpstreamDiagnosticCodes: ReadonlySet<string> = new Set([\n+  // TCGC reports this for generic decorator arguments, which don't affect mgmt plane codegen\n+  \"@azure-tools/typespec-client-generator-core/unsupported-generic-decorator-arg-type\",\n+  // Base emitter reports this for PATCH convenience methods, which mgmt plane doesn't use\n+  \"@typespec/http-client-csharp/unsupported-patch-convenience-method\"\n+]);\n+\n+/**\n+ * Filters out upstream diagnostics that are not meaningful for management plane.\n+ */\n+export function filterSuppressedDiagnostics(\n+  diagnostics: readonly Diagnostic[]\n+): readonly Diagnostic[] {\n+  return diagnostics.filter(\n+    (d) => !suppressedUpstreamDiagnosticCodes.has(d.code)\n+  );\n+}\n \n export interface AzureMgmtEmitterOptions extends AzureEmitterOptions {\n   \"enable-wire-path-attribute\"?: boolean;\n",
+  "test_patch": "diff --git a/eng/packages/http-client-csharp-mgmt/emitter/test/diagnostic-filter.test.ts b/eng/packages/http-client-csharp-mgmt/emitter/test/diagnostic-filter.test.ts\nnew file mode 100644\nindex 000000000000..040228ed6ff3\n--- /dev/null\n+++ b/eng/packages/http-client-csharp-mgmt/emitter/test/diagnostic-filter.test.ts\n@@ -0,0 +1,123 @@\n+import { Diagnostic, NoTarget } from \"@typespec/compiler\";\n+import { describe, it } from \"vitest\";\n+import { strictEqual, deepStrictEqual } from \"assert\";\n+import {\n+  filterSuppressedDiagnostics,\n+  suppressedUpstreamDiagnosticCodes\n+} from \"../src/options.js\";\n+\n+function createDiagnostic(code: string): Diagnostic {\n+  return {\n+    code,\n+    severity: \"warning\",\n+    message: `Test diagnostic: ${code}`,\n+    target: NoTarget\n+  };\n+}\n+\n+describe(\"Diagnostic filtering\", () => {\n+  it(\"filters out suppressed TCGC diagnostic\", () => {\n+    const diagnostics: Diagnostic[] = [\n+      createDiagnostic(\n+        \"@azure-tools/typespec-client-generator-core/unsupported-generic-decorator-arg-type\"\n+      )\n+    ];\n+    const result = filterSuppressedDiagnostics(diagnostics);\n+    strictEqual(result.length, 0);\n+  });\n+\n+  it(\"filters out suppressed patch convenience method diagnostic\", () => {\n+    const diagnostics: Diagnostic[] = [\n+      createDiagnostic(\n+        \"@typespec/http-client-csharp/unsupported-patch-convenience-method\"\n+      )\n+    ];\n+    const result = filterSuppressedDiagnostics(diagnostics);\n+    strictEqual(result.length, 0);\n+  });\n+\n+  it(\"preserves non-suppressed diagnostics\", () => {\n+    const diagnostics: Diagnostic[] = [\n+      createDiagnostic(\"some-library/some-other-warning\"),\n+      createDiagnostic(\n+        \"@azure-typespec/http-client-csharp-mgmt/malformed-resource-detected\"\n+      )\n+    ];\n+    const result = filterSuppressedDiagnostics(diagnostics);\n+    strictEqual(result.length, 2);\n+    deepStrictEqual(\n+      result.map((d) => d.code),\n+      [\n+        \"some-library/some-other-warning\",\n+        \"@azure-typespec/http-client-csharp-mgmt/malformed-resource-detected\"\n+      ]\n+    );\n+  });\n+\n+  it(\"filters suppressed diagnostics while preserving others\", () => {\n+    const diagnostics: Diagnostic[] = [\n+      createDiagnostic(\"some-library/important-warning\"),\n+      createDiagnostic(\n+        \"@azure-tools/typespec-client-generator-core/unsupported-generic-decorator-arg-type\"\n+      ),\n+      createDiagnostic(\n+        \"@azure-typespec/http-client-csharp-mgmt/malformed-resource-detected\"\n+      ),\n+      createDiagnostic(\n+        \"@typespec/http-client-csharp/unsupported-patch-convenience-method\"\n+      )\n+    ];\n+    const result = filterSuppressedDiagnostics(diagnostics);\n+    strictEqual(result.length, 2);\n+    deepStrictEqual(\n+      result.map((d) => d.code),\n+      [\n+        \"some-library/important-warning\",\n+        \"@azure-typespec/http-client-csharp-mgmt/malformed-resource-detected\"\n+      ]\n+    );\n+  });\n+\n+  it(\"returns empty array when all diagnostics are suppressed\", () => {\n+    const diagnostics: Diagnostic[] = [\n+      createDiagnostic(\n+        \"@azure-tools/typespec-client-generator-core/unsupported-generic-decorator-arg-type\"\n+      ),\n+      createDiagnostic(\n+        \"@typespec/http-client-csharp/unsupported-patch-convenience-method\"\n+      )\n+    ];\n+    const result = filterSuppressedDiagnostics(diagnostics);\n+    strictEqual(result.length, 0);\n+  });\n+\n+  it(\"returns all diagnostics when none are suppressed\", () => {\n+    const diagnostics: Diagnostic[] = [\n+      createDiagnostic(\"lib-a/warning-1\"),\n+      createDiagnostic(\"lib-b/warning-2\")\n+    ];\n+    const result = filterSuppressedDiagnostics(diagnostics);\n+    strictEqual(result.length, 2);\n+  });\n+\n+  it(\"handles empty diagnostics array\", () => {\n+    const result = filterSuppressedDiagnostics([]);\n+    strictEqual(result.length, 0);\n+  });\n+\n+  it(\"suppressed codes set contains expected entries\", () => {\n+    strictEqual(\n+      suppressedUpstreamDiagnosticCodes.has(\n+        \"@azure-tools/typespec-client-generator-core/unsupported-generic-decorator-arg-type\"\n+      ),\n+      true\n+    );\n+    strictEqual(\n+      suppressedUpstreamDiagnosticCodes.has(\n+        \"@typespec/http-client-csharp/unsupported-patch-convenience-method\"\n+      ),\n+      true\n+    );\n+    strictEqual(suppressedUpstreamDiagnosticCodes.size, 2);\n+  });\n+});\n",
+  "problem_statement": "[Azure Mgmt Generator] Disable some meaningless upstream diagnostic warnings\nOur upstream has some warning diagnostics, such as `@azure-tools/typespec-client-generator-core/unsupported-generic-decorator-arg-type` from TCGC, `@typespec/http-client-csharp/unsupported-patch-convenience-method` from Azure Generator.\n\nThey do not really cause a thing in mgmt plane's generated code, therefore they are just spamming the output right now.\n\nWe should find a way to filter those diagnostics out.\n",
+  "hints_text": "We should do this after [this issue](https://github.com/Azure/azure-sdk-for-net/issues/54788) is resolved\n\n",
+  "all_hints_text": "We should do this after [this issue](https://github.com/Azure/azure-sdk-for-net/issues/54788) is resolved\n\n",
+  "commit_urls": [
+    "https://github.com/Azure/azure-sdk-for-net/commit/1b63a0150147b596d00dfa2f03cb690576aac092",
+    "https://github.com/Azure/azure-sdk-for-net/commit/676915732456d67e1a629ae4d62e2b7d2f38254e",
+    "https://github.com/Azure/azure-sdk-for-net/commit/86514033fc1c66a19d4f168c023fd09e0a3bea92"
+  ],
+  "created_at": "2026-04-07T02:42:03Z",
+  "language": "C#",
+  "commit_url": "https://github.com/Azure/azure-sdk-for-net/tree/22e0451be080297a886b859c74217f74600c73c1",
+  "setup_cmds": [
+    "find . -maxdepth 4 -name \"*Tests.csproj\" | head -n 5  (exit code: 0)",
+    "find . -maxdepth 8 -name \"*Tests.csproj\" | head -n 5  (exit code: 0)",
+    "dotnet restore ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj  (exit code: 0)",
+    "dotnet build ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj  (exit code: 1)",
+    "npm ci  (exit code: 127)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y nodejs npm  (exit code: 0)",
+    "npm ci  (exit code: 0)",
+    "cd eng/packages/http-client-csharp && npm run build  (exit code: 127)",
+    "cd eng/packages/http-client-csharp && npm ci  (exit code: 1)",
+    "npm ci  (exit code: 0)",
+    "npm run build  (exit code: 0)",
+    "cd /testbed && dotnet build ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj  (exit code: 0)",
+    "dotnet test ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj  (exit code: 0)",
+    "find . -maxdepth 4 -name \"*Tests.csproj\" | head -n 5  (exit code: 0)",
+    "find . -maxdepth 8 -name \"*Tests.csproj\" | head -n 5  (exit code: 0)",
+    "dotnet restore ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj  (exit code: 0)",
+    "dotnet build ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj  (exit code: 1)",
+    "npm ci  (exit code: 127)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y nodejs npm  (exit code: 0)",
+    "npm ci  (exit code: 0)",
+    "cd eng/packages/http-client-csharp && npm run build  (exit code: 127)",
+    "cd eng/packages/http-client-csharp && npm ci  (exit code: 1)",
+    "npm ci  (exit code: 0)",
+    "npm run build  (exit code: 0)",
+    "cd /testbed && dotnet build ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj  (exit code: 0)",
+    "dotnet test ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "dotnet test ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj --logger \"console;verbosity=detailed\"",
+    "dotnet test ./eng/packages/http-client-csharp/generator/Azure.Generator/test/Azure.Generator.Tests.csproj --logger \"trx;LogFileName=generator-tests.trx\"",
+    "find . -name \"generator-tests.trx\" -o -name \"*.trx\" | head -n 5",
+    "cat ./eng/packages/http-client-csharp/generator/Azure.Generator/test/TestResults/generator-tests.trx"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:Azure__azure-sdk-for-net-57842_linux"
+}

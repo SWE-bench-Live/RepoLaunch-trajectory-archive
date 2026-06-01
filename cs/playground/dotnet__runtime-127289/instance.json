@@ -1,0 +1,48 @@
+{
+  "repo": "dotnet/runtime",
+  "pull_number": 127289,
+  "instance_id": "dotnet__runtime-127289",
+  "issue_numbers": [
+    127282
+  ],
+  "base_commit": "639aaa790ba81c5a10da20f44e1fbbdd1beb3480",
+  "patch": "diff --git a/docs/design/datacontracts/RuntimeInfo.md b/docs/design/datacontracts/RuntimeInfo.md\nindex c56dbc5a58fcf7..94d4245e8fc208 100644\n--- a/docs/design/datacontracts/RuntimeInfo.md\n+++ b/docs/design/datacontracts/RuntimeInfo.md\n@@ -21,6 +21,8 @@ public enum RuntimeInfoOperatingSystem : uint\n     Unknown = 0,\n     Win,\n     Unix,\n+    Browser,\n+    Apple,\n }\n ```\n \n@@ -50,6 +52,12 @@ Global variables used:\n The contract implementation returns the architecture and operating system global values parsed as the\n respective enum case-insensitively. If these globals are not available, the contract returns Unknown.\n \n+`Apple` covers all Apple platforms (macOS, iOS, tvOS, MacCatalyst) \u2014 i.e. any target where the\n+runtime is compiled with `TARGET_APPLE` defined. It is distinct from `Unix` so that consumers which\n+need to apply Apple-specific ABI or platform rules (for example, the Apple ARM64 stack-argument\n+alignment) can detect the target reliably. Apple platforms are still POSIX and will behave like\n+`Unix` for the purposes of any `GetTargetOperatingSystem() != Windows` check.\n+\n ### Reader versioning scheme\n \n When the .NET runtime team wants to signal that an update is recommended we update both the\ndiff --git a/src/coreclr/vm/datadescriptor/datadescriptor.inc b/src/coreclr/vm/datadescriptor/datadescriptor.inc\nindex be78f9c1bf6028..b7e13c1f8574db 100644\n--- a/src/coreclr/vm/datadescriptor/datadescriptor.inc\n+++ b/src/coreclr/vm/datadescriptor/datadescriptor.inc\n@@ -1311,6 +1311,11 @@ CDAC_GLOBALS_BEGIN()\n #error Handle 'Browser' define\n #endif // Browser\n CDAC_GLOBAL_STRING(OperatingSystem, Browser)\n+#elif defined(TARGET_APPLE)\n+#ifdef Apple\n+#error Handle 'Apple' define\n+#endif // Apple\n+CDAC_GLOBAL_STRING(OperatingSystem, Apple)\n #elif defined(TARGET_UNIX)\n #ifdef Unix\n #error Handle 'Unix' define\ndiff --git a/src/native/managed/cdac/Microsoft.Diagnostics.DataContractReader.Abstractions/Contracts/IRuntimeInfo.cs b/src/native/managed/cdac/Microsoft.Diagnostics.DataContractReader.Abstractions/Contracts/IRuntimeInfo.cs\nindex 42f567a60e9657..0f2dfe0615bd52 100644\n--- a/src/native/managed/cdac/Microsoft.Diagnostics.DataContractReader.Abstractions/Contracts/IRuntimeInfo.cs\n+++ b/src/native/managed/cdac/Microsoft.Diagnostics.DataContractReader.Abstractions/Contracts/IRuntimeInfo.cs\n@@ -27,6 +27,7 @@ public enum RuntimeInfoOperatingSystem : uint\n     Windows,\n     Unix,\n     Browser,\n+    Apple,\n }\n \n public interface IRuntimeInfo : IContract\n",
+  "test_patch": "diff --git a/src/native/managed/cdac/tests/DumpTests/RuntimeInfoDumpTests.cs b/src/native/managed/cdac/tests/DumpTests/RuntimeInfoDumpTests.cs\nindex 7a3517cb285ace..5faac6d4794b64 100644\n--- a/src/native/managed/cdac/tests/DumpTests/RuntimeInfoDumpTests.cs\n+++ b/src/native/managed/cdac/tests/DumpTests/RuntimeInfoDumpTests.cs\n@@ -52,7 +52,8 @@ public void RuntimeInfo_OperatingSystemMatchesDumpMetadata(TestConfiguration con\n         RuntimeInfoOperatingSystem expected = DumpMetadata.Os switch\n         {\n             \"windows\" => RuntimeInfoOperatingSystem.Windows,\n-            \"linux\" or \"osx\" or \"freebsd\" => RuntimeInfoOperatingSystem.Unix,\n+            \"osx\" => RuntimeInfoOperatingSystem.Apple,\n+            \"linux\" or \"freebsd\" => RuntimeInfoOperatingSystem.Unix,\n             _ => RuntimeInfoOperatingSystem.Unknown,\n         };\n \n",
+  "problem_statement": "[cDAC] CallingConventionInfo cannot distinguish Apple ARM64 from Linux ARM64\n## Description\n\n`CallingConventionInfo` (https://github.com/dotnet/runtime/pull/126408) in the cDAC cannot reliably distinguish Apple ARM64 (macOS/iOS) from Linux ARM64, because `RuntimeInfoOperatingSystem` only has `Unix` \u2014 which covers both platforms.\n\nApple ARM64 has different stack alignment rules than Linux ARM64 (Apple uses natural alignment for primitives and 4-byte alignment for float HFAs on the stack, while Linux uses 8-byte alignment for everything). Applying the wrong rules produces incorrect argument offset calculations in `ArgIterator`.\n\n## Current State\n\n`IsAppleArm64ABI` is hardcoded to `false` to avoid applying Apple-specific rules on Linux. This means Apple ARM64 stack layout may be slightly incorrect for value types passed on the stack.\n\n## Proposed Fix\n\nAdd a reliable Apple platform discriminator to `IRuntimeInfo` (or add a new global/data descriptor), such as:\n- `RuntimeInfoOperatingSystem.Apple` or `RuntimeInfoOperatingSystem.MacOS`\n- A boolean global `IsApplePlatform`\n- Inferring from the target's OS name string\n\nThen update `CallingConventionInfo` to set `IsAppleArm64ABI = true` only when the target is confirmed to be an Apple platform.\n\n## Files\n\n- `src/native/managed/cdac/Microsoft.Diagnostics.DataContractReader.Contracts/Contracts/StackWalk/CallingConvention/CallingConventionInfo.cs`\n- `src/native/managed/cdac/Microsoft.Diagnostics.DataContractReader.Abstractions/Contracts/IRuntimeInfo.cs`\n\n> [!NOTE]\n> This issue was created with AI assistance from Copilot.\n",
+  "hints_text": "Tagging subscribers to this area: @steveisok, @tommcdon, @dotnet/dotnet-diag\nSee info in [area-owners.md](https://github.com/dotnet/runtime/blob/main/docs/area-owners.md) if you want to be subscribed.\n<!-- Policy app identification https://img.shields.io/static/v1?label=PullRequestIssueManagement. -->\nTagging subscribers to this area: @steveisok, @tommcdon, @dotnet/dotnet-diag\nSee info in [area-owners.md](https://github.com/dotnet/runtime/blob/main/docs/area-owners.md) if you want to be subscribed.\n<!-- Policy app identification https://img.shields.io/static/v1?label=PullRequestIssueManagement. -->\n\n",
+  "all_hints_text": "Tagging subscribers to this area: @steveisok, @tommcdon, @dotnet/dotnet-diag\nSee info in [area-owners.md](https://github.com/dotnet/runtime/blob/main/docs/area-owners.md) if you want to be subscribed.\n<!-- Policy app identification https://img.shields.io/static/v1?label=PullRequestIssueManagement. -->\nTagging subscribers to this area: @steveisok, @tommcdon, @dotnet/dotnet-diag\nSee info in [area-owners.md](https://github.com/dotnet/runtime/blob/main/docs/area-owners.md) if you want to be subscribed.\n<!-- Policy app identification https://img.shields.io/static/v1?label=PullRequestIssueManagement. -->\n\n",
+  "commit_urls": [
+    "https://github.com/dotnet/runtime/commit/ead6745b53ac22c2a900fa28a485a8818a54ad91"
+  ],
+  "created_at": "2026-04-22T16:48:18Z",
+  "language": "C#",
+  "commit_url": "https://github.com/dotnet/runtime/tree/639aaa790ba81c5a10da20f44e1fbbdd1beb3480",
+  "setup_cmds": [
+    "dotnet --version  (exit code: 155)",
+    "./eng/common/dotnet.sh --use-monorepo-packages  (exit code: 1)",
+    "./eng/common/dotnet.sh --help  (exit code: 0)",
+    "export PATH=\"/testbed/.dotnet:$PATH\" && dotnet --version  (exit code: 0)",
+    "find . -maxdepth 2 -name \"*.sln\" -o -name \"*Tests*.csproj\"  (exit code: 0)",
+    "find . -name \"*.sln\" -o -name \"*Tests*.csproj\" | head -n 50  (exit code: 0)",
+    "sed -n '1,200p' src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj  (exit code: 0)",
+    "export PATH=\"/testbed/.dotnet:$PATH\" && dotnet restore src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj  (exit code: 0)",
+    "export PATH=\"/testbed/.dotnet:$PATH\" && dotnet build src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj -c Release  (exit code: 0)",
+    "export PATH=\"/testbed/.dotnet:$PATH\" && dotnet test src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj -c Release --no-build  (exit code: 0)",
+    "dotnet --version  (exit code: 155)",
+    "./eng/common/dotnet.sh --use-monorepo-packages  (exit code: 1)",
+    "./eng/common/dotnet.sh --help  (exit code: 0)",
+    "export PATH=\"/testbed/.dotnet:$PATH\" && dotnet --version  (exit code: 0)",
+    "find . -maxdepth 2 -name \"*.sln\" -o -name \"*Tests*.csproj\"  (exit code: 0)",
+    "find . -name \"*.sln\" -o -name \"*Tests*.csproj\" | head -n 50  (exit code: 0)",
+    "sed -n '1,200p' src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj  (exit code: 0)",
+    "export PATH=\"/testbed/.dotnet:$PATH\" && dotnet restore src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj  (exit code: 0)",
+    "export PATH=\"/testbed/.dotnet:$PATH\" && dotnet build src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj -c Release  (exit code: 0)",
+    "export PATH=\"/testbed/.dotnet:$PATH\" && dotnet test src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj -c Release --no-build  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "export PATH=\"/testbed/.dotnet:$PATH\" && dotnet test src/coreclr/tools/ILVerification.Tests/ILVerification.Tests.csproj -c Release --no-build --logger \"console;verbosity=detailed\""
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:dotnet__runtime-127289_linux"
+}

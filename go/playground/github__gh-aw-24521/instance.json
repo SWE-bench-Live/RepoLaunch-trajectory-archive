@@ -1,0 +1,49 @@
+{
+  "repo": "github/gh-aw",
+  "pull_number": 24521,
+  "instance_id": "github__gh-aw-24521",
+  "issue_numbers": [
+    24520
+  ],
+  "base_commit": "320bcb95444295569797ba1fb4ff4433139a96e8",
+  "patch": "diff --git a/pkg/cli/run_workflow_validation.go b/pkg/cli/run_workflow_validation.go\nindex b768065d8b9..a3fcc4d51c5 100644\n--- a/pkg/cli/run_workflow_validation.go\n+++ b/pkg/cli/run_workflow_validation.go\n@@ -147,7 +147,13 @@ func getWorkflowInputs(markdownPath string) (map[string]*workflow.InputDefinitio\n \t}\n \n \t// Parse input definitions\n-\treturn workflow.ParseInputDefinitions(inputsMap), nil\n+\tparsed := workflow.ParseInputDefinitions(inputsMap)\n+\n+\t// Remove aw_context from the returned inputs - it is an internal input managed by the\n+\t// agentic workflow system and should never be surfaced to users for prompting or display.\n+\tdelete(parsed, workflow.AwContextInputName)\n+\n+\treturn parsed, nil\n }\n \n // validateWorkflowInputs validates that required inputs are provided and checks for typos.\ndiff --git a/pkg/workflow/compiler_aw_context.go b/pkg/workflow/compiler_aw_context.go\nindex 2deef527917..b9167849679 100644\n--- a/pkg/workflow/compiler_aw_context.go\n+++ b/pkg/workflow/compiler_aw_context.go\n@@ -8,6 +8,10 @@ import (\n \n var awContextLog = logger.New(\"workflow:compiler_aw_context\")\n \n+// AwContextInputName is the name of the internal aw_context workflow_dispatch input.\n+// It is managed internally by the agentic workflow system and should not be surfaced to users.\n+const AwContextInputName = \"aw_context\"\n+\n // awContextInputDescription is the description for the aw_context workflow_dispatch input.\n // It signals to users that this input is managed internally by the agentic workflow system.\n const awContextInputDescription = \"Agent caller context (used internally by Agentic Workflows).\"\n@@ -27,7 +31,7 @@ func injectAwContextIntoOnYAML(onSection string) string {\n \t\treturn onSection\n \t}\n \t// Idempotency: skip if already injected\n-\tif strings.Contains(onSection, \"aw_context:\") {\n+\tif strings.Contains(onSection, AwContextInputName+\":\") {\n \t\tawContextLog.Print(\"aw_context already injected, skipping\")\n \t\treturn onSection\n \t}\n@@ -107,7 +111,7 @@ func buildAwContextInputLines(wdIndent int) []string {\n \tawIndent := strings.Repeat(\" \", wdIndent+4)   // under inputs:\n \tpropIndent := strings.Repeat(\" \", wdIndent+6) // properties of aw_context\n \treturn []string{\n-\t\tawIndent + \"aw_context:\",\n+\t\tawIndent + AwContextInputName + \":\",\n \t\tpropIndent + \"default: \\\"\\\"\",\n \t\tpropIndent + \"description: \" + awContextInputDescription,\n \t\tpropIndent + \"required: false\",\n",
+  "test_patch": "diff --git a/pkg/cli/run_workflow_validation_test.go b/pkg/cli/run_workflow_validation_test.go\nindex 8a34825fbd4..a78e31e820e 100644\n--- a/pkg/cli/run_workflow_validation_test.go\n+++ b/pkg/cli/run_workflow_validation_test.go\n@@ -199,6 +199,59 @@ jobs:\n \t\t\t},\n \t\t\texpectError: false,\n \t\t},\n+\t\t{\n+\t\t\tname:         \"workflow with aw_context input is filtered out\",\n+\t\t\tmarkdownFile: \"compiled-workflow.md\",\n+\t\t\tlockFileYAML: `name: \"Compiled Workflow\"\n+on:\n+  workflow_dispatch:\n+    inputs:\n+      aw_context:\n+        default: \"\"\n+        description: Agent caller context (used internally by Agentic Workflows).\n+        required: false\n+        type: string\n+      task:\n+        description: 'Task description'\n+        required: true\n+        type: string\n+permissions:\n+  contents: read\n+jobs:\n+  test:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: echo \"test\"\n+`,\n+\t\t\texpectedCount: 1, // aw_context should be filtered out, only 'task' remains\n+\t\t\texpectedReq: map[string]bool{\n+\t\t\t\t\"task\": true,\n+\t\t\t},\n+\t\t\texpectError: false,\n+\t\t},\n+\t\t{\n+\t\t\tname:         \"workflow with only aw_context input returns empty\",\n+\t\t\tmarkdownFile: \"aw-context-only.md\",\n+\t\t\tlockFileYAML: `name: \"AW Context Only\"\n+on:\n+  workflow_dispatch:\n+    inputs:\n+      aw_context:\n+        default: \"\"\n+        description: Agent caller context (used internally by Agentic Workflows).\n+        required: false\n+        type: string\n+permissions:\n+  contents: read\n+jobs:\n+  test:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - run: echo \"test\"\n+`,\n+\t\t\texpectedCount: 0, // aw_context is the only input and should be filtered out\n+\t\t\texpectError:   false,\n+\t\t},\n \t\t{\n \t\t\tname:         \"workflow with no inputs\",\n \t\t\tmarkdownFile: \"simple-workflow.md\",\n",
+  "problem_statement": "`gh aw add-wizard` asks for workflow inputs for `aw_context`\nTowards the end of the `gh aw add-wizard` sequence, the user is given the option of running the workflow\n\nThis causes the interactive sequence to ask for a value for the implicit `aw_context` input which the workflow doesn't actually define but which is really internal to GitHub Agentic Workflows.\n\n```\nUpdating local branch (this may take a few seconds)...\nFinished updating local branch.\n\n\u2139 Workflow: lean-squad\n\u2139\nWorkflow Inputs:\n  \u2022 aw_context - Agent caller context (used internally by Agentic Workflows).\n```\n\nThis shouldn't be done - because this is completely unknown to the user or workflow definition it should just be skipped and the workflow run directly.  Other inputs can be asked for.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/github/gh-aw/commit/e743c27ae1344635179037f0e0e39140ab919618",
+    "https://github.com/github/gh-aw/commit/3471e368a0019ed01b279286da237eaa81ecffc8"
+  ],
+  "created_at": "2026-04-04T16:20:32Z",
+  "language": "Go",
+  "commit_url": "https://github.com/github/gh-aw/tree/320bcb95444295569797ba1fb4ff4433139a96e8",
+  "setup_cmds": [
+    "go mod download  (exit code: 1)",
+    "GOTOOLCHAIN=auto go mod download  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 1)",
+    "apt-get update && apt-get install -y nodejs npm  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 1)",
+    "apt-get install -y gh  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 1)",
+    "curl -fsSL -o /tmp/gh.tar.gz https://github.com/cli/cli/releases/download/v2.57.0/gh_2.57.0_linux_amd64.tar.gz && tar -xzf /tmp/gh.tar.gz -C /tmp && mv /tmp/gh_2.57.0_linux_amd64/bin/gh /usr/local/bin/gh  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 1)",
+    "GOTOOLCHAIN=auto go mod download  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 1)",
+    "apt-get update && apt-get install -y nodejs npm  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 1)",
+    "apt-get install -y gh  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 1)",
+    "curl -fsSL -o /tmp/gh.tar.gz https://github.com/cli/cli/releases/download/v2.57.0/gh_2.57.0_linux_amd64.tar.gz && tar -xzf /tmp/gh.tar.gz -C /tmp && mv /tmp/gh_2.57.0_linux_amd64/bin/gh /usr/local/bin/gh  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "GOTOOLCHAIN=auto go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:github__gh-aw-24521_linux"
+}

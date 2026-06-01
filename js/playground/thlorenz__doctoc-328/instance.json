@@ -1,0 +1,38 @@
+{
+  "repo": "thlorenz/doctoc",
+  "pull_number": 328,
+  "instance_id": "thlorenz__doctoc-328",
+  "issue_numbers": [
+    120
+  ],
+  "base_commit": "6393281f839d1585d752f802b25fc28ded2e1ba1",
+  "patch": "diff --git a/lib/get-html-headers.js b/lib/get-html-headers.js\nindex 0c1077be..e3b5786b 100644\n--- a/lib/get-html-headers.js\n+++ b/lib/get-html-headers.js\n@@ -28,7 +28,7 @@ function addLinenos(lines, headers) {\n function rankify(headers, max, min) {\n   return headers\n     .map(function (x) {\n-      x.rank = parseInt(x.tag.slice(1), 10);\n+      x.rank = parseInt(x.tagName.slice(1), 10);\n       return x;\n     })\n     .filter(function (x) {\n@@ -48,7 +48,8 @@ var go = (module.exports = function (lines, maxHeaderLevel, minHeaderLevel) {\n     .join(\"\\n\");\n \n   //var headers = [], grabbing = null, text = [];\n-  var headers = [],\n+  var currentLine = 1,\n+    headers = [],\n     grabbing = [],\n     text = [];\n \n@@ -56,24 +57,35 @@ var go = (module.exports = function (lines, maxHeaderLevel, minHeaderLevel) {\n     {\n       onopentag: function (name, attr) {\n         // Short circuit if we're already inside a pre\n-        if (grabbing[grabbing.length - 1] === \"pre\") return;\n+        if (grabbing[grabbing.length - 1]?.tagName === \"pre\") return;\n \n         if (name === \"pre\" || /h\\d/.test(name)) {\n-          grabbing.push(name);\n+          grabbing.push({ tagName: name, line: currentLine });\n         }\n       },\n       ontext: function (text_) {\n+        // Count newlines\n+        let newlines = text_.match(/\\n/g);\n+        if (newlines) currentLine += newlines.length;\n+\n         // Explicitly skip pre tags, and implicitly skip all others\n-        if (grabbing.length === 0 || grabbing[grabbing.length - 1] === \"pre\")\n+        if (grabbing.length === 0 || grabbing[grabbing.length - 1].tagName === \"pre\")\n           return;\n \n-        text.push(text_);\n+        // Only accept text on the SAME LINE as the opening <hX> otherwise discard it\n+        let top = grabbing[grabbing.length - 1];\n+        if (currentLine === top.line) {\n+          text.push(text_);\n+        }\n+        else{\n+          grabbing.pop();\n+        }\n       },\n       onclosetag: function (name) {\n         if (grabbing.length === 0) return;\n-        if (grabbing[grabbing.length - 1] === name) {\n+        if (grabbing[grabbing.length - 1].tagName === name) {\n           var tag = grabbing.pop();\n-          headers.push({ text: text, tag: tag });\n+          headers.push({ text: text, tagName: tag.tagName });\n           text = [];\n         }\n       },\n",
+  "test_patch": "diff --git a/test/fixtures/readme-with-hX.md b/test/fixtures/readme-with-hX.md\nnew file mode 100644\nindex 00000000..26670316\n--- /dev/null\n+++ b/test/fixtures/readme-with-hX.md\n@@ -0,0 +1,25 @@\n+<!-- START doctoc -->\n+<!-- END doctoc -->\n+\n+# Hello, world!\n+\n+This readme contains `<h2>` and <h3> html tags. When the heading tags are not open and closed on the same line, they are not considered titles for the TOC. \n+For ones that are open and closed on the same line, they are included in the TOC.\n+\n+`<h2>`This is invalid `</h2>`\n+\n+when it is embeded <h2>This remains invalid </h2> due to being embeded and detected as a raw text node\n+\n+<h2>Random2\n+\n+Close </h2>\n+\n+<h3>Random3\n+\n+<h3>Random4\n+\n+## Installation\n+\n+<h2><b>API</b></h2>\n+\n+## License\ndiff --git a/test/transform.js b/test/transform.js\nindex e1d1b8b3..0feebfbd 100644\n--- a/test/transform.js\n+++ b/test/transform.js\n@@ -779,3 +779,21 @@ test('\\nduplicate titles but with different symbols', function (t) {\n \n   t.end()\n })\n+\n+test('\\nignores the hX which is in the content on or a different line', function (t) {\n+  var content = require('fs').readFileSync(__dirname + '/fixtures/readme-with-hX.md', 'utf8');\n+  var headers = transform(content, 'github.com', 8);\n+\n+  t.same(\n+      headers.toc.split('\\n')\n+    , [ '',\n+        '- [Hello, world!](#hello-world)',\n+        '  - [Installation](#installation)',\n+        '  - [API](#api)',\n+        '  - [License](#license)',\n+        '' ]\n+    , 'generates correct toc for non html and html headers'\n+  )\n+\n+  t.end()\n+})\n",
+  "problem_statement": "Invalid Regular Expression with `h#`\nThe following README file produces an error:\n\n```\nThis readme causes an error `<p>` text  `<h1>` more text (`</p>`)\n```\n\nHowever, when the \"h\" is removed, the code runs just fine. Here is the error log:\n\n```\n/usr/local/lib/node_modules/doctoc/lib/get-html-headers.js:11\n      if (new RegExp(x.text[0]).test(line)) {\n          ^\nSyntaxError: Invalid regular expression: /` element tells the rendering program that the content inside is a form.\n\nThe end tag is just like the start tag except that it has a forward slash added just after the less-than sign (`/: Unterminated group\n    at new RegExp (native)\n    at /usr/local/lib/node_modules/doctoc/lib/get-html-headers.js:11:11\n    at Array.map (native)\n    at addLinenos (/usr/local/lib/node_modules/doctoc/lib/get-html-headers.js:8:18)\n    at module.exports (/usr/local/lib/node_modules/doctoc/lib/get-html-headers.js:66:13)\n    at transform (/usr/local/lib/node_modules/doctoc/lib/transform.js:123:13)\n    at /usr/local/lib/node_modules/doctoc/doctoc.js:25:20\n    at Array.map (native)\n    at transformAndSave (/usr/local/lib/node_modules/doctoc/doctoc.js:23:6)\n    at Object.<anonymous> (/usr/local/lib/node_modules/doctoc/doctoc.js:100:3)\n```\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/thlorenz/doctoc/commit/bb6ae4ccfe9c90e389a5ed2b4f7f8d3068b7a1e0",
+    "https://github.com/thlorenz/doctoc/commit/d57a0ff2ee379b9b0b0e9218cee19603209fb19d",
+    "https://github.com/thlorenz/doctoc/commit/497835fb967d4675b97d6b099867658c05d51bdd",
+    "https://github.com/thlorenz/doctoc/commit/4d1cf234c1fc4f8ead2d2659b8a31343747e3b34",
+    "https://github.com/thlorenz/doctoc/commit/3e7cc2857788ce5d7767e08999061fb4644a0469",
+    "https://github.com/thlorenz/doctoc/commit/5dfb4ae55a2058a24629330eb239aaee29fc67b4",
+    "https://github.com/thlorenz/doctoc/commit/397d884c8cb37df74d60ecd67f33ddb6cd5d2695"
+  ],
+  "created_at": "2026-03-13T04:30:10Z",
+  "language": "JavaScript",
+  "commit_url": "https://github.com/thlorenz/doctoc/tree/6393281f839d1585d752f802b25fc28ded2e1ba1",
+  "setup_cmds": [
+    "npm install  (exit code: 0)",
+    "npm test  (exit code: 0)",
+    "npm install  (exit code: 0)",
+    "npm test  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "npm test -- --reporter=tap"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:thlorenz__doctoc-328_linux"
+}

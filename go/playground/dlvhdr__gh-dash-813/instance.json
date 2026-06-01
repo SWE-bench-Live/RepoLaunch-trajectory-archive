@@ -1,0 +1,34 @@
+{
+  "repo": "dlvhdr/gh-dash",
+  "pull_number": 813,
+  "instance_id": "dlvhdr__gh-dash-813",
+  "issue_numbers": [
+    811
+  ],
+  "base_commit": "0fea609e645eaed394ccbc0c9476fdadd1bd1639",
+  "patch": "diff --git a/internal/tui/components/detailedit/controller.go b/internal/tui/components/detailedit/controller.go\nindex d86fec51..a47b7a41 100644\n--- a/internal/tui/components/detailedit/controller.go\n+++ b/internal/tui/components/detailedit/controller.go\n@@ -201,6 +201,14 @@ func (c Controller) Update(msg tea.Msg) (Controller, tea.Cmd, *Submit, bool) {\n \t)\n \n \tswitch msg := msg.(type) {\n+\tcase tea.PasteMsg:\n+\t\tif c.Active() {\n+\t\t\tc.inputBox, taCmd = c.inputBox.Update(msg)\n+\t\t\tcmds = append(cmds, taCmd)\n+\t\t\treturn c, tea.Batch(cmds...), nil, true\n+\t\t}\n+\t\treturn c, nil, nil, false\n+\n \tcase RepoLabelsFetchedMsg:\n \t\tc.repoLabels = msg.Labels\n \t\tc.ac.SetSuggestions(labelSuggestions(msg.Labels))\n",
+  "test_patch": "diff --git a/internal/tui/components/detailedit/controller_test.go b/internal/tui/components/detailedit/controller_test.go\nindex cafc2b70..a826d26d 100644\n--- a/internal/tui/components/detailedit/controller_test.go\n+++ b/internal/tui/components/detailedit/controller_test.go\n@@ -338,3 +338,56 @@ func TestUnassignModeDoesNotUseAutocomplete(t *testing.T) {\n \n \trequire.False(t, c.usesAutocomplete())\n }\n+\n+func TestPasteInCommentMode(t *testing.T) {\n+\tdata.ClearUserCache()\n+\tc := newTestController(t)\n+\tc, _ = c.Enter(EnterOptions{\n+\t\tMode:                             ModeComment,\n+\t\tPrompt:                           \"comment\",\n+\t\tSource:                           dataautocomplete.UserMentionSource{},\n+\t\tRepo:                             testRepo(),\n+\t\tSuggestionKind:                   SuggestionUsers,\n+\t\tEnterFetch:                       FetchNone,\n+\t\tConfirmDiscardOnCancel:           true,\n+\t\tHideAutocompleteWhenContextEmpty: true,\n+\t})\n+\n+\tmsg := tea.PasteMsg{Content: \"pasted text\"}\n+\tc, _, _, handled := c.Update(msg)\n+\n+\trequire.True(t, handled)\n+\trequire.Contains(t, c.inputBox.Value(), \"pasted text\",\n+\t\t\"pasted text should appear in the inputbox\")\n+}\n+\n+func TestPasteInAssignMode(t *testing.T) {\n+\tdata.ClearUserCache()\n+\tc := newTestController(t)\n+\tc, _ = c.Enter(EnterOptions{\n+\t\tMode:                             ModeAssign,\n+\t\tPrompt:                           \"assign\",\n+\t\tSource:                           dataautocomplete.WhitespaceSource{},\n+\t\tRepo:                             testRepo(),\n+\t\tSuggestionKind:                   SuggestionUsers,\n+\t\tEnterFetch:                       FetchNone,\n+\t\tHideAutocompleteWhenContextEmpty: false,\n+\t})\n+\n+\tmsg := tea.PasteMsg{Content: \"alice bob\"}\n+\tc, _, _, handled := c.Update(msg)\n+\n+\trequire.True(t, handled)\n+\trequire.Contains(t, c.inputBox.Value(), \"alice bob\",\n+\t\t\"pasted text should appear in the inputbox during assignment\")\n+}\n+\n+func TestPasteIgnoredWhenInactive(t *testing.T) {\n+\tc := newTestController(t)\n+\n+\tmsg := tea.PasteMsg{Content: \"should not appear\"}\n+\t_, _, _, handled := c.Update(msg)\n+\n+\trequire.False(t, handled,\n+\t\t\"paste should not be handled when controller is inactive\")\n+}\n",
+  "problem_statement": "[BUG] No longer can paste in inputbox\n**Describe the bug**\nThe comment `inputbox` of `prview` and `issueview` no longer receive pasted text.\n\n**To Reproduce**\nSteps to reproduce the behavior:\n\n1. Build from main (or the Bubble Tea v2 commit also has the bug)\n2. Open gh-dash in a project with issues/prs\n3. Press `c` to open the comment input box\n4. Copy `this should paste into gh-dash` (or any other text) and paste into the inputbox with `ctrl+shift+c`\n5. Observe the text does not paste\n\n**Expected behavior**\n`this should paste into gh-dash` should show in the input box after pasting\n\n**Screenshots**\n<video src=\"https://github.com/user-attachments/assets/0d116064-71ba-4d85-8bd0-fd6f7c0eae8b\">Unable to load video</video>\n\n**Desktop (please complete the following information):**\n\n- OS: Linux and Mac\n- Terminal Emulator: Ghostty\n- Using tmux? No\n\n",
+  "hints_text": "I looked into this a bit and so far it seems the likely cause is just that bubbletea v2 is handling paste differently\u00a0\u2013 in a way that\u2019s not backward-compatible. Anyway, I\u2019ll make time to look more.\nOK, I\u2019ve got a fix for this. The `Update()` method needs to have a bubbletea `PasteMsg` case. I just need to write some tests to go along with that fix. But in the meantime, you can try it:\n\n```diff\ndiff --git a/internal/tui/components/prview/prview.go b/internal/tui/components/prview/prview.go\nindex 7117e0f..b64948f 100644\n--- a/internal/tui/components/prview/prview.go\n+++ b/internal/tui/components/prview/prview.go\n@@ -80,6 +80,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {\n \t)\n \n \tswitch msg := msg.(type) {\n+\tcase tea.PasteMsg:\n+\t\tif m.IsTextInputBoxFocused() {\n+\t\t\tm.inputBox, taCmd = m.inputBox.Update(msg)\n+\t\t\tcmds = append(cmds, taCmd)\n+\t\t}\n+\n \tcase tea.KeyMsg:\n \t\tif m.isCommenting {\n \t\t\tswitch msg.String() {\n```\n\n",
+  "all_hints_text": "I looked into this a bit and so far it seems the likely cause is just that bubbletea v2 is handling paste differently\u00a0\u2013 in a way that\u2019s not backward-compatible. Anyway, I\u2019ll make time to look more.\nOK, I\u2019ve got a fix for this. The `Update()` method needs to have a bubbletea `PasteMsg` case. I just need to write some tests to go along with that fix. But in the meantime, you can try it:\n\n```diff\ndiff --git a/internal/tui/components/prview/prview.go b/internal/tui/components/prview/prview.go\nindex 7117e0f..b64948f 100644\n--- a/internal/tui/components/prview/prview.go\n+++ b/internal/tui/components/prview/prview.go\n@@ -80,6 +80,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {\n \t)\n \n \tswitch msg := msg.(type) {\n+\tcase tea.PasteMsg:\n+\t\tif m.IsTextInputBoxFocused() {\n+\t\t\tm.inputBox, taCmd = m.inputBox.Update(msg)\n+\t\t\tcmds = append(cmds, taCmd)\n+\t\t}\n+\n \tcase tea.KeyMsg:\n \t\tif m.isCommenting {\n \t\t\tswitch msg.String() {\n```\n\n",
+  "commit_urls": [
+    "https://github.com/dlvhdr/gh-dash/commit/1b78b4e40ba7f70c24fe170533da2057ad3080a6"
+  ],
+  "created_at": "2026-03-25T03:47:35Z",
+  "language": "Go",
+  "commit_url": "https://github.com/dlvhdr/gh-dash/tree/0fea609e645eaed394ccbc0c9476fdadd1bd1639",
+  "setup_cmds": [
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:dlvhdr__gh-dash-813_linux"
+}

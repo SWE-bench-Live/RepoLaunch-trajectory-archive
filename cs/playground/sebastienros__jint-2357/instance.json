@@ -1,0 +1,54 @@
+{
+  "repo": "sebastienros/jint",
+  "pull_number": 2357,
+  "instance_id": "sebastienros__jint-2357",
+  "issue_numbers": [
+    2355
+  ],
+  "base_commit": "4772626f7a0de7776b3553d01a87ddd7c4f73463",
+  "patch": "diff --git a/Jint/Native/Date/DatePrototype.cs b/Jint/Native/Date/DatePrototype.cs\nindex bb4bcc2a15..cd4503a34a 100644\n--- a/Jint/Native/Date/DatePrototype.cs\n+++ b/Jint/Native/Date/DatePrototype.cs\n@@ -1295,8 +1295,14 @@ private DatePresentation LocalTime(DatePresentation t)\n \n     internal DatePresentation Utc(DatePresentation t)\n     {\n+        // t represents local time encoded as epoch milliseconds. GetUtcOffset treats\n+        // its argument as a UTC instant, so a single-pass conversion uses the wrong\n+        // DST offset near transitions. Use a two-pass approach matching the ES spec's\n+        // UTC(t): first estimate UTC, then get the correct offset at that UTC instant.\n         var offset = _timeSystem.GetUtcOffset(t.Value).TotalMilliseconds;\n-        return t - offset;\n+        var estimatedUtc = (t - offset).Value;\n+        var refinedOffset = _timeSystem.GetUtcOffset(estimatedUtc).TotalMilliseconds;\n+        return t - refinedOffset;\n     }\n \n     private static int HourFromTime(DatePresentation t)\ndiff --git a/Jint/Runtime/DefaultTimeSystem.cs b/Jint/Runtime/DefaultTimeSystem.cs\nindex d65af73b11..3715d65266 100644\n--- a/Jint/Runtime/DefaultTimeSystem.cs\n+++ b/Jint/Runtime/DefaultTimeSystem.cs\n@@ -116,8 +116,12 @@ public virtual bool TryParse(string date, out long epochMilliseconds)\n \n         if (convertToUtcAfter)\n         {\n+            // datePresentation is local time encoded as epoch milliseconds.\n+            // Two-pass conversion to get correct DST offset near transitions.\n             var offset = GetUtcOffset(datePresentation.Value).TotalMilliseconds;\n-            datePresentation -= offset;\n+            var estimatedUtc = (datePresentation - offset).Value;\n+            var refinedOffset = GetUtcOffset(estimatedUtc).TotalMilliseconds;\n+            datePresentation -= refinedOffset;\n         }\n \n         epochMilliseconds = datePresentation.Value;\n",
+  "test_patch": "diff --git a/Jint.Tests/Runtime/DateTests.cs b/Jint.Tests/Runtime/DateTests.cs\nindex 6ced862c92..e590f75a7c 100644\n--- a/Jint.Tests/Runtime/DateTests.cs\n+++ b/Jint.Tests/Runtime/DateTests.cs\n@@ -226,4 +226,32 @@ public void DateTimeMaxValueFlag()\n         jsDate = new JsDate(_engine, date);\n         Assert.Equal(DateFlags.None, jsDate._dateValue.Flags);\n     }\n+\n+    [Fact]\n+    public void DstTransitionShouldUseCorrectOffset()\n+    {\n+        TimeZoneInfo nztz;\n+        try\n+        {\n+            nztz = TimeZoneInfo.FindSystemTimeZoneById(\"New Zealand Standard Time\");\n+        }\n+        catch (TimeZoneNotFoundException)\n+        {\n+            nztz = TimeZoneInfo.FindSystemTimeZoneById(\"Pacific/Auckland\");\n+        }\n+\n+        var engine = new Engine(options => options.LocalTimeZone(nztz));\n+\n+        // NZDT (GMT+13) ends at 3:00 AM on the first Sunday of April 2025.\n+        // At midnight April 6, we are still in NZDT (GMT+13).\n+        var result1 = engine.Evaluate(\"new Date(2025, 3, 6, 0, 0, 0).toString()\").AsString();\n+        Assert.Contains(\"GMT+1300\", result1);\n+        Assert.Contains(\"Apr 06 2025 00:00:00\", result1);\n+\n+        // NZDT (GMT+13) begins at 2:00 AM on the last Sunday of September 2025.\n+        // At midnight Sep 28, we are still in NZST (GMT+12).\n+        var result2 = engine.Evaluate(\"new Date(2025, 8, 28, 0, 0, 0).toString()\").AsString();\n+        Assert.Contains(\"GMT+1200\", result2);\n+        Assert.Contains(\"Sep 28 2025 00:00:00\", result2);\n+    }\n }\n",
+  "problem_statement": "Daylight Savings Time applied incorrectly in Jint\n**Version/platform/runtime used**\n\nJint Version 4.6.4\nWindows 11 (24H2)\n64-bit .NET 10.0.0\n\n**Describe the bug**\n\nWhen using the JS Date objects in JINT the hour daylight time begins and ends is not respected resulting in dates drifting by an hour.\n\nThis affects the date too not just the time as it can cause the wrong day to show when transitioning to summer time.\n\n\n**To Reproduce**\n\n```\n[Fact]\npublic async Task Date_NZDaylightTimeEnds_ShouldNotGainHourBeforeSummerTimeEnds()\n{\n    var nzst = TimeZoneInfo.FindSystemTimeZoneById(\"New Zealand Standard Time\");\n    var engine = new Engine(options => options.LocalTimeZone(nzst));\n\n    // NZDT (GMT+13) ends at 3:00 AM on the first Sunday of April and NZST (GMT+12) begins.\n    var jsCode = \"new Date(2025, 3, 6, 0, 0, 0).toString();\";\n\n    var result = engine.Evaluate(jsCode).AsString();\n\n    // At Midnight, we are STILL in GMT+13 (Summer time hasn't ended yet)\n    Assert.Contains(\"GMT+1300\", result);\n    Assert.Contains(\"Apr 06 2025 00:00:00\", result);\n}\n\n[Fact]\npublic async Task Date_NZDaylightTimeBegins_ShouldNotLoseHourBeforeWinterTimeEnds()\n{\n    var nzst = TimeZoneInfo.FindSystemTimeZoneById(\"New Zealand Standard Time\");\n    var engine = new Engine(options => options.LocalTimeZone(nzst));\n\n    // NZDT (GMT+13) begins at 2:00 AM on the last Sunday of September and NZST (GMT+12) ends.\n    var jsCode = \"new Date(2025, 8, 28, 0, 0, 0).toString();\";\n\n    var result = engine.Evaluate(jsCode).AsString();\n\n    // At Midnight, we are STILL in GMT+12 (Winter time hasn't ended yet)\n    Assert.Contains(\"GMT+1200\", result);\n    Assert.Contains(\"Sep 28 2025 00:00:00\", result);\n}\n```\n\n**Expected behavior**\n\nAs per test cases - summer time and winter time should transition at the correct hour, not at midnight.\n\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "Thanks again for the detailed report, fixed in main.\n\n",
+  "commit_urls": [
+    "https://github.com/sebastienros/jint/commit/aefaa13b6640ffe12e756d9a0ea67e4659d8f31d"
+  ],
+  "created_at": "2026-03-24T04:43:36Z",
+  "language": "C#",
+  "commit_url": "https://github.com/sebastienros/jint/tree/4772626f7a0de7776b3553d01a87ddd7c4f73463",
+  "setup_cmds": [
+    "ls  (exit code: 0)",
+    "dotnet restore  (exit code: 1)",
+    "dotnet restore -p:NuGetAuditMode=none  (exit code: 1)",
+    "cat Directory.Build.props  (exit code: 0)",
+    "dotnet restore -p:NoWarn=NU1901  (exit code: 0)",
+    "dotnet build -c Release -p:NoWarn=NU1901  (exit code: 1)",
+    "dotnet build -c Release -p:NoWarn=NU1901;CS1591  (exit code: 127)",
+    "dotnet build -c Release -p:NoWarn=\"NU1901;CS1591;IL3050;IL2060;IL2067;IL2070;IL2072;IL2069\"  (exit code: 1)",
+    "dotnet build -c Release -p:NoWarn='NU1901;CS1591;IL3050;IL2060;IL2067;IL2070;IL2072;IL2069'  (exit code: 1)",
+    "dotnet build -c Release --no-restore  (exit code: 0)",
+    "dotnet test -c Release -p:NoWarn=NU1901  (exit code: 0)",
+    "ls  (exit code: 0)",
+    "dotnet restore  (exit code: 1)",
+    "dotnet restore -p:NuGetAuditMode=none  (exit code: 1)",
+    "cat Directory.Build.props  (exit code: 0)",
+    "dotnet restore -p:NoWarn=NU1901  (exit code: 0)",
+    "dotnet build -c Release -p:NoWarn=NU1901  (exit code: 1)",
+    "dotnet build -c Release -p:NoWarn=NU1901;CS1591  (exit code: 127)",
+    "dotnet build -c Release -p:NoWarn=\"NU1901;CS1591;IL3050;IL2060;IL2067;IL2070;IL2072;IL2069\"  (exit code: 1)",
+    "dotnet build -c Release -p:NoWarn='NU1901;CS1591;IL3050;IL2060;IL2067;IL2070;IL2072;IL2069'  (exit code: 1)",
+    "dotnet build -c Release --no-restore  (exit code: 0)",
+    "dotnet test -c Release -p:NoWarn=NU1901  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "dotnet test -c Release -p:NoWarn=NU1901 --logger \"trx;LogFileName=results.trx\" --results-directory ./TestResults",
+    "cat TestResults/results.trx",
+    "python - <<'PY'\nimport xml.etree.ElementTree as ET\ntree = ET.parse(\"TestResults/results.trx\")\nroot = tree.getroot()\nns = {\"t\": \"http://microsoft.com/schemas/VisualStudio/TeamTest/2010\"}\nfor result in root.findall(\".//t:UnitTestResult\", ns):\n    name = result.attrib.get(\"testName\")\n    outcome = result.attrib.get(\"outcome\")\n    print(f\"{outcome.upper()} {name}\")\nPY",
+    "dotnet test -c Release -p:NoWarn=NU1901 --logger \"console;verbosity=detailed\"",
+    "perl -ne 'if(/UnitTestResult[^>]*testName=\"([^\"]+)\"[^>]*outcome=\"([^\"]+)\"/){print uc($2).\" $1\\n\"}' TestResults/results.trx"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:sebastienros__jint-2357_linux"
+}

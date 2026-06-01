@@ -1,0 +1,52 @@
+{
+  "repo": "gohugoio/hugo",
+  "pull_number": 14741,
+  "instance_id": "gohugoio__hugo-14741",
+  "issue_numbers": [
+    14740
+  ],
+  "base_commit": "161d0d475773c5251ec00cc8848f1a174393155c",
+  "patch": "diff --git a/tpl/tplimpl/templates.go b/tpl/tplimpl/templates.go\nindex 043d4a491e2..be6487b28e6 100644\n--- a/tpl/tplimpl/templates.go\n+++ b/tpl/tplimpl/templates.go\n@@ -45,8 +45,8 @@ var embeddedTemplatesAliases = map[string][]string{\n \t\"_shortcodes/twitter.html\": {\"_shortcodes/tweet.html\"},\n }\n \n-func (s *TemplateStore) parseTemplate(ti *TemplInfo, replace bool) error {\n-\terr := s.tns.doParseTemplate(ti, replace)\n+func (s *TemplateStore) parseTemplate(ti *TemplInfo) error {\n+\terr := s.tns.doParseTemplate(ti)\n \tif err != nil {\n \t\treturn s.addFileContext(ti, \"parse of template failed\", err)\n \t}\n@@ -69,7 +69,7 @@ func (t *templateNamespace) newBlankTemplate(ti *TemplInfo) tpl.Template {\n \treturn tt\n }\n \n-func (t *templateNamespace) doParseTemplate(ti *TemplInfo, replace bool) error {\n+func (t *templateNamespace) doParseTemplate(ti *TemplInfo) error {\n \tif !ti.noBaseOf || ti.category == CategoryBaseof {\n \t\t// Delay parsing until we have the base template.\n \t\treturn nil\n@@ -84,7 +84,7 @@ func (t *templateNamespace) doParseTemplate(ti *TemplInfo, replace bool) error {\n \n \tif ti.D.IsPlainText {\n \t\tprototype := t.parseText\n-\t\tif !replace && prototype.Lookup(name) != nil {\n+\t\tif prototype.Lookup(name) != nil {\n \t\t\tname += \"-\" + strconv.FormatUint(t.nameCounter.Add(1), 10)\n \t\t}\n \t\ttempl, err = prototype.New(name).Parse(ti.content)\n@@ -93,7 +93,7 @@ func (t *templateNamespace) doParseTemplate(ti *TemplInfo, replace bool) error {\n \t\t}\n \t} else {\n \t\tprototype := t.parseHTML\n-\t\tif !replace && prototype.Lookup(name) != nil {\n+\t\tif prototype.Lookup(name) != nil {\n \t\t\tname += \"-\" + strconv.FormatUint(t.nameCounter.Add(1), 10)\n \t\t}\n \t\ttempl, err = prototype.New(name).Parse(ti.content)\n",
+  "test_patch": "diff --git a/hugolib/rebuild_test.go b/hugolib/rebuild_test.go\nindex 537c00cef78..b3f36d44246 100644\n--- a/hugolib/rebuild_test.go\n+++ b/hugolib/rebuild_test.go\n@@ -2126,3 +2126,18 @@ Content before shortcode.\n \tb.EditFileReplaceAll(\"content/p1.md\", \"Content before shortcode.\", \"This is {{< year >}} wow.\").Build()\n \tb.AssertFileContent(\"public/p1/index.html\", \"Single: P1|\", fmt.Sprintf(\"This is %s wow.\", currentYear))\n }\n+\n+// Issue 14740.\n+func TestRebuildEditTagsListLayout(t *testing.T) {\n+\tfiles := `\n+-- hugo.toml --\n+baseURL = \"https://example.com\"\n+-- layouts/tags/list.html --\n+Foo.\n+`\n+\n+\tb := TestRunning(t, files)\n+\tb.AssertFileContent(\"public/tags/index.html\", \"Foo.\")\n+\tb.EditFileReplaceAll(\"layouts/tags/list.html\", \"Foo\", \"Bar\").Build()\n+\tb.AssertFileContent(\"public/tags/index.html\", \"Bar.\")\n+}\ndiff --git a/tpl/tplimpl/templatestore.go b/tpl/tplimpl/templatestore.go\nindex 57a0c4f6990..0c324fd843e 100644\n--- a/tpl/tplimpl/templatestore.go\n+++ b/tpl/tplimpl/templatestore.go\n@@ -149,7 +149,7 @@ func NewStore(opts StoreOptions, siteOpts SiteOptions) (*TemplateStore, error) {\n \tif err := s.insertEmbedded(); err != nil {\n \t\treturn nil, err\n \t}\n-\tif err := s.parseTemplates(false); err != nil {\n+\tif err := s.parseTemplates(); err != nil {\n \t\treturn nil, err\n \t}\n \tif err := s.extractInlinePartials(false); err != nil {\n@@ -740,7 +740,7 @@ func (s *TemplateStore) RefreshFiles(include func(fi hugofs.FileMetaInfo) bool)\n \tif err := s.createTemplatesSnapshot(); err != nil {\n \t\treturn err\n \t}\n-\tif err := s.parseTemplates(true); err != nil {\n+\tif err := s.parseTemplates(); err != nil {\n \t\treturn err\n \t}\n \tif err := s.extractInlinePartials(true); err != nil {\n@@ -1627,7 +1627,7 @@ func (s *TemplateStore) addTransformedTemplateSetTree(this *TemplInfo, root *par\n \treturn tree, nil\n }\n \n-func (s *TemplateStore) parseTemplates(replace bool) error {\n+func (s *TemplateStore) parseTemplates() error {\n \tif err := func() error {\n \t\t// Read and parse all templates.\n \t\tfor _, v := range s.treeMain.All() {\n@@ -1635,7 +1635,7 @@ func (s *TemplateStore) parseTemplates(replace bool) error {\n \t\t\t\tif vv.state == processingStateTransformed {\n \t\t\t\t\tcontinue\n \t\t\t\t}\n-\t\t\t\tif err := s.parseTemplate(vv, replace); err != nil {\n+\t\t\t\tif err := s.parseTemplate(vv); err != nil {\n \t\t\t\t\treturn err\n \t\t\t\t}\n \t\t\t}\n@@ -1655,7 +1655,7 @@ func (s *TemplateStore) parseTemplates(replace bool) error {\n \t\t\t\t\t\t// The regular expression used to detect if a template needs a base template has some\n \t\t\t\t\t\t// rare false positives. Assume we don't need one.\n \t\t\t\t\t\tvv.noBaseOf = true\n-\t\t\t\t\t\tif err := s.parseTemplate(vv, replace); err != nil {\n+\t\t\t\t\t\tif err := s.parseTemplate(vv); err != nil {\n \t\t\t\t\t\t\treturn err\n \t\t\t\t\t\t}\n \t\t\t\t\t\tcontinue\n@@ -1684,7 +1684,7 @@ func (s *TemplateStore) parseTemplates(replace bool) error {\n \t\t\t\tif vvv.state == processingStateTransformed {\n \t\t\t\t\tcontinue\n \t\t\t\t}\n-\t\t\t\tif err := s.parseTemplate(vvv, replace); err != nil {\n+\t\t\t\tif err := s.parseTemplate(vvv); err != nil {\n \t\t\t\t\treturn err\n \t\t\t\t}\n \t\t\t}\n",
+  "problem_statement": "Layout /tags/list.html panics on edit\nSee https://discourse.gohugo.io/t/hugo-panic-template-tags-list-html-not-parsed/56971\n\nThe following test panics:\n\n```go\n// Issue 14740.\nfunc TestEditTagsList(t *testing.T) {\n\tfiles := `\n-- hugo.toml --\nbaseURL = \"https://example.com\"\n-- layouts/tags/list.html --\nFoo.\n`\n\n\tb := hugolib.TestRunning(t, files)\n\tb.AssertFileContent(\"public/tags/index.html\", \"Foo.\")\n\tb.EditFileReplaceAll(\"layouts/tags/list.html\", \"foo\", \"Bar\").Build()\n\tb.AssertFileContent(\"public/tags/index.html\", \"Bar.\")\n}\n```\n\nOK, so the issue is editing the \"legacy mapped\" layout names that's also valid in the new setup ...\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/gohugoio/hugo/commit/bff8fcc5dd8a4c51e4dff81c15fb92510d1f3520"
+  ],
+  "created_at": "2026-04-08T10:12:39Z",
+  "language": "Go",
+  "commit_url": "https://github.com/gohugoio/hugo/tree/161d0d475773c5251ec00cc8848f1a174393155c",
+  "setup_cmds": [
+    "go mod download  (exit code: 0)",
+    "go build  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "sed -n '140,220p' codegen/methods.go  (exit code: 0)",
+    "sed -n '1,120p' codegen/methods_test.go  (exit code: 0)",
+    "sed -n '1,120p' codegen/methods.go  (exit code: 0)",
+    "ruby --version  (exit code: 127)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y ruby-full pandoc python3-docutils  (exit code: 0)",
+    "gem install asciidoctor -v 2.0.26 && gem install asciidoctor-diagram -v 3.1.0  (exit code: 0)",
+    "mkdir -p /tmp/hugo && cp -a . /tmp/hugo/  (exit code: 0)",
+    "cd /tmp/hugo && go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 0)",
+    "go build  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "sed -n '140,220p' codegen/methods.go  (exit code: 0)",
+    "sed -n '1,120p' codegen/methods_test.go  (exit code: 0)",
+    "sed -n '1,120p' codegen/methods.go  (exit code: 0)",
+    "ruby --version  (exit code: 127)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y ruby-full pandoc python3-docutils  (exit code: 0)",
+    "gem install asciidoctor -v 2.0.26 && gem install asciidoctor-diagram -v 3.1.0  (exit code: 0)",
+    "mkdir -p /tmp/hugo && cp -a . /tmp/hugo/  (exit code: 0)",
+    "cd /tmp/hugo && go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:gohugoio__hugo-14741_linux"
+}

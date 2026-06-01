@@ -1,0 +1,1307 @@
+2026-05-07 12:47:55,466 - Using language: c#
+2026-05-07 12:47:59,618 - Loading image repolaunch/dev:dotnet__runtime-125834_linux.
+2026-05-07 14:09:42,547 - Repo root in the host cleaned up: /home/v-liaozhu/Live-new-tasks/launch/data/cs/playground/dotnet__runtime-125834/repo
+2026-05-07 14:09:42,547 - Setting up environment for language: c#
+2026-05-07 14:09:42,547 - No language-specific server needed
+2026-05-07 14:09:42,602 - setup state: None, 0, None ... 
+2026-05-07 14:09:42,602 - ----------Start rebuild conversation----------
+2026-05-07 14:09:48,408 - 
+================================== Ai Message ==================================
+
+Thought: Use the same project-level restore and build commands with the local SDK, keeping the single-threaded build flags that were required before.
+Action: <submit>/testbed/.dotnet/dotnet restore src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj ; /testbed/.dotnet/dotnet build src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false</submit>
+2026-05-07 14:09:48,408 - Agent submitted commands: /testbed/.dotnet/dotnet restore src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj ; /testbed/.dotnet/dotnet build src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false
+2026-05-07 14:09:48,408 - Automatically verifying submitted commands...
+2026-05-07 14:10:53,804 - Verification PASSED - LLM determined commands executed successfully
+2026-05-07 14:10:53,819 - ----------End rebuild organization conversation----------
+2026-05-07 14:10:54,708 - setup state: True, None ... 
+2026-05-07 14:10:54,709 - ----------Start test conversation----------
+2026-05-07 14:11:14,921 - 
+================================== Ai Message ==================================
+
+<submit>
+    <test_command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --logger "json;LogFileName=reports/test-results.json"</test_command>
+    <print_command>cat reports/test-results.json</print_command>
+    <parser>parsing success</parser>
+</submit>
+2026-05-07 14:11:14,938 - 
+================================ Human Message =================================
+
+Observation:
+You have not yet provided a valid parser script. Please provide a valid parser script and validate it with <python>...</python> before submission.
+2026-05-07 14:11:34,453 - 
+================================== Ai Message ==================================
+
+<python>def parser(log: str) -> dict[str, str]:
+    import json
+    result: dict[str, str] = {}
+    try:
+        data = json.loads(log)
+    except json.JSONDecodeError:
+        return result
+    # JSON logger format may include "tests" list or "testResults"
+    tests = []
+    if isinstance(data, dict):
+        if "tests" in data and isinstance(data["tests"], list):
+            tests = data["tests"]
+        elif "testResults" in data and isinstance(data["testResults"], list):
+            tests = data["testResults"]
+        elif "results" in data and isinstance(data["results"], list):
+            tests = data["results"]
+    for t in tests:
+        if not isinstance(t, dict):
+            continue
+        name = t.get("name") or t.get("testName") or t.get("displayName")
+        outcome = t.get("outcome") or t.get("result") or t.get("status")
+        if not name or not outcome:
+            continue
+        outcome_lower = str(outcome).lower()
+        if outcome_lower in ("passed", "pass", "success"):
+            result[name] = "pass"
+        elif outcome_lower in ("failed", "fail", "error"):
+            result[name] = "fail"
+        elif outcome_lower in ("skipped", "skip", "notexecuted", "notexecuted"):
+            result[name] = "skip"
+    return result</python>
+2026-05-07 14:11:34,506 - 
+================================ Human Message =================================
+
+Observation:
+Your parser did not extract any test status. It returned an empty dict: {}.
+The system will only pass the last standard output of the last shell command executed into your parser function, so please make sure you have first executed a correct print command to print the test output and then run your parser to extract test status. 
+If your print command is executed correctly but parser still returned empty result, please adjust your parser to make sure it can correctly parse the test output and extract test status of each test case. 
+
+2026-05-07 14:11:54,886 - 
+================================== Ai Message ==================================
+
+<python>def parser(log: str) -> dict[str, str]:
+    import json
+    import re
+    result: dict[str, str] = {}
+    try:
+        data = json.loads(log)
+    except json.JSONDecodeError:
+        return result
+
+    def normalize_status(val: str) -> str | None:
+        v = val.lower()
+        if v in ("passed", "pass", "success"):
+            return "pass"
+        if v in ("failed", "fail", "error"):
+            return "fail"
+        if v in ("skipped", "skip", "notexecuted", "not-run", "notrun"):
+            return "skip"
+        return None
+
+    # JSON logger format might be a dict with "tests" or "TestResults" etc.
+    candidates = []
+    if isinstance(data, dict):
+        for key in ("tests", "Tests", "testResults", "TestResults", "results", "Results"):
+            if key in data and isinstance(data[key], list):
+                candidates = data[key]
+                break
+        # sometimes nested under "run" or "testRun"
+        for key in ("run", "testRun", "TestRun"):
+            if key in data and isinstance(data[key], dict):
+                for subkey in ("tests", "Tests", "testResults", "TestResults", "results", "Results"):
+                    if subkey in data[key] and isinstance(data[key][subkey], list):
+                        candidates = data[key][subkey]
+                        break
+    elif isinstance(data, list):
+        candidates = data
+
+    for t in candidates:
+        if not isinstance(t, dict):
+            continue
+        name = t.get("name") or t.get("testName") or t.get("displayName") or t.get("FullyQualifiedName") or t.get("fullyQualifiedName")
+        outcome = t.get("outcome") or t.get("result") or t.get("status") or t.get("Outcome")
+        if not name:
+            # Some formats have "test" object
+            test_obj = t.get("test") if isinstance(t.get("test"), dict) else None
+            if test_obj:
+                name = test_obj.get("name") or test_obj.get("fullyQualifiedName") or test_obj.get("displayName")
+        if not outcome:
+            outcome = t.get("Outcome") or t.get("Result")
+
+        if name and outcome:
+            status = normalize_status(str(outcome))
+            if status:
+                result[name] = status
+
+    # fallback: if structured format is different, parse text fields
+    if not result and isinstance(data, dict):
+        text = json.dumps(data)
+        for m in re.finditer(r'"(.*?)"\s*:\s*"(Passed|Failed|Skipped)"', text, re.IGNORECASE):
+            test_name, status = m.group(1), m.group(2)
+            status_norm = normalize_status(status)
+            if status_norm:
+                result[test_name] = status_norm
+
+    return result</python>
+2026-05-07 14:11:54,888 - 
+================================ Human Message =================================
+
+Observation:
+Your parser did not extract any test status. It returned an empty dict: {}.
+The system will only pass the last standard output of the last shell command executed into your parser function, so please make sure you have first executed a correct print command to print the test output and then run your parser to extract test status. 
+If your print command is executed correctly but parser still returned empty result, please adjust your parser to make sure it can correctly parse the test output and extract test status of each test case. 
+
+2026-05-07 14:12:00,566 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && mkdir -p reports && /testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --logger "json;LogFileName=reports/test-results.json"</command>
+2026-05-07 14:12:08,909 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && mkdir -p reports && /testbed/.dotnet/dotnet test src/native/manageed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /mm:1 /p:BuildInParallel=false --no-build --logger "json;LogFileName=reports/test-rresults.json"
+=
+Test run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)
+=Could not find a test logger with AssemblyQualifiedName, URI or FriendlyName 'json'.
+=
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 1
+
+2026-05-07 14:12:14,256 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && mkdir -p reports && /testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --logger "trx;LogFileName=reports/test-results.trx"</command>
+2026-05-07 14:12:41,669 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && mkdir -p reports && /testbed/.dotnet/dotnet test src/native/manageed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /mm:1 /p:BuildInParallel=false --no-build --logger "trx;LogFileName=reports/test-reesults.trx"
+=
+Test run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)
+=A total of 1 test files matched the specified pattern.
+=Results File: /testbed/src/native/managed/cdac/tests/TestResults/reports/test-results.trx
+
+Passed!  - Failed:     0, Passed:  1330, Skipped:     0, Total:  1330, Duration: 11 s - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)
+=
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 0
+
+2026-05-07 14:12:52,600 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && cat src/native/managed/cdac/tests/TestResults/reports/test-results.trx</command>
+2026-05-07 14:13:56,963 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && cat src/native/managed/cdac/tests/TestResults/reports/test-resultss.trx
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="eb8296d5-0ef7-4a97-a48e-c9805e2c20ff" name="@93ccc76bbb60 2026-05-07 06:12:28" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-05-07T06:12:28.9255822+00:00" queuing="2026-05-07T06:12:28.9255824+00:00" start="2026-05-07T06:12:22.2537305+00:00" finish="2026-05-07T06:12:40.1539880+00:00" />
+  <TestSettings name="default" id="190e3de8-7ee0-4ec3-bae8-b5b400c64046">
+    <Deployment runDeploymentRoot="_93ccc76bbb60_2026-05-07_06_12_28" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="62e3d136-de08-4a1e-803b-917abd0d81de" testId="f5f5e994-8423-f65b-83be-572794b17ff2" testName="Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040zd&quot;, value: -24, width: 40, paddingChar: '0')" computerName="93ccc76bbb60" duration="00:00:00.0015240" startTime="2026-05-07T06:12:30.2245324+00:00" endTime="2026-05-07T06:12:30.2268498+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="62e3d136-de08-4a1e-803b-917abd0d81de" />
+    <UnitTestResult executionId="e79aa9eb-9d70-45d9-a4a4-8efb8815774f" testId="4f9976e9-8cf7-f221-91d1-bbc62aeda069" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 1, arch: Architecture { IsLittleEndian = True, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0135264" startTime="2026-05-07T06:12:34.1882770+00:00" endTime="2026-05-07T06:12:34.2017329+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="e79aa9eb-9d70-45d9-a4a4-8efb8815774f" />
+    <UnitTestResult executionId="a87706db-0878-45a9-a497-7d71ba83bcd2" testId="4f9976e9-8cf7-f221-91d1-bbc62aeda069" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = True })" computerName="93ccc76bbb60" duration="00:00:00.0149682" startTime="2026-05-07T06:12:34.2290530+00:00" endTime="2026-05-07T06:12:34.2440411+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="a87706db-0878-45a9-a497-7d71ba83bcd2" />
+    <UnitTestResult executionId="acf7831d-293d-4f55-84b0-68b27cca1496" testId="ef273722-858b-2f90-7a88-b83f0c5fcdaf" testName="Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, methodDescType: DynamicMethodDesc)" computerName="93ccc76bbb60" duration="00:00:00.0130484" startTime="2026-05-07T06:12:29.3705595+00:00" endTime="2026-05-07T06:12:29.3835959+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="acf7831d-293d-4f55-84b0-68b27cca1496" />
+    <UnitTestResult executionId="736286e6-5e23-4636-8575-fb82315c12b4" testId="09eef410-4c14-6075-c64f-74c91417c0c7" testName="Microsoft.Diagnostics.DataContractReader.Tests.PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc(test: PrecodeTestDescriptor { Arch = Architecture { IsLittleEndian = True, Is64Bit = True }, IsThumb = False, Name = &quot;Arm64&quot;, OffsetOfPrecodeType = 0, ReadWidthOfPrecodeType = 1, ··· }, contractVersion: 1)" computerName="93ccc76bbb60" duration="00:00:00.0009928" startTime="2026-05-07T06:12:30.9490765+00:00" endTime="2026-05-07T06:12:30.9630148+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="736286e6-5e23-4636-8575-fb82315c12b4" />
+    <UnitTestResult executionId="02f92f84-629a-46b7-80f5-57d53e187c93" testId="dc847ec8-adb4-402c-17b3-6e813e785a82" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_HotColdBlock(version: 1, arch: Architecture { IsLittleEndian = False, Is64Bit = True })" computerName="93ccc76bbb60" duration="00:00:00.0152514" startTime="2026-05-07T06:12:33.2038042+00:00" endTime="2026-05-07T06:12:33.2171527+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="02f92f84-629a-46b7-80f5-57d53e187c93" />
+    <UnitTestResult executionId="6164bc4e-0697-4210-8ee4-5eb556faa3ca" testId="9ce300ea-4555-23d5-d0f0-68ece774ebaf" testName="Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetILAddr_WebcilInvalidSectionCountThrows(arch: Architecture { IsLittleEndian = False, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0515280" startTime="2026-05-07T06:12:31.8406090+00:00" endTime="2026-05-07T06:12:31.8916660+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="6164bc4e-0697-4210-8ee4-5eb556faa3ca" />
+    <UnitTestResult executionId="7bccd242-0f61-4e5f-bd80-e307d433a3cb" testId="4f9976e9-8cf7-f221-91d1-bbc62aeda069" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 1, arch: Architecture { IsLittleEndian = False, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0142318" startTime="2026-05-07T06:12:34.2445076+00:00" endTime="2026-05-07T06:12:34.2582783+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="7bccd242-0f61-4e5f-bd80-e307d433a3cb" />
+    <UnitTestResult executionId="6a572e2b-6505-4e8f-b399-4240adcbf22b" testId="d631a000-5229-ebd0-1fa0-ceda7ad158e6" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.TryGetRuntimeFunctionIndexForAddress_NoMatch(arch: Architecture { IsLittleEndian = True, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0297493" startTime="2026-05-07T06:12:33.5934500+00:00" endTime="2026-05-07T06:12:33.6234746+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="6a572e2b-6505-4e8f-b399-4240adcbf22b" />
+    <UnitTestResult executionId="3d23a7a4-c936-4b8b-926e-8ffa84ebf313" testId="ef273722-858b-2f90-7a88-b83f0c5fcdaf" testName="Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, methodDescType: ArrayMethodDesc)" computerName="93ccc76bbb60" duration="00:00:00.0149578" startTime="2026-05-07T06:12:29.1826620+00:00" endTime="2026-05-07T06:12:29.1970509+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="3d23a7a4-c936-4b8b-926e-8ffa84ebf313" />
+    <UnitTestResult executionId="a6ff2c7f-cb65-440c-90dc-82555fdb4eaf" testId="4aad7eba-b665-71c4-af26-00b7dc7f0478" testName="Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.MethodTableEEClassInvalidThrows(arch: Architecture { IsLittleEndian = True, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0199913" startTime="2026-05-07T06:12:32.2055400+00:00" endTime="2026-05-07T06:12:32.2252823+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="a6ff2c7f-cb65-440c-90dc-82555fdb4eaf" />
+    <UnitTestResult executionId="aa7b09fa-6b5d-4ffa-a672-6f9d7d315e98" testId="512354f7-c82c-bbe6-80e8-62fb41d82145" testName="Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%0zi&quot;, value: -92233720368547....stripped due to length....
+aaca" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b931925c-9d82-5b3f-ea7b-41af1c496539" executionId="260de78b-ae6f-42ae-ba49-59c450f3210e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a0869b17-b0e9-64a9-3ce8-c9f7072254cc" executionId="906a3ab8-5688-4460-bbbc-431ec1eb7d6c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1bf25555-eb3d-0829-170c-7f36568e254b" executionId="aef86f5b-9770-43d3-a3f2-0add7ad3f207" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="6c9b4b65-c989-d59a-a4b1-346b5b14825e" executionId="ba89fc11-8723-4971-98b2-d058dca80e5c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="c89e2aca-5318-8e32-ece7-86813c637b47" executionId="2ee362fb-e6da-4005-bf16-21590c3e52cd" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a693d23a-e5c9-3214-cd14-eef48434d7b8" executionId="fa98f19e-265b-4ddf-93d4-458b62564d7c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="5f0c5cc5-58fd-89ea-fca7-b0bda948b920" executionId="08a3b39f-0c49-400d-ba3b-00ed6b9ceafa" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f5da9e56-09ea-1bf0-c465-e9f5123fef2b" executionId="0c9446be-e3e9-47d7-9261-ea9d6103c22a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f89ea7c8-dfb6-ee04-1869-26bcf71d0ccf" executionId="4ed29d4e-2f2b-4f85-b453-b4f64651b8e8" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="ffabe5b9-7b5c-5a06-e1f0-de4f887ea830" executionId="6138c9aa-9bba-4a5a-a723-6cfb906c6c2b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9e8454cf-03ad-111e-7a78-bb3b0ac25e68" executionId="1086fc3c-4951-4075-b48f-09c9645ed924" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e23c7b63-dce2-eaef-c3f2-8362608c89c0" executionId="afc3fb3b-f890-4a6b-928f-78ee869d05f3" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="799b09d4-3a42-bb27-e578-e3a27ad5e333" executionId="1dd6d553-55ec-4686-a285-16e7fe1337ab" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a65eb05a-efed-6c87-d079-38bdece712fd" executionId="1ad8f231-fb2b-449f-bb1e-11aa1b99a5a0" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="4ad05547-dba0-1d9f-5edc-ece8acd37b35" executionId="93e78fd1-0927-4107-9267-e203295082da" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="0af0576b-92db-a027-8ae6-326f10392a0a" executionId="025da61e-2a85-4300-af93-37cc732d40a1" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="232ed638-7226-0661-2a7e-e3fb2811c769" executionId="26fadca1-0527-4e30-923f-0f64ca66a411" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e0cc9656-37d9-cbf7-8331-7076b98b63a9" executionId="ecb1d50b-9c59-49e8-9435-af8e0af82a3b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="bdf01e76-7238-6696-327e-70b757aed072" executionId="c3aad75e-d39a-4282-851d-6cfbc6a0489d" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f5da9e56-09ea-1bf0-c465-e9f5123fef2b" executionId="004d7155-f713-43ac-9d53-325f5c67ee35" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9b627b63-4437-ed00-2fdd-9d692a47b223" executionId="98e3e13c-5128-4c3f-91b6-a75004c30019" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="95b66395-da17-e8a6-9a86-dd5f790d76a4" executionId="4cd5b348-df5b-4ade-a3b8-cdc266c9667c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="bbe6fcc8-f08a-4233-0055-7b26f64868f8" executionId="5b5cb758-fdba-4f0b-a211-7a4cf34e8290" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="c61c13ab-ae59-c492-3482-99cc966e7bf2" executionId="f15e3709-ed2b-48a1-871a-23586a12c0ca" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="8fef5a25-3bfb-5306-c753-de28933e33d4" executionId="26847c21-aab2-4def-8c56-b7100d18a93e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="19a62fa4-ba8a-8bd6-e55e-c3f7aaa68d1b" executionId="3facc052-5add-4fcf-a852-0d1568820e24" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a42383c6-7446-9fcd-5815-2abbd9b12806" executionId="3a86e302-a160-46e4-aeab-20560aabcddc" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="af1f5ad9-be4f-9df1-078e-679de41b7082" executionId="28c6b829-0428-4cd3-890d-4ff47907d8ad" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="32597b88-4b5d-bd45-8c33-7c8b8f315ca4" executionId="d7abde39-6269-41bc-b03e-d1d9bba740db" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="46247e34-8bd5-4d4d-6500-54cab1f0d4b4" executionId="c8ef0924-7a92-4b38-8de1-dab5bb97ae7c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9ce300ea-4555-23d5-d0f0-68ece774ebaf" executionId="b0e55496-055e-490a-bf92-c6d1116aa721" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b2800ef2-5218-16e1-4a5f-e48609927b14" executionId="949bedd2-0677-4b3a-b6ef-3160c0ee5261" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="c61c13ab-ae59-c492-3482-99cc966e7bf2" executionId="db6c8d68-b9fc-44b3-915c-96bdb08b4351" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7a684e7e-ef4d-1233-9c7b-16b1eda902dc" executionId="be891f67-94f3-4051-aee6-8696baec7575" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="799b09d4-3a42-bb27-e578-e3a27ad5e333" executionId="20da9b41-bb82-49d7-824a-72d87a12c444" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b0277e9d-c345-7047-e66a-4e2bed00654e" executionId="a17ac132-8c95-4416-b1c8-ae45b7dacaf7" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7d1f7f22-0851-4b37-803f-2c881c4cad6d" executionId="bab737d5-a5f7-45d6-ad0a-f023f8d4f803" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="bfac9b1f-95e0-0844-3870-4eae43cd9d57" executionId="1a6dc58c-f99c-464a-af8b-ad541b54c4fc" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="ef273722-858b-2f90-7a88-b83f0c5fcdaf" executionId="06077c76-cc95-4071-b3a7-4322df385a0f" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9b627b63-4437-ed00-2fdd-9d692a47b223" executionId="130c6db4-034e-46fd-8f32-f312a122fb7b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="fdbc5c1a-0a9d-dbe8-371f-2515d1c4381e" executionId="ce07a87f-e5f7-4762-add7-b635f0c8e263" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7c18aef8-5514-cbbb-0342-b9cb5f5fc3a2" executionId="1085db6c-c630-4413-8356-07d0d6fab61f" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="dc77ac0b-027e-5e64-3c41-ed5bbdca80eb" executionId="5b821fe9-c6db-4190-baf6-2fb5dca60966" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="1330" executed="1330" passed="1330" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.01] xUnit.net VSTest Adapter v3.1.5+1b188a7b0a (64-bit .NET 11.0.0-preview.3.26170.106)
+[xUnit.net 00:00:00.62]   Discovering: Microsoft.Diagnostics.DataContractReader.Tests
+[xUnit.net 00:00:01.64]   Discovered:  Microsoft.Diagnostics.DataContractReader.Tests
+[xUnit.net 00:00:02.71]   Starting:    Microsoft.Diagnostics.DataContractReader.Tests
+[xUnit.net 00:00:14.16]   Finished:    Microsoft.Diagnostics.DataContractReader.Tests
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 0
+
+2026-05-07 14:14:06,078 - 
+================================== Ai Message ==================================
+
+<python>def parser(log: str) -> dict[str, str]:
+    import xml.etree.ElementTree as ET
+    result: dict[str, str] = {}
+    try:
+        root = ET.fromstring(log)
+    except ET.ParseError:
+        return result
+    ns = ""
+    if root.tag.startswith("{"):
+        ns = root.tag.split("}")[0] + "}"
+    for unit in root.findall(f".//{ns}UnitTestResult"):
+        name = unit.attrib.get("testName")
+        outcome = unit.attrib.get("outcome", "")
+        if not name:
+            continue
+        outcome_lower = outcome.lower()
+        if outcome_lower == "passed":
+            result[name] = "pass"
+        elif outcome_lower in ("failed", "error", "timeout", "aborted"):
+            result[name] = "fail"
+        elif outcome_lower in ("skipped", "notexecuted", "notrun"):
+            result[name] = "skip"
+    return result</python>
+2026-05-07 14:14:06,280 - 
+================================ Human Message =================================
+
+Observation:
+Your parser did not extract any test status. It returned an empty dict: {}.
+The system will only pass the last standard output of the last shell command executed into your parser function, so please make sure you have first executed a correct print command to print the test output and then run your parser to extract test status. 
+If your print command is executed correctly but parser still returned empty result, please adjust your parser to make sure it can correctly parse the test output and extract test status of each test case. 
+
+2026-05-07 14:14:12,820 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && cat src/native/managed/cdac/tests/TestResults/reports/test-results.trx</command>
+2026-05-07 14:15:15,000 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && cat src/native/managed/cdac/tests/TestResults/reports/test-resultss.trx
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="eb8296d5-0ef7-4a97-a48e-c9805e2c20ff" name="@93ccc76bbb60 2026-05-07 06:12:28" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-05-07T06:12:28.9255822+00:00" queuing="2026-05-07T06:12:28.9255824+00:00" start="2026-05-07T06:12:22.2537305+00:00" finish="2026-05-07T06:12:40.1539880+00:00" />
+  <TestSettings name="default" id="190e3de8-7ee0-4ec3-bae8-b5b400c64046">
+    <Deployment runDeploymentRoot="_93ccc76bbb60_2026-05-07_06_12_28" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="62e3d136-de08-4a1e-803b-917abd0d81de" testId="f5f5e994-8423-f65b-83be-572794b17ff2" testName="Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040zd&quot;, value: -24, width: 40, paddingChar: '0')" computerName="93ccc76bbb60" duration="00:00:00.0015240" startTime="2026-05-07T06:12:30.2245324+00:00" endTime="2026-05-07T06:12:30.2268498+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="62e3d136-de08-4a1e-803b-917abd0d81de" />
+    <UnitTestResult executionId="e79aa9eb-9d70-45d9-a4a4-8efb8815774f" testId="4f9976e9-8cf7-f221-91d1-bbc62aeda069" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 1, arch: Architecture { IsLittleEndian = True, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0135264" startTime="2026-05-07T06:12:34.1882770+00:00" endTime="2026-05-07T06:12:34.2017329+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="e79aa9eb-9d70-45d9-a4a4-8efb8815774f" />
+    <UnitTestResult executionId="a87706db-0878-45a9-a497-7d71ba83bcd2" testId="4f9976e9-8cf7-f221-91d1-bbc62aeda069" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = True })" computerName="93ccc76bbb60" duration="00:00:00.0149682" startTime="2026-05-07T06:12:34.2290530+00:00" endTime="2026-05-07T06:12:34.2440411+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="a87706db-0878-45a9-a497-7d71ba83bcd2" />
+    <UnitTestResult executionId="acf7831d-293d-4f55-84b0-68b27cca1496" testId="ef273722-858b-2f90-7a88-b83f0c5fcdaf" testName="Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, methodDescType: DynamicMethodDesc)" computerName="93ccc76bbb60" duration="00:00:00.0130484" startTime="2026-05-07T06:12:29.3705595+00:00" endTime="2026-05-07T06:12:29.3835959+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="acf7831d-293d-4f55-84b0-68b27cca1496" />
+    <UnitTestResult executionId="736286e6-5e23-4636-8575-fb82315c12b4" testId="09eef410-4c14-6075-c64f-74c91417c0c7" testName="Microsoft.Diagnostics.DataContractReader.Tests.PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc(test: PrecodeTestDescriptor { Arch = Architecture { IsLittleEndian = True, Is64Bit = True }, IsThumb = False, Name = &quot;Arm64&quot;, OffsetOfPrecodeType = 0, ReadWidthOfPrecodeType = 1, ··· }, contractVersion: 1)" computerName="93ccc76bbb60" duration="00:00:00.0009928" startTime="2026-05-07T06:12:30.9490765+00:00" endTime="2026-05-07T06:12:30.9630148+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="736286e6-5e23-4636-8575-fb82315c12b4" />
+    <UnitTestResult executionId="02f92f84-629a-46b7-80f5-57d53e187c93" testId="dc847ec8-adb4-402c-17b3-6e813e785a82" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_HotColdBlock(version: 1, arch: Architecture { IsLittleEndian = False, Is64Bit = True })" computerName="93ccc76bbb60" duration="00:00:00.0152514" startTime="2026-05-07T06:12:33.2038042+00:00" endTime="2026-05-07T06:12:33.2171527+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="02f92f84-629a-46b7-80f5-57d53e187c93" />
+    <UnitTestResult executionId="6164bc4e-0697-4210-8ee4-5eb556faa3ca" testId="9ce300ea-4555-23d5-d0f0-68ece774ebaf" testName="Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetILAddr_WebcilInvalidSectionCountThrows(arch: Architecture { IsLittleEndian = False, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0515280" startTime="2026-05-07T06:12:31.8406090+00:00" endTime="2026-05-07T06:12:31.8916660+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="6164bc4e-0697-4210-8ee4-5eb556faa3ca" />
+    <UnitTestResult executionId="7bccd242-0f61-4e5f-bd80-e307d433a3cb" testId="4f9976e9-8cf7-f221-91d1-bbc62aeda069" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 1, arch: Architecture { IsLittleEndian = False, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0142318" startTime="2026-05-07T06:12:34.2445076+00:00" endTime="2026-05-07T06:12:34.2582783+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="7bccd242-0f61-4e5f-bd80-e307d433a3cb" />
+    <UnitTestResult executionId="6a572e2b-6505-4e8f-b399-4240adcbf22b" testId="d631a000-5229-ebd0-1fa0-ceda7ad158e6" testName="Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.TryGetRuntimeFunctionIndexForAddress_NoMatch(arch: Architecture { IsLittleEndian = True, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0297493" startTime="2026-05-07T06:12:33.5934500+00:00" endTime="2026-05-07T06:12:33.6234746+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="6a572e2b-6505-4e8f-b399-4240adcbf22b" />
+    <UnitTestResult executionId="3d23a7a4-c936-4b8b-926e-8ffa84ebf313" testId="ef273722-858b-2f90-7a88-b83f0c5fcdaf" testName="Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, methodDescType: ArrayMethodDesc)" computerName="93ccc76bbb60" duration="00:00:00.0149578" startTime="2026-05-07T06:12:29.1826620+00:00" endTime="2026-05-07T06:12:29.1970509+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="3d23a7a4-c936-4b8b-926e-8ffa84ebf313" />
+    <UnitTestResult executionId="a6ff2c7f-cb65-440c-90dc-82555fdb4eaf" testId="4aad7eba-b665-71c4-af26-00b7dc7f0478" testName="Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.MethodTableEEClassInvalidThrows(arch: Architecture { IsLittleEndian = True, Is64Bit = False })" computerName="93ccc76bbb60" duration="00:00:00.0199913" startTime="2026-05-07T06:12:32.2055400+00:00" endTime="2026-05-07T06:12:32.2252823+00:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="a6ff2c7f-cb65-440c-90dc-82555fdb4eaf" />
+    <UnitTestResult executionId="aa7b09fa-6b5d-4ffa-a672-6f9d7d315e98" testId="512354f7-c82c-bbe6-80e8-62fb41d82145" testName="Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%0zi&quot;, value: -92233720368547....stripped due to length....
+aaca" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b931925c-9d82-5b3f-ea7b-41af1c496539" executionId="260de78b-ae6f-42ae-ba49-59c450f3210e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a0869b17-b0e9-64a9-3ce8-c9f7072254cc" executionId="906a3ab8-5688-4460-bbbc-431ec1eb7d6c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="1bf25555-eb3d-0829-170c-7f36568e254b" executionId="aef86f5b-9770-43d3-a3f2-0add7ad3f207" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="6c9b4b65-c989-d59a-a4b1-346b5b14825e" executionId="ba89fc11-8723-4971-98b2-d058dca80e5c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="c89e2aca-5318-8e32-ece7-86813c637b47" executionId="2ee362fb-e6da-4005-bf16-21590c3e52cd" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a693d23a-e5c9-3214-cd14-eef48434d7b8" executionId="fa98f19e-265b-4ddf-93d4-458b62564d7c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="5f0c5cc5-58fd-89ea-fca7-b0bda948b920" executionId="08a3b39f-0c49-400d-ba3b-00ed6b9ceafa" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f5da9e56-09ea-1bf0-c465-e9f5123fef2b" executionId="0c9446be-e3e9-47d7-9261-ea9d6103c22a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f89ea7c8-dfb6-ee04-1869-26bcf71d0ccf" executionId="4ed29d4e-2f2b-4f85-b453-b4f64651b8e8" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="ffabe5b9-7b5c-5a06-e1f0-de4f887ea830" executionId="6138c9aa-9bba-4a5a-a723-6cfb906c6c2b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9e8454cf-03ad-111e-7a78-bb3b0ac25e68" executionId="1086fc3c-4951-4075-b48f-09c9645ed924" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e23c7b63-dce2-eaef-c3f2-8362608c89c0" executionId="afc3fb3b-f890-4a6b-928f-78ee869d05f3" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="799b09d4-3a42-bb27-e578-e3a27ad5e333" executionId="1dd6d553-55ec-4686-a285-16e7fe1337ab" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a65eb05a-efed-6c87-d079-38bdece712fd" executionId="1ad8f231-fb2b-449f-bb1e-11aa1b99a5a0" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="4ad05547-dba0-1d9f-5edc-ece8acd37b35" executionId="93e78fd1-0927-4107-9267-e203295082da" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="0af0576b-92db-a027-8ae6-326f10392a0a" executionId="025da61e-2a85-4300-af93-37cc732d40a1" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="232ed638-7226-0661-2a7e-e3fb2811c769" executionId="26fadca1-0527-4e30-923f-0f64ca66a411" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e0cc9656-37d9-cbf7-8331-7076b98b63a9" executionId="ecb1d50b-9c59-49e8-9435-af8e0af82a3b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="bdf01e76-7238-6696-327e-70b757aed072" executionId="c3aad75e-d39a-4282-851d-6cfbc6a0489d" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f5da9e56-09ea-1bf0-c465-e9f5123fef2b" executionId="004d7155-f713-43ac-9d53-325f5c67ee35" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9b627b63-4437-ed00-2fdd-9d692a47b223" executionId="98e3e13c-5128-4c3f-91b6-a75004c30019" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="95b66395-da17-e8a6-9a86-dd5f790d76a4" executionId="4cd5b348-df5b-4ade-a3b8-cdc266c9667c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="bbe6fcc8-f08a-4233-0055-7b26f64868f8" executionId="5b5cb758-fdba-4f0b-a211-7a4cf34e8290" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="c61c13ab-ae59-c492-3482-99cc966e7bf2" executionId="f15e3709-ed2b-48a1-871a-23586a12c0ca" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="8fef5a25-3bfb-5306-c753-de28933e33d4" executionId="26847c21-aab2-4def-8c56-b7100d18a93e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="19a62fa4-ba8a-8bd6-e55e-c3f7aaa68d1b" executionId="3facc052-5add-4fcf-a852-0d1568820e24" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a42383c6-7446-9fcd-5815-2abbd9b12806" executionId="3a86e302-a160-46e4-aeab-20560aabcddc" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="af1f5ad9-be4f-9df1-078e-679de41b7082" executionId="28c6b829-0428-4cd3-890d-4ff47907d8ad" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="32597b88-4b5d-bd45-8c33-7c8b8f315ca4" executionId="d7abde39-6269-41bc-b03e-d1d9bba740db" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="46247e34-8bd5-4d4d-6500-54cab1f0d4b4" executionId="c8ef0924-7a92-4b38-8de1-dab5bb97ae7c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9ce300ea-4555-23d5-d0f0-68ece774ebaf" executionId="b0e55496-055e-490a-bf92-c6d1116aa721" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b2800ef2-5218-16e1-4a5f-e48609927b14" executionId="949bedd2-0677-4b3a-b6ef-3160c0ee5261" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="c61c13ab-ae59-c492-3482-99cc966e7bf2" executionId="db6c8d68-b9fc-44b3-915c-96bdb08b4351" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7a684e7e-ef4d-1233-9c7b-16b1eda902dc" executionId="be891f67-94f3-4051-aee6-8696baec7575" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="799b09d4-3a42-bb27-e578-e3a27ad5e333" executionId="20da9b41-bb82-49d7-824a-72d87a12c444" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b0277e9d-c345-7047-e66a-4e2bed00654e" executionId="a17ac132-8c95-4416-b1c8-ae45b7dacaf7" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7d1f7f22-0851-4b37-803f-2c881c4cad6d" executionId="bab737d5-a5f7-45d6-ad0a-f023f8d4f803" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="bfac9b1f-95e0-0844-3870-4eae43cd9d57" executionId="1a6dc58c-f99c-464a-af8b-ad541b54c4fc" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="ef273722-858b-2f90-7a88-b83f0c5fcdaf" executionId="06077c76-cc95-4071-b3a7-4322df385a0f" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9b627b63-4437-ed00-2fdd-9d692a47b223" executionId="130c6db4-034e-46fd-8f32-f312a122fb7b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="fdbc5c1a-0a9d-dbe8-371f-2515d1c4381e" executionId="ce07a87f-e5f7-4762-add7-b635f0c8e263" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7c18aef8-5514-cbbb-0342-b9cb5f5fc3a2" executionId="1085db6c-c630-4413-8356-07d0d6fab61f" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="dc77ac0b-027e-5e64-3c41-ed5bbdca80eb" executionId="5b821fe9-c6db-4190-baf6-2fb5dca60966" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="1330" executed="1330" passed="1330" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.01] xUnit.net VSTest Adapter v3.1.5+1b188a7b0a (64-bit .NET 11.0.0-preview.3.26170.106)
+[xUnit.net 00:00:00.62]   Discovering: Microsoft.Diagnostics.DataContractReader.Tests
+[xUnit.net 00:00:01.64]   Discovered:  Microsoft.Diagnostics.DataContractReader.Tests
+[xUnit.net 00:00:02.71]   Starting:    Microsoft.Diagnostics.DataContractReader.Tests
+[xUnit.net 00:00:14.16]   Finished:    Microsoft.Diagnostics.DataContractReader.Tests
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 0
+
+2026-05-07 14:15:27,898 - 
+================================== Ai Message ==================================
+
+<python>def parser(log: str) -> dict[str, str]:
+    import xml.etree.ElementTree as ET
+    result: dict[str, str] = {}
+    try:
+        root = ET.fromstring(log)
+    except ET.ParseError:
+        return result
+    ns = ""
+    if root.tag.startswith("{"):
+        ns = root.tag.split("}")[0] + "}"
+    for unit in root.findall(f".//{ns}UnitTestResult"):
+        name = unit.attrib.get("testName")
+        outcome = unit.attrib.get("outcome", "")
+        if not name:
+            continue
+        outcome_lower = outcome.lower()
+        if outcome_lower == "passed":
+            result[name] = "pass"
+        elif outcome_lower in ("failed", "error", "timeout", "aborted"):
+            result[name] = "fail"
+        elif outcome_lower in ("skipped", "notexecuted", "notrun"):
+            result[name] = "skip"
+    return result</python>
+2026-05-07 14:15:27,933 - 
+================================ Human Message =================================
+
+Observation:
+Your parser did not extract any test status. It returned an empty dict: {}.
+The system will only pass the last standard output of the last shell command executed into your parser function, so please make sure you have first executed a correct print command to print the test output and then run your parser to extract test status. 
+If your print command is executed correctly but parser still returned empty result, please adjust your parser to make sure it can correctly parse the test output and extract test status of each test case. 
+
+2026-05-07 14:15:41,139 - 
+================================== Ai Message ==================================
+
+<python>def parser(log: str) -> dict[str, str]:
+    import re
+    result: dict[str, str] = {}
+    pattern = re.compile(r'testName="([^"]+)"[^>]*\boutcome="([^"]+)"', re.IGNORECASE)
+    for m in pattern.finditer(log):
+        name, outcome = m.group(1), m.group(2)
+        outcome_lower = outcome.lower()
+        if outcome_lower == "passed":
+            result[name] = "pass"
+        elif outcome_lower in ("failed", "error", "timeout", "aborted"):
+            result[name] = "fail"
+        elif outcome_lower in ("skipped", "notexecuted", "notrun"):
+            result[name] = "skip"
+    return result</python>
+2026-05-07 14:15:41,637 - 
+================================ Human Message =================================
+
+Observation:
+
+Below is the execution result of your Python script:
+{
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040zd&quot;, value: -24, width: 40, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 1, arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, methodDescType: DynamicMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc(test: PrecodeTestDescriptor { Arch = Architecture { IsLittleEndian = True, Is64Bit = True }, IsThumb = False, Name = &quot;Arm64&quot;, OffsetOfPrecodeType = 0, ReadWidthOfPrecodeType = 1, \u00b7\u00b7\u00b7 }, contractVersion: 1)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_HotColdBlock(version: 1, arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetILAddr_WebcilInvalidSectionCountThrows(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 1, arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.TryGetRuntimeFunctionIndexForAddress_NoMatch(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, methodDescType: ArrayMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.MethodTableEEClassInvalidThrows(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%0zi&quot;, value: -9223372036854775808, width: null, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RangeSectionMapTests.TestLookupFail(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.UnsignedIntegerSpecifier(specifier: &quot;%u&quot;, value: 0)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc(test: PrecodeTestDescriptor { Arch = Architecture { IsLittleEndian = True, Is64Bit = True }, IsThumb = False, Name = &quot;X64&quot;, OffsetOfPrecodeType = 0, ReadWidthOfPrecodeType = 1, \u00b7\u00b7\u00b7 }, contractVersion: 1)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.TryGetSimpleName(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.PointerSpecifier(specifier: &quot;%p&quot;, value: 18446744073709551614)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%40i&quot;, value: 0, width: 40, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040d&quot;, value: -24, width: 40, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%04zd&quot;, value: -1, width: 4, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsExtendsCOMObject_FlagNotSet_ReturnsFalse(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040i&quot;, value: -2147483648, width: 40, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%04lli&quot;, value: 0, width: 4, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 1, arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetString_NullMessageNonEmptyBuffer(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsExtendsCOMObject_FlagNotSet_ReturnsFalse(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RangeSectionMapTests.TestGetIndexForLevel(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%40zi&quot;, value: -1, width: 40, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.GetRegisterNameTests.GetRegisterName_CallerFrame_PrependsCaller(targetArch: LoongArch64, regNum: 1, expectedRegName: &quot;RA&quot;)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.TypeDescTests.IsFunctionPointer(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ObjectTests.GetObjectClassName_NullBufferReturnsNeededSize(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.GetRegisterNameTests.GetRegisterName_ReturnsCorrectName(targetArch: RiscV64, regNum: 0, expectedName: &quot;zero&quot;)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%4d&quot;, value: 42, width: 4, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.TryGetRuntimeFunctionIndexForAddress_NoMatch(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitId_SyntheticAndExplicit_Success(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_OneRangeOneMethod(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_ZeroFields_AreNull(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.GetRegisterNameTests.GetRegisterName_CallerFrame_PrependsCaller(targetArch: RiscV64, regNum: 1, expectedRegName: &quot;RA&quot;)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetCurrentExceptionState_NestedException(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.TryGetRuntimeFunctionIndexForAddress(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_NullInBuffer_InvalidArgs(reqCode: 305419896, inBufferSize: 0, outBufferSize: 4)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.GetMethodTableDataReturnsEInvalidArgWhenEEClassPartiallyReadable(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%4lld&quot;, value: -9223372036854775808, width: 4, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.TryGetSimpleName(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%4d&quot;, value: 0, width: 4, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetTask": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetGCStressCodeCopy_Null(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RangeSectionMapTests.TestLookupOne(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetBuiltInComData_WithInteropData(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetILAddr_WebcilNegativeRvaThrows(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsHandleWeak_FlagNotSet_ReturnsFalse(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetString_BufferOverflow(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetAddressOfNativeCodeSlot_OptionalSlots(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, flagsValue: 0)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PlatformContextTests.AMD64_OutOfRange_ReturnsFalse(regNum: 16)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetPrevious_NoPrevious": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsNeutered_SentinelBitClear_ReturnsFalse(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetNextSyncBlock_ReturnsNextInChain(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.IterateThreads(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = False, Is64Bit = True }, methodDescType: CLRToCOMCallMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTable_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, methodDescType: InstantiatedMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RangeSectionMapTests.TestLookupOne(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetThreadAllocContext(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%4lli&quot;, value: -24, width: 4, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapLinearLookupTests.ExhaustiveNibbbleShifts(irrelevant: 0)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.IterateThreads(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_NullInBuffer_InvalidArgs(reqCode: 3758096384, inBufferSize: 0, outBufferSize: 8)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateSystemObjectMethodTable(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.RuntimeInfoTests.GetTargetArchitectureTest(arch: Architecture { IsLittleEndian = False, Is64Bit = False }, architecture: &quot;x86&quot;, expectedArchitecture: X86)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetNativeCodeVersion_OneVersion_NonVersionable(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsAggregated_FlagSet_ReturnsTrue(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitId_SyntheticAndExplicit_Success(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWInterfaces_SingleWrapper_SkipsNullAndIncompleteSlots(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_MultipleRuntimeFunctions(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%4zi&quot;, value: 42, width: 4, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = False, Is64Bit = False }, methodDescType: FCallMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetAddressOfNativeCodeSlot_OptionalSlots(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, flagsValue: 40)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SimpleFloatingPoint(value: -42)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.TypeDescTests.GetTypeParam(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateGenericInstMethodTable(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%40zi&quot;, value: 0, width: 40, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%40zd&quot;, value: 0, width: 40, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ObjectTests.GetObjectClassName_NullBufferReturnsNeededSize(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_OneRuntimeFunction(version: 2, arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexIntegerSpecifier(specifier: &quot;%X&quot;, value: 42)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetNumberGenerations_WithFiveGenerations(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%04d&quot;, value: 2147483647, width: 4, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetPrevious_NestedExceptionsChain(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%40lld&quot;, value: -9223372036854775808, width: 40, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040zd&quot;, value: -9223372036854775808, width: 40, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWData_IsDisconnected_Sentinel(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_OneRangeOneMethod(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTable_ServerGC_ReturnsEFail(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.RuntimeInfoTests.GetTargetArchitectureTest(arch: Architecture { IsLittleEndian = False, Is64Bit = True }, architecture: &quot;arm&quot;, expectedArchitecture: Arm)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWInterfaces_SkipsEntriesWithNullUnknown(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_R2R_NoRuntimeFunctionMatch(version: 2, arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%zi&quot;, value: -24, width: null, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetNextSyncBlock_ReturnsNextInChain(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetFinalizationFillPointersSvr_WorkstationGC_ReturnsEFail(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%0zd&quot;, value: 42, width: null, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%40lld&quot;, value: 9223372036854775807, width: 40, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.DacStreamsTests.DacStreamValues(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetThreadAllocContext_ZeroValues(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%4d&quot;, value: 2147483647, width: 4, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetFileName(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetObjectHandle_ReturnsHandleFromWrapper(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.GCTests.GetHeapData_ReturnsCorrectGenerationTable(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.PointerSpecifier(specifier: &quot;%p&quot;, value: 18446744073709551615)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, methodDescType: DynamicMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetFinalizationFillPointers_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetCurrentExceptionHandle_HandlePointsToNull(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction(version: 2, arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.TypeDescTests.IsFunctionPointer(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.ParserTests.ParseContractsCaseSensitive": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%40i&quot;, value: 42, width: 40, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateMultidimArrayRank(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_Null(version: 1, arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PlatformContextTests.ARM64_TrySetAndRead_ByNumber_RoundTrips(regNum: 0, testValue: 4660)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.TryGetRuntimeFunctionIndexForAddress_NoMatch(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%0d&quot;, value: -2147483648, width: null, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetActiveNativeCodeVersion_ExplicitILCodeVersion(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = False, Is64Bit = True }, methodDescType: PInvokeMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWData_ReturnsScalarFields(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.GCTests.GetHeapData_WithFiveGenerations(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetGCStressCodeCopy_NotNull(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetCurrentExceptionState_WithException(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.RuntimeInfoTests.GetTargetOperatingSystemTest(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, os: &quot;unix&quot;, expectedOS: Unix)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.RuntimeInfoTests.GetTargetArchitectureTest(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, architecture: &quot;ppc64le&quot;, expectedArchitecture: Ppc64le)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetMethodDescHandle_ILMethod_GetBasicData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PlatformContextTests.ARM64_OutOfRange_ReturnsFalse(regNum: 33)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetObjectHandle_NullHandle_ReturnsNull(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateSystemStringMethodTable(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWInterfaces_ComIpAddress_ResolvesToCCW(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetLoaderAllocatorHeaps_NullAddress(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexIntegerSpecifier(specifier: &quot;%x&quot;, value: 42)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%0zd&quot;, value: -24, width: null, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.GetMethodTableDataReturnsEInvalidArgWhenMethodTablePartiallyReadable(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%4lli&quot;, value: -1, width: 4, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.GetFunctionLength(arch: Architecture { IsLittleEndian = False, Is64Bit = False }, includeEndAddress: True, unwindInfoIsFunctionLength: True)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateSystemStringMethodTable(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.GetFunctionLength(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, includeEndAddress: True, unwindInfoIsFunctionLength: False)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexWithPrefixIntegerSpecifier(specifier: &quot;%#X&quot;, value: 42)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetActiveNativeCodeVersion_IterateVersionNodes_NoMatch(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_Success": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040d&quot;, value: 0, width: 40, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateArrayInstMethodTable(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_R2R_NoRuntimeFunctionMatch(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWContext_ReturnsCtxCookie(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.IsEnabled_RejitOnAttachDisabled_NoProfiler_ReturnsFalse(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetStartWrapper_SingleWrapper_ReturnsSelf(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, methodDescType: InstantiatedMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.SubDescriptor_Multiple_Breadth(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetActiveNativeCodeVersion_ExplicitILCodeVersion_NoMatch(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.StringSpecifier(specifier: &quot;%ls&quot;, value: &quot;Hello, World!&quot;, utf16: True)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%0lld&quot;, value: 0, width: null, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040i&quot;, value: -1, width: 40, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_OneRangeOneMethod(version: 1, arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ObjectTests.GetObjectClassName_ZeroAddress(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetString_WithMessage(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsExtendsCOMObject_FlagNotSet_ReturnsFalse(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.RuntimeInfoTests.GetTargetArchitectureTest(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, architecture: &quot;ppc64le&quot;, expectedArchitecture: Ppc64le)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc(test: PrecodeTestDescriptor { Arch = Architecture { IsLittleEndian = True, Is64Bit = True }, IsThumb = False, Name = &quot;RiscV64&quot;, OffsetOfPrecodeType = 0, ReadWidthOfPrecodeType = 1, \u00b7\u00b7\u00b7 }, contractVersion: 2)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexIntegerSpecifier(specifier: &quot;%Ix&quot;, value: 42)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%4zd&quot;, value: 9223372036854775807, width: 4, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%04lli&quot;, value: 9223372036854775807, width: 4, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.DacStreamsTests.DacStreamValues_TruncatedTotalSize(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_HotColdBlock(version: 2, arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.PointerSpecifier(specifier: &quot;%I64p&quot;, value: 18446744073709551615)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040zd&quot;, value: 9223372036854775807, width: 40, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%i&quot;, value: -2147483648, width: null, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.SubDescriptor_Multiple_Breadth(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetLoaderAllocatorHeapNames_GetNames(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_MultipleRuntimeFunctions(version: 2, arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetActiveNativeCodeVersion_ExplicitILCodeVersion_NoMatch(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%d&quot;, value: 2147483647, width: null, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HashMapTests.GetValue_NoMatch(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetSyncBlockFromCleanupList_MultipleItems_ReturnsFirst(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%40zi&quot;, value: -24, width: 40, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetAddressOfNativeCodeSlot_OptionalSlots(arch: Architecture { IsLittleEndian = False, Is64Bit = False }, flagsValue: 56)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetLoaderAllocatorHeaps_GetHeaps(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsAggregated_FlagNotSet_ReturnsFalse(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateContinuationMethodTablePointer(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_ZeroFields_AreNull(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetObjectHandle_NullHandle_ReturnsNull(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040lli&quot;, value: -9223372036854775808, width: 40, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWInterfaces_LinkedWrapper_WalksFullChainFromAnyWrapper(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HashMapTests.GetValue_Collision(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetILAddr_WebcilNegativeRvaThrows(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_Null(version: 2, arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%040zi&quot;, value: -9223372036854775808, width: 40, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = False, Is64Bit = True }, methodDescType: ArrayMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_OneRangeOneMethod(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexIntegerSpecifier(specifier: &quot;%Ix&quot;, value: 18446744073709551615)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.GetFunctionLength(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, includeEndAddress: True, unwindInfoIsFunctionLength: False)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%04zi&quot;, value: -9223372036854775808, width: 4, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWInterfaces_EmptyCache_ReturnsEmpty(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetAddressOfNativeCodeSlot_OptionalSlots(arch: Architecture { IsLittleEndian = False, Is64Bit = False }, flagsValue: 24)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.RuntimeInfoTests.GetTargetArchitectureTest(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, architecture: &quot;riscv64&quot;, expectedArchitecture: RiscV64)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%0d&quot;, value: 2147483647, width: null, paddingChar: '0')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitId_SyntheticAndExplicit_Success(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.GetFunctionLength(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, includeEndAddress: False, unwindInfoIsFunctionLength: False)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWInterfaces_MultipleWrappers_WalksChain(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexWithPrefixIntegerSpecifier(specifier: &quot;%#X&quot;, value: 18446744073709551615)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.GCTests.GetHeapData_ReturnsCorrectGenerationTable(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_ReturnsAllFields(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: &quot;%i&quot;, value: 2147483647, width: null, paddingChar: ' ')": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.RuntimeInfoTests.GetTargetOperatingSystemTest(arch: Architecture { IsLittleEndian = True, Is64Bit = True }, os: &quot;notAnOperatingSystem&quot;, expectedOS: Unknown)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.RuntimeInfoTests.GetTargetArchitectureTest(arch: Architecture { IsLittleEndian = True, Is64Bit = False }, architecture: &quot;x64&quot;, expectedArchitecture: X64)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.DacStreamsTests.DacStreamValues(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetSyncBlockFromCleanupList_MultipleItems_ReturnsFirst(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.GetNativeCode_StableEntryPoint_NonVtableSlot(arch: Architecture { IsLittleEndian = False, Is64Bit = True }, methodDescType: EEImplMethodDesc)": "pass",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexIntegerSpecifier(specifie
+...result truncated due to length...
+
+Please judge whether:
+(1) Your Python script extracts the statuses of all testcases and 
+(2) Your script and test command have made best effort to reveal the status of each unit testcase under a test suite / set if there's test suite / set. The testcase names in your output should be split to the finest granularity.
+If not successful, please adjust your test command, run your new test command in container, and adjust your Python script to extract test status.
+If successful, please submit.
+
+2026-05-07 14:15:47,122 - 
+================================== Ai Message ==================================
+
+<submit>
+    <test_command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --logger "trx;LogFileName=reports/test-results.trx"</test_command>
+    <print_command>cat src/native/managed/cdac/tests/TestResults/reports/test-results.trx</print_command>
+    <parser>parsing success</parser>
+</submit>
+2026-05-07 14:15:47,402 - ----------End verify conversation----------
+2026-05-07 14:15:53,211 - Rerunning test command: /testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --logger "trx;LogFileName=reports/test-results.trx"
+2026-05-07 14:16:15,895 - Running print command: cat src/native/managed/cdac/tests/TestResults/reports/test-results.trx
+2026-05-07 14:17:38,917 - ----------Start parse log conversation----------
+2026-05-07 14:18:34,606 - 
+================================== Ai Message ==================================
+
+Thought: I should analyze the current parser against the TRX XML output to identify gaps and robustness issues before generating an improved parser.
+Action: <analyze>Draft parser uses regex on testName/outcome attributes, which works for UnitTestResult elements but may miss cases when attributes span lines, include single quotes, or when TRX uses namespaces and different element types (e.g., nested ResultSummary). It ignores skipped/notrun outcomes like "NotExecuted" with different casing/spelling. It also doesn't decode XML entities, so names include &quot; instead of quotes. It doesn't handle XML with BOM or namespace prefixes that may break regex assumptions. It assumes testName before outcome, so could miss when order changes. It also doesn't handle other frameworks (JUnit/pytest/go) if log contains multiple formats. Need robust XML parsing: strip BOM, use ElementTree with namespace handling, iterate UnitTestResult nodes, read testName and outcome regardless of attribute order. Map outcomes to pass/fail/skip including "Passed", "Failed", "Error", "Timeout", "Aborted", "Skipped", "NotExecuted", "NotRun", "Inconclusive". If XML parsing fails, fallback to regex that is order-agnostic. Also unescape XML entities for test names.</analyze>
+2026-05-07 14:18:34,983 - 
+================================ Human Message =================================
+
+Observation:
+Analysis completed: Draft parser uses regex on testName/outcome attributes, which works for UnitTestResult elements but may miss cases when attributes span lines, include single quotes, or when TRX uses namespaces and different element types (e.g., nested ResultSummary). It ignores skipped/notrun outcomes like "NotExecuted" with different casing/spelling. It also doesn't decode XML entities, so names include &quot; instead of quotes. It doesn't handle XML with BOM or namespace prefixes that may break regex assumptions. It assumes testName before outcome, so could miss when order changes. It also doesn't handle other frameworks (JUnit/pytest/go) if log contains multiple formats. Need robust XML parsing: strip BOM, use ElementTree with namespace handling, iterate UnitTestResult nodes, read testName and outcome regardless of attribute order. Map outcomes to pass/fail/skip including "Passed", "Failed", "Error", "Timeout", "Aborted", "Skipped", "NotExecuted", "NotRun", "Inconclusive". If XML parsing fails, fallback to regex that is order-agnostic. Also unescape XML entities for test names.
+
+Now try to write the parser.
+2026-05-07 14:19:05,414 - 
+================================== Ai Message ==================================
+
+Thought: I will implement a robust parser using XML parsing with namespace handling and a regex fallback, then test it.
+Action: <python>def parser(log: str) -> dict[str, str]:
+    import re
+    import html
+    import xml.etree.ElementTree as ET
+
+    results: dict[str, str] = {}
+
+    def normalize_outcome(outcome: str) -> str | None:
+        if not outcome:
+            return None
+        o = outcome.strip().lower()
+        if o in {"passed", "pass", "success", "succeeded"}:
+            return "pass"
+        if o in {"failed", "fail", "error", "timeout", "aborted", "crash", "crashed", "canceled", "cancelled"}:
+            return "fail"
+        if o in {"skipped", "skip", "notexecuted", "notrun", "ignored", "inconclusive", "pending"}:
+            return "skip"
+        return None
+
+    text = log.lstrip("\ufeff").strip()
+
+    # Try XML parsing first (TRX, JUnit, etc.)
+    try:
+        root = ET.fromstring(text)
+        # Iterate over any element named UnitTestResult regardless of namespace
+        for elem in root.iter():
+            if elem.tag.endswith("UnitTestResult"):
+                name = elem.attrib.get("testName") or elem.attrib.get("name")
+                outcome = elem.attrib.get("outcome") or elem.attrib.get("result")
+                status = normalize_outcome(outcome)
+                if name and status:
+                    results[html.unescape(name)] = status
+        if results:
+            return results
+    except Exception:
+        pass
+
+    # Generic JUnit/TestNG style XML
+    try:
+        root = ET.fromstring(text)
+        for tc in root.iter():
+            if tc.tag.endswith("testcase"):
+                name = tc.attrib.get("name")
+                status = "pass"
+                for child in list(tc):
+                    if child.tag.endswith(("failure", "error")):
+                        status = "fail"
+                        break
+                    if child.tag.endswith("skipped"):
+                        status = "skip"
+                if name:
+                    results[html.unescape(name)] = status
+        if results:
+            return results
+    except Exception:
+        pass
+
+    # Regex fallback for TRX-like attributes, any order
+    attr_pattern = re.compile(
+        r'<UnitTestResult\b[^>]*>',
+        re.IGNORECASE | re.DOTALL
+    )
+    name_pattern = re.compile(r'\btestName="([^"]+)"', re.IGNORECASE)
+    outcome_pattern = re.compile(r'\boutcome="([^"]+)"', re.IGNORECASE)
+
+    for m in attr_pattern.finditer(text):
+        tag = m.group(0)
+        name_match = name_pattern.search(tag)
+        outcome_match = outcome_pattern.search(tag)
+        if name_match and outcome_match:
+            name = html.unescape(name_match.group(1))
+            status = normalize_outcome(outcome_match.group(1))
+            if status:
+                results[name] = status
+
+    if results:
+        return results
+
+    # Line-based fallback (pytest/go/unittest/jest)
+    line_patterns = [
+        (re.compile(r'^(.+?)\s+PASSED\b', re.IGNORECASE), "pass"),
+        (re.compile(r'^(.+?)\s+FAILED\b', re.IGNORECASE), "fail"),
+        (re.compile(r'^(.+?)\s+SKIPPED\b', re.IGNORECASE), "skip"),
+        (re.compile(r'^---\s+PASS:\s+(.+)$', re.IGNORECASE), "pass"),
+        (re.compile(r'^---\s+FAIL:\s+(.+)$', re.IGNORECASE), "fail"),
+        (re.compile(r'^---\s+SKIP:\s+(.+)$', re.IGNORECASE), "skip"),
+        (re.compile(r'^(.+?)\s+\.\.\.\s+ok$', re.IGNORECASE), "pass"),
+        (re.compile(r'^(.+?)\s+\.\.\.\s+FAIL$', re.IGNORECASE), "fail"),
+        (re.compile(r'^(.+?)\s+\.\.\.\s+ERROR$', re.IGNORECASE), "fail"),
+        (re.compile(r'^\s*[✓✔]\s+(.+)$'), "pass"),
+        (re.compile(r'^\s*[✗✕×]\s+(.+)$'), "fail"),
+        (re.compile(r'^\s*[○◌]\s+(.+)$'), "skip"),
+    ]
+
+    for line in text.splitlines():
+        line = line.strip()
+        for pattern, status in line_patterns:
+            match = pattern.search(line)
+            if match:
+                name = html.unescape(match.group(1).strip())
+                results[name] = status
+                break
+
+    return results</python>
+2026-05-07 14:19:07,780 - 
+================================ Human Message =================================
+
+Observation:
+Test results for improved parser:
+{
+  "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.SubDescriptor_Multiple_Nested(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.UnsignedIntegerSpecifier(specifier: \"%u\", value: 18446744073709551615)": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetILAddr_WebcilRvaNotInAnySectionThrows(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsHandleWeak_FlagSet_ReturnsTrue(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.StringSpecifier(specifier: \"%s\", value: \"Recursive pattern %d\", utf16: False)": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitIds_SyntheticAndExplicit_Success(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc(test: PrecodeTestDescriptor { Arch = Architecture { IsLittleEndian = True, Is64Bit = False }, IsThumb = True, Name = \"Arm32Thumb\", OffsetOfPrecodeType = 7, ReadWidthOfPrecodeType = 1, \u00b7\u00b7\u00b7 }, contractVersion: 2)": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitIds_SyntheticAndExplicit_Success(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_InsufficientBuffer_ReturnsSFalseAndNeededCount(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetNumberGenerations_ServerGC_ReturnsCorrectCount(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetSyncBlockFromCleanupList_MultipleItems_ReturnsFirst(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_NoRangeSections(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.ReadIndirectGlobalValue(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.WriteBuffer(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.GetRegisterNameTests.GetRegisterName_CallerFrame_PrependsCaller(targetArch: X86, regNum: 3, expectedRegName: \"ebx\")": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetNextSyncBlock_LastItemReturnsNull(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%0i\", value: 2147483647, width: null, paddingChar: '0')": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateGenericInstMethodTable(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWInterfaces_SkipsEntriesWithNullUnknown(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetFinalizationFillPointersSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexWithPrefixIntegerSpecifier(specifier: \"%#x\", value: 18446744073709551614)": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_OneRangeOneMethod(version: 2, arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetLoaderAllocatorHeapNames_InsufficientBuffer(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.WriteBuffer(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_CollectibleFragmentNext(version: 2, arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetString_WithMessage(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetFinalizationFillPointers_ServerGC_ReturnsEFail(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%040zi\", value: -24, width: 40, paddingChar: '0')": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapConstantLookupTests.NibbleMapOneItemLookupOk(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetCurrentExceptionState_WithException(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexIntegerSpecifier(specifier: \"%llX\", value: 18446744073709551615)": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.IsDynamicMethod(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%40lli\", value: -24, width: 40, paddingChar: ' ')": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTable_InsufficientBuffer_ReturnsSFalseAndNeededCount(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.FloatingPointWithPrecisionAndWidth(value: -42, expected: \"-42\")": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PlatformContextTests.LoongArch64_OutOfRange_ReturnsFalse(regNum: 32)": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%40zd\", value: 9223372036854775807, width: 40, paddingChar: ' ')": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.IsEnabled_RejitOnAttachDisabled_NoProfiler_ReturnsFalse(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_NoRangeSections(version: 1, arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%04lld\", value: 42, width: 4, paddingChar: '0')": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetLoaderAllocatorHeapNames_InsufficientBuffer(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.ParserTests.ParsesTrivialContract": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.MethodDescTests.IsArrayMethod(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWInterfaces_SingleWrapper_SkipsNullAndIncompleteSlots(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%4d\", value: 42, width: 4, paddingChar: ' ')": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%d\", value: 0, width: null, paddingChar: ' ')": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetLoaderAllocatorHeapNames_GetCount(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%i\", value: 0, width: null, paddingChar: ' ')": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_NonNullInBuffer_InvalidArgs": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.GetRegisterNameTests.GetRegisterName_ReturnsCorrectName(targetArch: X86, regNum: 0, expectedName: \"eax\")": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWData_ReturnsScalarFields(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.HexIntegerSpecifier(specifier: \"%Ix\", value: 42)": "pass",
+  "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapLinearLookupTests.NibbleMapOneItemLookupOk(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "pass",
+  "Mic
+...result truncated due to length...
+
+Comparison with original parser:
+- Original parser found: 1330 test cases
+- Improved parser found: 1330 test cases
+- Difference: 0 test cases
+
+Please analyze if this is an improvement and submit if satisfied.
+2026-05-07 14:19:15,878 - 
+================================== Ai Message ==================================
+
+Thought: The improved parser is robust and matches all cases; I should submit it.
+Action: <submit>final parser is ready and tested</submit>
+2026-05-07 14:19:15,909 - ----------End parse log conversation----------
+2026-05-07 14:19:30,044 - setup state: True, 0, None ... 
+2026-05-07 14:19:30,111 - ----------Start unit test conversation----------
+2026-05-07 14:19:38,676 - 
+================================== Ai Message ==================================
+
+Thought: Determine how to run a single test case using dotnet test with a filter.
+Action: <command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter "FullyQualifiedName=Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })"</command>
+2026-05-07 14:19:49,726 - 
+================================ Human Message =================================
+
+Observation:
+/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter "FullyQualifiedName=Microsoft.Diagnostics.DataContractReader.Tests..SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecturre { IsLittleEndian = True, Is64Bit = False })"
+=
+Test run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)
+=A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:01.04] Microsoft.Diagnostics.DataContractReader.Tests: Exception filtering tests: Incorrect format for TestCaseFilter Error: Invalid Condition 'arch: Architecture { IsLittleEndian = True, Is64Bit = False }'. Specify the correct format and try again. Note that the incorrect format can lead to no test getting executed.
+No test matches the given testcase filter `FullyQualifiedName=Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })` in /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll
+=
+=
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 0
+
+2026-05-07 14:20:20,795 - 
+================================== Ai Message ==================================
+
+Thought: Try filtering by DisplayName using quoted value to handle spaces.
+Action: <command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter "DisplayName='Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })'"</command>
+2026-05-07 14:20:31,106 - 
+================================ Human Message =================================
+
+Observation:
+/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter "DisplayName='Microsoft.Diagnostics.DataContractReader.Tests.SOSDaccInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IssLittleEndian = True, Is64Bit = False })'"
+=
+Test run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)
+=A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.97] Microsoft.Diagnostics.DataContractReader.Tests: Exception filtering tests: Incorrect format for TestCaseFilter Error: Invalid Condition 'arch: Architecture { IsLittleEndian = True, Is64Bit = False }'. Specify the correct format and try again. Note that the incorrect format can lead to no test getting executed.
+No test matches the given testcase filter `DisplayName='Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })'` in /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll
+=
+=
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 0
+
+2026-05-07 14:21:04,769 - 
+================================== Ai Message ==================================
+
+Thought: Try using double-quoted value inside the filter expression.
+Action: <command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter "DisplayName=\"Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })\""</command>
+2026-05-07 14:21:06,541 - 
+================================ Human Message =================================
+
+Observation:
+/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter "DisplayName=\"Microsoft.Diagnostics.DataContractReader.Tests.SOSDaacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IIsLittleEndian = True, Is64Bit = False })\""
+=MSBUILD : error MSB4177: Invalid property. The name "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian " contains an invalid character ".".
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 1
+
+2026-05-07 14:21:32,558 - 
+================================== Ai Message ==================================
+
+Thought: Try escaping parentheses in DisplayName filter to avoid parsing them as grouping.
+Action: <command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter "DisplayName=Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData\(arch: Architecture { IsLittleEndian = True, Is64Bit = False }\)"</command>
+2026-05-07 14:21:43,171 - 
+================================ Human Message =================================
+
+Observation:
+/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter "DisplayName=Microsoft.Diagnostics.DataContractReader.Tests.SOSDacIInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData\(arch: Architecture { IssLittleEndian = True, Is64Bit = False }\)"
+=
+Test run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)
+=A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:01.03] Microsoft.Diagnostics.DataContractReader.Tests: Exception filtering tests: Incorrect format for TestCaseFilter Error: Invalid Condition 'DisplayName=Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData\(arch: Architecture { IsLittleEndian = True, Is64Bit = False }\)'. Specify the correct format and try again. Note that the incorrect format can lead to no test getting executed.
+No test matches the given testcase filter `DisplayName=Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData\(arch: Architecture { IsLittleEndian = True, Is64Bit = False }\)` in /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll
+=
+=
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 0
+
+2026-05-07 14:21:55,772 - 
+================================== Ai Message ==================================
+
+Thought: List tests to see the exact display names and filtering behavior.
+Action: <command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --list-tests</command>
+2026-05-07 14:22:10,500 - 
+================================ Human Message =================================
+
+Observation:
+/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --list-tests
+=
+Test run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)
+=The following Tests are available:
+=    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_RefCount_ReturnsMaskedValue
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsHandleWeak_FlagSet_ReturnsTrue
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsHandleWeak_FlagNotSet_ReturnsFalse
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsNeutered_SentinelBitSet_ReturnsTrue
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsNeutered_SentinelBitClear_ReturnsFalse
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsAggregated_FlagSet_ReturnsTrue
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsAggregated_FlagNotSet_ReturnsFalse
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsExtendsCOMObject_FlagSet_ReturnsTrue
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsExtendsCOMObject_FlagNotSet_ReturnsFalse
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWInterfaces_SingleWrapper_SkipsNullAndIncompleteSlots
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWInterfaces_MultipleWrappers_WalksChain
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWInterfaces_LinkedWrapper_WalksFullChainFromAnyWrapper
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWInterfaces_ReturnsFilledEntries
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWInterfaces_ComIpAddress_ResolvesToCCW
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWInterfaces_SkipsEntriesWithNullUnknown
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWInterfaces_EmptyCache_ReturnsEmpty
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWData_ReturnsScalarFields
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWData_FlagsAggregatedAndContained
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWData_FlagsFreeThreaded
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWData_IsDisconnected_Sentinel
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWData_IsDisconnected_CtxCookieMismatch
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWData_ManagedObject_ResolvedViaSyncBlockIndex
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWContext_ReturnsCtxCookie
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetCCWFromInterfacePointer_SCCWIp_ResolvesToStartCCW
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetObjectHandle_ReturnsHandleFromWrapper
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetObjectHandle_NullHandle_ReturnsNull
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetStartWrapper_SingleWrapper_ReturnsSelf
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetStartWrapper_LinkedWrapper_NavigatesToStart
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_ReturnsAllFields
+    Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_ZeroFields_AreNull
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetFlags(inputFlags: 0, hasNestedException: False, expectedFlags: 0)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetFlags(inputFlags: 0, hasNestedException: True, expectedFlags: 1)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetFlags(inputFlags: 2, hasNestedException: True, expectedFlags: 3)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetString_WithMessage
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetString_NullMessage
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetString_NullMessageNonEmptyBuffer
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetString_BufferOverflow
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_NullInBuffer_InvalidArgs(reqCode: 3758096384, inBufferSize: 1, outBufferSize: 4)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_NullInBuffer_InvalidArgs(reqCode: 3758096384, inBufferSize: 0, outBufferSize: 0)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_NullInBuffer_InvalidArgs(reqCode: 3758096384, inBufferSize: 0, outBufferSize: 8)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_NullInBuffer_InvalidArgs(reqCode: 305419896, inBufferSize: 0, outBufferSize: 4)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_NonNullInBuffer_InvalidArgs
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.Request_Success
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetTask
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetCurrentExceptionState_NestedException
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetCurrentExceptionState_WithException
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetCurrentExceptionState_NoException
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetPrevious_NoPrevious
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetPrevious_HasPrevious_ReturnsState
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetPrevious_NestedExceptionsChain
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetLastExceptionState_NoException
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetLastExceptionState_WithException
+    Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetLastExceptionState_NoPreviousExceptionInfo
+    Microsoft.Diagnostics.DataContractReader.Tests.ClrDataTaskTests.GetCurrentAppDomain
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetNativeCodeVersion_Null
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetNativeCodeVersion_OneVersion_NonVersionable
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetNativeCodeVersion_OneVersion_Versionable
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetActiveNativeCodeVersion_DefaultCase
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetActiveNativeCodeVersion_IterateVersionNodes
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetActiveNativeCodeVersion_IterateVersionNodes_NoMatch
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetActiveNativeCodeVersion_ExplicitILCodeVersion
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetActiveNativeCodeVersion_ExplicitILCodeVersion_NoMatch
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetILCodeVersions_SyntheticAndExplicit
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.IlToNativeToIlCodeVersion_SyntheticAndExplicit
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetGCStressCodeCopy_Null
+    Microsoft.Diagnostics.DataContractReader.Tests.CodeVersionsTests.GetGCStressCodeCopy_NotNull
+    Microsoft.Diagnostics.DataContractReader.Tests.DacStreamsTests.DacStreamValues
+    Microsoft.Diagnostics.DataContractReader.Tests.DacStreamsTests.DacStreamValues_TruncatedTotalSize
+    Microsoft.....stripped due to length....
+ctReader.Tests.SOSDacInterface8Tests.GetFinalizationFillPointersSvr_WorkstationGC_ReturnsEFail
+    Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetSyncBlockFromCleanupList_SingleItem
+    Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetSyncBlockFromCleanupList_MultipleItems_ReturnsFirst
+    Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetNextSyncBlock_ReturnsNextInChain
+    Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetNextSyncBlock_LastItemReturnsNull
+    Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetBuiltInComData_NoInteropInfo
+    Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetBuiltInComData_WithInteropData
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetThreadStoreData
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetThreadData
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.IterateThreads
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetThreadAllocContext
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetThreadAllocContext_ZeroValues
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetStackLimits
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetCurrentExceptionHandle_NoException
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetCurrentExceptionHandle_WithException
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetCurrentExceptionHandle_NullExceptionTracker
+    Microsoft.Diagnostics.DataContractReader.Tests.ThreadTests.GetCurrentExceptionHandle_HandlePointsToNull
+    Microsoft.Diagnostics.DataContractReader.Tests.TypeDescTests.GetModule
+    Microsoft.Diagnostics.DataContractReader.Tests.TypeDescTests.GetTypeParam
+    Microsoft.Diagnostics.DataContractReader.Tests.TypeDescTests.IsFunctionPointer
+    Microsoft.Diagnostics.DataContractReader.Tests.TypeDescTests.IsGenericVariable
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_Null
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_NoRangeSections
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_OneRangeOneMethod
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_OneRangeZeroMethod
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_OneRangeOneMethod
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_R2R_NoRuntimeFunctionMatch
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_OneRuntimeFunction
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_MultipleRuntimeFunctions
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_R2R_HotColdBlock
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetUnwindInfoBaseAddress_R2R_ManyRuntimeFunction
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetMethodDesc_CollectibleFragmentNext
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetEEJitManagerInfo_ReturnsManagerAddress
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetEEJitManagerInfo_WithCodeHeaps
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HashMapTests.GetValue
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HashMapTests.GetValue_Collision
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HashMapTests.GetValue_NoMatch
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HotColdLookupTests.GetHotFunctionIndex
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HotColdLookupTests.GetHotFunctionIndex_ColdFunclet
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HotColdLookupTests.GetHotFunctionIndex_EmptyMap
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HotColdLookupTests.GetHotFunctionIndex_NoEntryInMap
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HotColdLookupTests.TryGetColdFunctionIndex
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HotColdLookupTests.TryGetColdFunctionIndex_ColdFunclet
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HotColdLookupTests.TryGetColdFunctionIndex_EmptyMap
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.HotColdLookupTests.TryGetColdFunctionIndex_NoEntryInMap
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapLinearLookupTests.RoundTripAddressTest
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapLinearLookupTests.ExhaustiveNibbbleShifts(irrelevant: 0)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapLinearLookupTests.ExhaustiveNibbbleShifts(irrelevant: 256)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapLinearLookupTests.ExhaustiveNibbbleShifts(irrelevant: 43776)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapLinearLookupTests.ExhaustiveNibbbleShifts(irrelevant: 12379739849815490304)
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapLinearLookupTests.NibbleMapOneItemLookupOk
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.NibbleMapConstantLookupTests.NibbleMapOneItemLookupOk
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RangeSectionMapTests.TestLookupFail
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RangeSectionMapTests.TestLookupOne
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RangeSectionMapTests.TestGetIndexForLevel
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.GetFunctionLength
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.TryGetRuntimeFunctionIndexForAddress
+    Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.RuntimeFunctionTests.TryGetRuntimeFunctionIndexForAddress_NoMatch
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.ParserTests.ParsesEmptyContract
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.ParserTests.ParsesTrivialContract
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.ParserTests.ParseSizedTypes
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.ParserTests.ParseContractsCaseSensitive
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.ParserTests.ParsesGlobals
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.ParserTests.ParsesExoticOffsets
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.GetTypeInfo
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.ReadGlobalValue
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.ReadIndirectGlobalValue
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.ReadGlobalStringyValues
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.ReadUtf8String
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.WriteValue
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.WriteBuffer
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.ReadUtf16String
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.SubDescriptor_TypesAndGlobals
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.SubDescriptor_Multiple_Nested
+    Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.SubDescriptor_Multiple_Breadth
+=
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 0
+
+2026-05-07 14:22:37,632 - 
+================================== Ai Message ==================================
+
+Thought: Try filtering a non-parameterized test by FullyQualifiedName to confirm per-test filtering works.
+Action: <command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter "FullyQualifiedName=Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_RefCount_ReturnsMaskedValue"</command>
+2026-05-07 14:22:49,822 - 
+================================ Human Message =================================
+
+Observation:
+/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter "FullyQualifiedName=Microsoft.Diagnostics.DataContractReader.Tests..BuiltInCOMTests.GetSimpleComCallWrapperData_RefCount_ReturnsMaskedValue"
+=
+Test run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)
+=A total of 1 test files matched the specified pattern.
+=
+Passed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 413 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)
+=
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 0
+
+2026-05-07 14:23:19,600 - 
+================================== Ai Message ==================================
+
+Thought: Use per-test filtering with FullyQualifiedName for non-parameterized tests, and fallback to a substring match on the method name (before parentheses) for parameterized cases.
+Action: <python>def get_pertest_cmd(testcase_list: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    base_cmd = "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build"
+    for testcase in testcase_list:
+        if "(" in testcase:
+            # Parameterized test: filter by method name substring
+            base_name = testcase.split("(", 1)[0]
+            filter_expr = f'--filter "FullyQualifiedName~{base_name}"'
+        else:
+            # Non-parameterized test: exact match
+            filter_expr = f'--filter "FullyQualifiedName={testcase}"'
+        result[testcase] = f"{base_cmd} {filter_expr}"
+    return result</python>
+2026-05-07 14:27:24,042 - 
+================================ Human Message =================================
+
+Observation:
+
+This is part of the "testcase name :: per-testcase excution command" mapping returned from your python script: 
+{
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.SubDescriptor_Multiple_Nested(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.SubDescriptor_Multiple_Nested\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.UnsignedIntegerSpecifier(specifier: \"%u\", value: 18446744073709551615)": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.UnsignedIntegerSpecifier\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetILAddr_WebcilRvaNotInAnySectionThrows(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetILAddr_WebcilRvaNotInAnySectionThrows\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsHandleWeak_FlagSet_ReturnsTrue(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsHandleWeak_FlagSet_ReturnsTrue\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.StringSpecifier(specifier: \"%s\", value: \"Recursive pattern %d\", utf16: False)": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.StringSpecifier\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitIds_SyntheticAndExplicit_Success(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitIds_SyntheticAndExplicit_Success\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc(test: PrecodeTestDescriptor { Arch = Architecture { IsLittleEndian = True, Is64Bit = False }, IsThumb = True, Name = \"Arm32Thumb\", OffsetOfPrecodeType = 7, ReadWidthOfPrecodeType = 1, \u00b7\u00b7\u00b7 }, contractVersion: 2)": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitIds_SyntheticAndExplicit_Success(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitIds_SyntheticAndExplicit_Success\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_InsufficientBuffer_ReturnsSFalseAndNeededCount(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_InsufficientBuffer_ReturnsSFalseAndNeededCount\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetNumberGenerations_ServerGC_ReturnsCorrectCount(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetNumberGenerations_ServerGC_ReturnsCorrectCount\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetSyncBlockFromCleanupList_MultipleItems_ReturnsFirst(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetSyncBlockFromCleanupList_MultipleItems_ReturnsFirst\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_NoRangeSections(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_NoRangeSections\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.ReadIndirectGlobalValue(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.ReadIndirectGlobalValue\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.WriteBuffer(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.WriteBuffer\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.GetRegisterNameTests.GetRegisterName_CallerFrame_PrependsCaller(targetArch: X86, regNum: 3, expectedRegName: \"ebx\")": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.GetRegisterNameTests.GetRegisterName_CallerFrame_PrependsCaller\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetNextSyncBlock_LastItemReturnsNull(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetNextSyncBlock_LastItemReturnsNull\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%0i\", value: 2147483647, width: null, paddingChar: '0')": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateGenericInstMethodTable(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateGenericInstMethodTable\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWInterfaces_SkipsEntriesWithNullUnknown(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWInterfaces_SkipsEntriesWithNullUnknown\"",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetFinalizationFillPointersSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetFinalizationFillPointersSvr_ReturnsCorrectData\""
+}
+==========================
+This is the shell execution result of some of the pertest execution commands returned from your python script:
+{
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 143 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.SubDescriptor_Multiple_Nested(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..ContractDescriptor.TargetTests.SubDescriptor_Multiple_Nested\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 386 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.UnsignedIntegerSpecifier(specifier: \"%u\", value: 18446744073709551615)": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..PrintfStressMessageFormatterTests.UnsignedIntegerSpecifier\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:    25, Skipped:     0, Total:    25, Duration: 369 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 120 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.LoaderTests.GetILAddr_WebcilRvaNotInAnySectionThrows(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..LoaderTests.GetILAddr_WebcilRvaNotInAnySectionThrows\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 402 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetSimpleComCallWrapperData_IsHandleWeak_FlagSet_ReturnsTrue(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..BuiltInCOMTests.GetSimpleComCallWrapperData_IsHandleWeak_FlagSet_ReturnsTrue\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 370 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.StringSpecifier(specifier: \"%s\", value: \"Recursive pattern %d\", utf16: False)": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..PrintfStressMessageFormatterTests.StringSpecifier\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:    13, Skipped:     0, Total:    13, Duration: 396 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitIds_SyntheticAndExplicit_Success(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..ReJITTests.GetRejitIds_SyntheticAndExplicit_Success\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 439 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc(test: PrecodeTestDescriptor { Arch = Architecture { IsLittleEndian = True, Is64Bit = False }, IsThumb = True, Name = \"Arm32Thumb\", OffsetOfPrecodeType = 7, ReadWidthOfPrecodeType = 1, \u00b7\u00b7\u00b7 }, contractVersion: 2)": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..PrecodeStubsTests.TestPrecodeStubPrecodeExpectedMethodDesc\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:    16, Skipped:     0, Total:    16, Duration: 394 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ReJITTests.GetRejitIds_SyntheticAndExplicit_Success(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..ReJITTests.GetRejitIds_SyntheticAndExplicit_Success\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 458 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_InsufficientBuffer_ReturnsSFalseAndNeededCount(arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..SOSDacInterface8Tests.GetGenerationTableSvr_InsufficientBuffer_ReturnsSFalseAndNNeededCount\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 127 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetNumberGenerations_ServerGC_ReturnsCorrectCount(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..SOSDacInterface8Tests.GetNumberGenerations_ServerGC_ReturnsCorrectCount\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 120 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetSyncBlockFromCleanupList_MultipleItems_ReturnsFirst(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..SyncBlockTests.GetSyncBlockFromCleanupList_MultipleItems_ReturnsFirst\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 412 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_NoRangeSections(version: 2, arch: Architecture { IsLittleEndian = False, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..ExecutionManager.ExecutionManagerTests.GetCodeBlockHandle_NoRangeSections\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     8, Skipped:     0, Total:     8, Duration: 420 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.ReadIndirectGlobalValue(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..ContractDescriptor.TargetTests.ReadIndirectGlobalValue\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 282 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.ContractDescriptor.TargetTests.WriteBuffer(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..ContractDescriptor.TargetTests.WriteBuffer\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 220 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.GetRegisterNameTests.GetRegisterName_CallerFrame_PrependsCaller(targetArch: X86, regNum: 3, expectedRegName: \"ebx\")": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..GetRegisterNameTests.GetRegisterName_CallerFrame_PrependsCaller\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     5, Skipped:     0, Total:     5, Duration: 397 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SyncBlockTests.GetNextSyncBlock_LastItemReturnsNull(arch: Architecture { IsLittleEndian = True, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..SyncBlockTests.GetNextSyncBlock_LastItemReturnsNull\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 415 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.PrintfStressMessageFormatterTests.SignedIntegerSpecifier(specifier: \"%0i\", value: 2147483647, width: null, paddingChar: '0')": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..PrintfStressMessageFormatterTests.SignedIntegerSpecifier\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:   216, Skipped:     0, Total:   216, Duration: 796 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.MethodTableTests.ValidateGenericInstMethodTable(arch: Architecture { IsLittleEndian = False, Is64Bit = False })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..MethodTableTests.ValidateGenericInstMethodTable\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 410 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.BuiltInCOMTests.GetRCWInterfaces_SkipsEntriesWithNullUnknown(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..BuiltInCOMTests.GetRCWInterfaces_SkipsEntriesWithNullUnknown\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 435 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n",
+ "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetFinalizationFillPointersSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = True })": "/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter \"FullyQualifiedName~Microsoft.Diagnostics.DataContractReader.Tests..SOSDacInterface8Tests.GetFinalizationFillPointersSvr_ReturnsCorrectData\"\n\u001b=\nTest run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)\n\u001b=A total of 1 test files matched the specified pattern.\n\u001b=\nPassed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 148 ms - Microsoft.Diagnostics.DataContractReader.Tests.dll (net11.0)\n\u001b=\n\nroot@93ccc76bbb60:/testbed $\n\nexit code: 0\n"
+}
+==========================
+Please judge the correctness of your per-testcase execution commands (the commands should run ONLY one specified testcase per command, and run the specified testcase successfully with pass/fail/skip result).
+If correct, submit with <submit>success</submit>;
+If not correct (some of your commands trigger more than one tests, OR many of your commands fail to execute successfully), please explore the correct command to run a specific testcase again and write the python script to generate all per-testcase commands again;
+If you think it is impossible to run each testcase separately, give up by outputting <submit>failure</submit>.
+
+2026-05-07 14:27:51,300 - 
+================================== Ai Message ==================================
+
+Thought: Try using single quotes around the filter argument and double quotes around the value to handle spaces/special characters.
+Action: <command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter 'FullyQualifiedName="Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian = True, Is64Bit = False })"'</command>
+2026-05-07 14:27:54,325 - 
+================================ Human Message =================================
+
+Observation:
+/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter 'FullyQualifiedName="Microsoft.Diagnostics.DataContractReader.Testss.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architectuure { IsLittleEndian = True, Is64Bit = False })"'
+=MSBUILD : error MSB4177: Invalid property. The name "Microsoft.Diagnostics.DataContractReader.Tests.SOSDacInterface8Tests.GetGenerationTableSvr_ReturnsCorrectData(arch: Architecture { IsLittleEndian " contains an invalid character ".".
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 1
+
+2026-05-07 14:28:42,157 - 
+================================== Ai Message ==================================
+
+Thought: Try a filter using DisplayName substrings without parentheses, quoting the substrings.
+Action: <command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter 'DisplayName~"GetGenerationTableSvr_ReturnsCorrectData"&DisplayName~"IsLittleEndian = True"&DisplayName~"Is64Bit = False"'</command>
+2026-05-07 14:28:44,313 - 
+================================ Human Message =================================
+
+Observation:
+/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter 'DisplayName~"GetGenerationTableSvr_ReturnsCorrectData"&DisplayNamee~"IsLittleEndian = True"&DisplayName~"Is64Bit = False"'
+=MSBUILD : error MSB4177: Invalid property. The name "GetGenerationTableSvr_ReturnsCorrectData&DisplayName~IsLittleEndian " contains an invalid character "&".
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 1
+
+2026-05-07 14:30:32,459 - 
+================================== Ai Message ==================================
+
+Thought: Try escaping spaces/parentheses in DisplayName without extra quotes to see if vstest can match a single data row.
+Action: <command>/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics.DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-build --filter "DisplayName=Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetFlags\(inputFlags:\ 0,\ hasNestedException:\ False,\ expectedFlags:\ 0\)"</command>
+2026-05-07 14:30:45,362 - 
+================================ Human Message =================================
+
+Observation:
+/testbed/.dotnet/dotnet test src/native/managed/cdac/tests/Microsoft.Diagnostics..DataContractReader.Tests.csproj -c Release /m:1 /p:BuildInParallel=false --no-buuild --filter "DisplayName=Microsoft.Diagnostics.DataContractReader.Tests.ExceptiionStateTests.GetFlags\(inputFlags:\ 0,\ hasNestedException:\ False,\ expectedFlaags:\ 0\)"
+=
+Test run for /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll (.NETCoreApp,Version=v11.0)
+=A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:01.21] Microsoft.Diagnostics.DataContractReader.Tests: Exception filtering tests: Filter string 'Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetFlags\(inputFlags:\ 0,\ hasNestedException:\ False,\ expectedFlags:\ 0\)' includes unrecognized escape sequence.
+No test matches the given testcase filter `DisplayName=Microsoft.Diagnostics.DataContractReader.Tests.ExceptionStateTests.GetFlags\(inputFlags:\ 0,\ hasNestedException:\ False,\ expectedFlags:\ 0\)` in /testbed/artifacts/bin/Microsoft.Diagnostics.DataContractReader.Tests/Release/Microsoft.Diagnostics.DataContractReader.Tests.dll
+=
+=
+
+root@93ccc76bbb60:/testbed $
+
+exit code: 0
+
+2026-05-07 14:30:54,058 - 
+================================== Ai Message ==================================
+
+<submit>failure</submit>
+2026-05-07 14:30:54,109 - ----------End verify conversation----------
+2026-05-07 14:31:05,391 - Duration: 103 minutes
+2026-05-07 14:31:06,067 - Setup completed successfully, now commit into swebench image.
+2026-05-07 14:31:20,039 - Image repolaunch/dev:dotnet__runtime-125834_linux committed successfully.
+2026-05-07 14:31:34,997 - Test output saved to: data/cs/playground/dotnet__runtime-125834/test_status.log
+2026-05-07 14:31:46,022 - Result saved to: data/cs/playground/dotnet__runtime-125834/result.json

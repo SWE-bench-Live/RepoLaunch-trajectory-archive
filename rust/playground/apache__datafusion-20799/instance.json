@@ -1,0 +1,60 @@
+{
+  "repo": "apache/datafusion",
+  "pull_number": 20799,
+  "instance_id": "apache__datafusion-20799",
+  "issue_numbers": [
+    20779
+  ],
+  "base_commit": "be273d69e1181441fcdfd8b7d2c0e851bf50cd31",
+  "patch": "diff --git a/datafusion/physical-plan/src/joins/utils.rs b/datafusion/physical-plan/src/joins/utils.rs\nindex 3130134e253d9..55a3c5419f891 100644\n--- a/datafusion/physical-plan/src/joins/utils.rs\n+++ b/datafusion/physical-plan/src/joins/utils.rs\n@@ -722,11 +722,12 @@ fn max_distinct_count(\n                     }\n                 }\n                 Precision::Exact(count) => {\n-                    let count = count - stats.null_count.get_value().unwrap_or(&0);\n+                    let null_count = *stats.null_count.get_value().unwrap_or(&0);\n+                    let non_null_count = count.checked_sub(null_count).unwrap_or(0);\n                     if stats.null_count.is_exact().unwrap_or(false) {\n-                        Precision::Exact(count)\n+                        Precision::Exact(non_null_count)\n                     } else {\n-                        Precision::Inexact(count)\n+                        Precision::Inexact(non_null_count)\n                     }\n                 }\n             };\n@@ -2939,4 +2940,19 @@ mod tests {\n \n         Ok(())\n     }\n+\n+    #[test]\n+    fn test_max_distinct_count_no_overflow_when_null_count_exceeds_num_rows() {\n+        let num_rows = Exact(2);\n+        let stats = ColumnStatistics {\n+            distinct_count: Absent,\n+            null_count: Exact(5),\n+            min_value: Absent,\n+            max_value: Absent,\n+            sum_value: Absent,\n+            byte_size: Absent,\n+        };\n+        let result = max_distinct_count(&num_rows, &stats);\n+        assert_eq!(result, Exact(0));\n+    }\n }\n",
+  "test_patch": "diff --git a/datafusion/sqllogictest/test_files/joins.slt b/datafusion/sqllogictest/test_files/joins.slt\nindex 136a68573562a..c5b2ba5362874 100644\n--- a/datafusion/sqllogictest/test_files/joins.slt\n+++ b/datafusion/sqllogictest/test_files/joins.slt\n@@ -5404,3 +5404,26 @@ DROP TABLE t1;\n \n statement count 0\n DROP TABLE t2;\n+\n+statement ok\n+CREATE TABLE t1(a INT, b INT) AS VALUES \n+  (NULL, 1), (NULL, 2), (NULL, 3), (NULL, 4), (NULL, 5);\n+\n+statement ok\n+CREATE TABLE t2(c INT) AS VALUES (1), (2);\n+\n+# This query panicked before the fix: the ORDER BY forces a SortExec,\n+# the LIMIT gets pushed into SortExec.fetch, and the HashJoinExec\n+# calls partition_statistics() on the SortExec child during execution.\n+query II\n+SELECT sub.a, sub.b FROM (\n+  SELECT * FROM t1 ORDER BY b LIMIT 1\n+) sub \n+JOIN t2 ON sub.a = t2.c;\n+----\n+\n+statement ok\n+DROP TABLE t1;\n+\n+statement ok\n+DROP TABLE t2;\n",
+  "problem_statement": "Subtraction overflow in `max_distinct_count` when hash join has a pushed-down limit\n### Describe the bug\n\n`max_distinct_count` in `datafusion/physical-plan/src/joins/utils.rs` panics with \"attempt to subtract with overflow\" in the `Precision::Exact` branch (line 725):\n\n```rust\nPrecision::Exact(count) => {\n    let count = count - stats.null_count.get_value().unwrap_or(&0); // <-- panic\n```\n\nThis happens when `num_rows` (Exact) is smaller than `null_count`, which became possible after #20228, which added `fetch` support to `HashJoinExec`. When a limit is pushed down, `HashJoinExec::partition_statistics()` calls `stats.with_fetch(self.fetch, 0, 1)`, which reduces `num_rows` to `Exact(fetch_value)` but does not reduce `null_count` in column statistics.\n\nExample failing pipeline:\nhttps://github.com/datafusion-contrib/datafusion-distributed/actions/runs/22798285744/job/66136064932?pr=366\n\n### To Reproduce\n\n```\ngit clone https://github.com/datafusion-contrib/datafusion-distributed\ncd datafusion-distributed\ngit checkout branch-53\ncargo test --test tpcds_plans_test tests::test_tpcds_19 --all-features\n```\n\n### Expected behavior\n\nNo substraction overflow\n\n### Additional context\n\n_No response_\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "Hi, I would like to work on this issue! I have analyzed the root cause ,the Precision::Exact branch in max_distinct_count uses a plain subtraction (count - null_count) which can overflow when null_count > count after a fetch/limit pushdown via HashJoinExec. The fix is to apply the same checked_sub pattern already used in the Inexact branch. Could you please assign this issue to me? Thanks!\n@KARTIK64-rgb You can assign yourself by commenting `take`\n\n",
+  "commit_urls": [
+    "https://github.com/apache/datafusion/commit/1d7049e4f6f33844bdde9ef2e83881ce9bc9a182",
+    "https://github.com/apache/datafusion/commit/f1474fed840c4395f30b069ab6d32a731e593c99",
+    "https://github.com/apache/datafusion/commit/36d156bbcf1491f1f9570b13463862ba921be11c",
+    "https://github.com/apache/datafusion/commit/0ab48c39a5ea17f0163314de77e9ab5cf5301663",
+    "https://github.com/apache/datafusion/commit/bf2bdc2aad70ad44de54d51a570fe2205740c51d",
+    "https://github.com/apache/datafusion/commit/129bb1f32f1513651b05852a40ad905c072f6e4d",
+    "https://github.com/apache/datafusion/commit/235af836551ce8fc81028ac4adf2df154260eb2f",
+    "https://github.com/apache/datafusion/commit/24687c268b42f04be8869ef5c356ca7f4d7d9d7f",
+    "https://github.com/apache/datafusion/commit/e7a299fc2c282ee2e0b18d626d9c6205def1b294",
+    "https://github.com/apache/datafusion/commit/b683680d4aeb3b8b9b8a27b1cdd9da5125abc46c",
+    "https://github.com/apache/datafusion/commit/0dd984a0d5d0e812fda4562b29036391bd5aba9a",
+    "https://github.com/apache/datafusion/commit/f4882c37249e8cc61c4b6abd009aed5b1394cf0a",
+    "https://github.com/apache/datafusion/commit/8ae2120804030c652a067638172145835c6b48af"
+  ],
+  "created_at": "2026-03-08T09:48:29Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/apache/datafusion/tree/be273d69e1181441fcdfd8b7d2c0e851bf50cd31",
+  "setup_cmds": [
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y protobuf-compiler libprotobuf-dev  (exit code: 0)",
+    "rustup toolchain install 1.94.0  (exit code: 0)",
+    "rustup default 1.94.0  (exit code: 0)",
+    "cargo test --workspace --lib --tests --bins --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 101)",
+    "cargo test --workspace --lib --tests --bins --exclude ffi_example_table_provider --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 101)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "cargo test --workspace --lib --tests --bins --exclude ffi_example_table_provider --exclude datafusion-cli --exclude datafusion-examples --exclude datafusion-benchmarks --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 101)",
+    "RUST_BACKTRACE=1 cargo test --workspace --lib --tests --bins --exclude ffi_example_table_provider --exclude datafusion-cli --exclude datafusion-examples --exclude datafusion-benchmarks --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 101)",
+    "RUST_BACKTRACE=1 cargo test --profile ci --exclude datafusion-examples --exclude ffi_example_table_provider --exclude datafusion-benchmarks --exclude datafusion-cli --workspace --lib --tests --bins --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 0)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y protobuf-compiler libprotobuf-dev  (exit code: 0)",
+    "rustup toolchain install 1.94.0  (exit code: 0)",
+    "rustup default 1.94.0  (exit code: 0)",
+    "cargo test --workspace --lib --tests --bins --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 101)",
+    "cargo test --workspace --lib --tests --bins --exclude ffi_example_table_provider --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 101)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "cargo test --workspace --lib --tests --bins --exclude ffi_example_table_provider --exclude datafusion-cli --exclude datafusion-examples --exclude datafusion-benchmarks --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 101)",
+    "RUST_BACKTRACE=1 cargo test --workspace --lib --tests --bins --exclude ffi_example_table_provider --exclude datafusion-cli --exclude datafusion-examples --exclude datafusion-benchmarks --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 101)",
+    "RUST_BACKTRACE=1 cargo test --profile ci --exclude datafusion-examples --exclude ffi_example_table_provider --exclude datafusion-benchmarks --exclude datafusion-cli --workspace --lib --tests --bins --features serde,avro,json,backtrace,integration-tests,parquet_encryption  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "RUST_BACKTRACE=1 cargo test --profile ci --exclude datafusion-examples --exclude ffi_example_table_provider --exclude datafusion-benchmarks --exclude datafusion-cli --workspace --lib --tests --bins --features serde,avro,json,backtrace,integration-tests,parquet_encryption -- --format pretty"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:apache__datafusion-20799_linux"
+}

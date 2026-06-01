@@ -1,0 +1,61 @@
+{
+  "repo": "risingwavelabs/risingwave",
+  "pull_number": 25187,
+  "instance_id": "risingwavelabs__risingwave-25187",
+  "issue_numbers": [
+    17628
+  ],
+  "base_commit": "f9d4d9d7d68b6f62345f9e3a6640ca1dabae2521",
+  "patch": "diff --git a/src/frontend/src/binder/insert.rs b/src/frontend/src/binder/insert.rs\nindex 137b8f54c0a0b..f5d7a3aba25c7 100644\n--- a/src/frontend/src/binder/insert.rs\n+++ b/src/frontend/src/binder/insert.rs\n@@ -122,6 +122,7 @@ impl Binder {\n             table_catalog.database_id,\n         )?;\n \n+        let has_user_specified_columns = !cols_to_insert_by_user.is_empty();\n         let default_columns_from_catalog =\n             table_catalog.default_columns().collect::<BTreeMap<_, _>>();\n         let table_id = table_catalog.id;\n@@ -138,15 +139,36 @@ impl Binder {\n         let generated_column_names = table_catalog\n             .generated_column_names()\n             .collect::<HashSet<_>>();\n-        for col in &cols_to_insert_by_user {\n-            let query_col_name = col.real_value();\n-            if generated_column_names.contains(query_col_name.as_str()) {\n-                return Err(RwError::from(ErrorCode::BindError(format!(\n-                    \"cannot insert a non-DEFAULT value into column \\\"{0}\\\".  Column \\\"{0}\\\" is a generated column.\",\n-                    &query_col_name\n-                ))));\n+\n+        let check_generated_insert_violation = |bound_column_nums: Option<usize>| -> Result<()> {\n+            let generated_column_name = if let Some(column_num) = bound_column_nums {\n+                table_catalog\n+                    .first_generated_column()\n+                    .and_then(|(index, column_name)| {\n+                        (column_num > index).then_some(column_name.to_owned())\n+                    })\n+            } else {\n+                cols_to_insert_by_user\n+                    .iter()\n+                    .map(|col| col.real_value())\n+                    .find(|col_name| generated_column_names.contains(col_name.as_str()))\n+            };\n+\n+            if let Some(column_name) = generated_column_name {\n+                return Err(ErrorCode::InsertViolation(format!(\n+                    \"cannot insert a non-DEFAULT value into column \\\"{0}\\\"\\n  DETAIL: Column \\\"{0}\\\" is a generated column.\",\n+                    column_name\n+                ))\n+                .into());\n             }\n+\n+            Ok(())\n+        };\n+\n+        if has_user_specified_columns {\n+            check_generated_insert_violation(None)?;\n         }\n+\n         if !generated_column_names.is_empty() && !returning_items.is_empty() {\n             return Err(RwError::from(ErrorCode::BindError(\n                 \"`RETURNING` clause is not supported for tables with generated columns\".to_owned(),\n@@ -226,6 +248,9 @@ impl Binder {\n         let bound_column_nums = match source.as_simple_values() {\n             None => {\n                 bound_query = self.bind_query(&source)?;\n+                if !has_user_specified_columns {\n+                    check_generated_insert_violation(Some(bound_query.schema().len()))?;\n+                }\n                 let actual_types = bound_query.data_types();\n                 let type_match = expected_types == actual_types;\n                 cast_exprs = if all_nullable && type_match {\n@@ -253,6 +278,9 @@ impl Binder {\n                     .first()\n                     .expect(\"values list should not be empty\")\n                     .len();\n+                if !has_user_specified_columns {\n+                    check_generated_insert_violation(Some(values_len))?;\n+                }\n                 let mut values = self.bind_values(values, Some(&expected_types))?;\n                 // let mut bound_values = values.clone();\n \n@@ -270,7 +298,6 @@ impl Binder {\n             }\n         };\n \n-        let has_user_specified_columns = !cols_to_insert_by_user.is_empty();\n         let num_target_cols = if has_user_specified_columns {\n             cols_to_insert_by_user.len()\n         } else {\ndiff --git a/src/frontend/src/catalog/table_catalog.rs b/src/frontend/src/catalog/table_catalog.rs\nindex 18b0286732d6d..867fd507a2465 100644\n--- a/src/frontend/src/catalog/table_catalog.rs\n+++ b/src/frontend/src/catalog/table_catalog.rs\n@@ -644,6 +644,15 @@ impl TableCatalog {\n             .map(|c| c.name())\n     }\n \n+    pub fn first_generated_column(&self) -> Option<(usize, &str)> {\n+        self.columns\n+            .iter()\n+            .filter(|c| !c.is_hidden())\n+            .enumerate()\n+            .find(|(_, c)| c.is_generated())\n+            .map(|(idx, c)| (idx, c.name()))\n+    }\n+\n     pub fn generated_col_idxes(&self) -> impl Iterator<Item = usize> + '_ {\n         self.columns\n             .iter()\ndiff --git a/src/frontend/src/error.rs b/src/frontend/src/error.rs\nindex 3b00169755726..741874531d1a5 100644\n--- a/src/frontend/src/error.rs\n+++ b/src/frontend/src/error.rs\n@@ -156,6 +156,8 @@ pub enum ErrorCode {\n     ItemNotFound(String),\n     #[error(\"Duplicate Relation Name: {0}\")]\n     DuplicateRelationName(String),\n+    #[error(\"Invalid insert operation: {0}\")]\n+    InsertViolation(String),\n     #[error(\"Invalid input syntax: {0}\")]\n     InvalidInputSyntax(#[message] String),\n     #[error(\"Can not compare in memory: {0}\")]\n",
+  "test_patch": "diff --git a/e2e_test/batch/basic/insert_unaligned.slt.part b/e2e_test/batch/basic/insert_unaligned.slt.part\nindex 364ce942cc9de..cd84a4a30647f 100644\n--- a/e2e_test/batch/basic/insert_unaligned.slt.part\n+++ b/e2e_test/batch/basic/insert_unaligned.slt.part\n@@ -95,3 +95,26 @@ drop table t1;\n \n statement ok\n drop table t;\n+\n+statement ok\n+create table t(v1 int, v2 int AS (v1+1), v3 int default 10);\n+\n+statement error\n+insert into t (v1, v2) values (0, 1);\n+\n+statement error\n+insert into t values (0, 1);\n+\n+statement error\n+insert into t values (0, 1, 2);\n+\n+statement ok\n+insert into t (v1, v3) values (1, 2);\n+\n+query I\n+SELECT * FROM t;\n+----\n+1 2 2\n+\n+statement ok\n+drop table t;\n\\ No newline at end of file\n",
+  "problem_statement": "not compatible with PG when binding insert into table with generated column\nIn RisingWave, when inserting into a table with a generated column, RisingWave automatically removes the generated column during the insert column mapping. However, PostgreSQL does not do this.\r\nhttps://github.com/risingwavelabs/risingwave/blob/9dabb6e5c158ab87603dfa31ec513f5e56811283/src/frontend/src/catalog/table_catalog.rs#L432-L436\r\n\r\nRW behavior:\r\n```SQL\r\ndev=> create table t(v1 int, v2 int AS (v1+1), v3 int default 10);\r\nCREATE_TABLE\r\ndev=> insert into t values (0, 1);\r\nINSERT 0 1\r\ndev=> select * from t;\r\n v1 | v2 | v3 \r\n----+----+----\r\n  0 |  1 |  1\r\n```\r\n\r\nPG behavior: (PostgreSQL 16.2)\r\n```SQL\r\npostgres=# create table t(v1 int, v2 int GENERATED ALWAYS AS (v1+1) STORED, v3 int default 10);\r\nCREATE TABLE\r\npostgres=# insert into t values (0, 1);\r\nERROR:  cannot insert a non-DEFAULT value into column \"v2\"\r\nDETAIL:  Column \"v2\" is a generated column.\r\npostgres=# insert into t(v1, v3) values (0, 1);\r\nINSERT 0 1\r\npostgres=# insert into t values (0, 1, 2);\r\nERROR:  cannot insert a non-DEFAULT value into column \"v2\"\r\nDETAIL:  Column \"v2\" is a generated column.\r\n```\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/risingwavelabs/risingwave/commit/e00f921cf9bd2ba1d1d8888d65734f209e5c44b1",
+    "https://github.com/risingwavelabs/risingwave/commit/23ac37db7a91a2d3db32aef24bd129c7f34c0b70",
+    "https://github.com/risingwavelabs/risingwave/commit/58539ca02a192c3956308bc5debc757780610d9c",
+    "https://github.com/risingwavelabs/risingwave/commit/8defe0f81140e7ba77b61ee744fdbdb2a521d0a0"
+  ],
+  "created_at": "2026-03-27T07:23:24Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/risingwavelabs/risingwave/tree/f9d4d9d7d68b6f62345f9e3a6640ca1dabae2521",
+  "setup_cmds": [
+    "apt-get update -y && apt-get install -y --no-install-recommends build-essential cmake protobuf-compiler curl git pkg-config libssl-dev openssl libsasl2-dev libcurl4-openssl-dev lld clang python3 python3-pip python3-venv openjdk-17-jdk maven zstd libzstd-dev  (exit code: 100)",
+    "apt-cache search '^openjdk-[0-9]+-jdk$' | head -n 50  (exit code: 0)",
+    "apt-get install -y --no-install-recommends build-essential cmake protobuf-compiler curl git pkg-config libssl-dev openssl libsasl2-dev libcurl4-openssl-dev lld clang python3 python3-pip python3-venv openjdk-21-jdk maven zstd libzstd-dev  (exit code: 0)",
+    "rustup toolchain install nightly-2025-10-10 --profile minimal --component rustfmt,clippy --target wasm32-wasip1  (exit code: 0)",
+    "rustup override set nightly-2025-10-10  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "apt-get install -y --no-install-recommends libopenblas-dev liblapack-dev  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "apt-get install -y --no-install-recommends libprotobuf-dev  (exit code: 0)",
+    "cargo check -q  (exit code: 0)",
+    "cargo test -q  (exit code: 124)",
+    "cargo test --workspace --all-targets --jobs 1  (exit code: 124)",
+    "cargo build --workspace --all-targets --jobs 1  (exit code: 124)",
+    "cargo test -p risingwave_common --jobs 1  (exit code: 0)",
+    "apt-get update -y && apt-get install -y --no-install-recommends build-essential cmake protobuf-compiler curl git pkg-config libssl-dev openssl libsasl2-dev libcurl4-openssl-dev lld clang python3 python3-pip python3-venv openjdk-17-jdk maven zstd libzstd-dev  (exit code: 100)",
+    "apt-cache search '^openjdk-[0-9]+-jdk$' | head -n 50  (exit code: 0)",
+    "apt-get install -y --no-install-recommends build-essential cmake protobuf-compiler curl git pkg-config libssl-dev openssl libsasl2-dev libcurl4-openssl-dev lld clang python3 python3-pip python3-venv openjdk-21-jdk maven zstd libzstd-dev  (exit code: 0)",
+    "rustup toolchain install nightly-2025-10-10 --profile minimal --component rustfmt,clippy --target wasm32-wasip1  (exit code: 0)",
+    "rustup override set nightly-2025-10-10  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "apt-get install -y --no-install-recommends libopenblas-dev liblapack-dev  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "apt-get install -y --no-install-recommends libprotobuf-dev  (exit code: 0)",
+    "cargo check -q  (exit code: 0)",
+    "cargo test -q  (exit code: 124)",
+    "cargo test --workspace --all-targets --jobs 1  (exit code: 124)",
+    "cargo build --workspace --all-targets --jobs 1  (exit code: 124)",
+    "cargo test -p risingwave_common --jobs 1  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo nextest --version",
+    "cargo test -p risingwave_common -- --format=json",
+    "cargo test -p risingwave_common -- --nocapture -Z unstable-options --format json"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:risingwavelabs__risingwave-25187_linux"
+}

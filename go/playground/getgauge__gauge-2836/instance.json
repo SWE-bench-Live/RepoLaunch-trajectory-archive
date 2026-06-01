@@ -1,0 +1,36 @@
+{
+  "repo": "getgauge/gauge",
+  "pull_number": 2836,
+  "instance_id": "getgauge__gauge-2836",
+  "issue_numbers": [
+    2158
+  ],
+  "base_commit": "7ed820590da30e22a9a516c727693b80c9e90a18",
+  "patch": "diff --git a/execution/rerun/rerun.go b/execution/rerun/rerun.go\nindex 9ac172589..a8aff4ba8 100644\n--- a/execution/rerun/rerun.go\n+++ b/execution/rerun/rerun.go\n@@ -70,6 +70,16 @@ func (m *failedMetadata) addFailedItem(itemName string, item string) {\n \tm.failedItemsMap[itemName][item] = true\n }\n \n+func (m *failedMetadata) removeFailedItem(itemName string, item string) {\n+\tif _, ok := m.failedItemsMap[itemName]; !ok {\n+\t\treturn\n+\t}\n+\tdelete(m.failedItemsMap[itemName], item)\n+\tif len(m.failedItemsMap[itemName]) == 0 {\n+\t\tdelete(m.failedItemsMap, itemName)\n+\t}\n+}\n+\n // ListenFailedScenarios listens to execution events and writes the failed scenarios to JSON file\n func ListenFailedScenarios(wg *sync.WaitGroup, specDirs []string) {\n \tch := make(chan event.ExecutionEvent)\n@@ -97,11 +107,16 @@ func ListenFailedScenarios(wg *sync.WaitGroup, specDirs []string) {\n }\n \n func prepareScenarioFailedMetadata(res *result.ScenarioResult, sce *gauge.Scenario, executionInfo *gauge_messages.ExecutionInfo) {\n+\tspecPath := executionInfo.GetCurrentSpec().GetFileName()\n+\tfailedScenario := util.RelPathToProjectRoot(specPath)\n+\tscenarioRef := fmt.Sprintf(\"%s:%v\", failedScenario, sce.Span.Start)\n \tif res.GetFailed() {\n-\t\tspecPath := executionInfo.GetCurrentSpec().GetFileName()\n-\t\tfailedScenario := util.RelPathToProjectRoot(specPath)\n-\t\tfailedMeta.addFailedItem(specPath, fmt.Sprintf(\"%s:%v\", failedScenario, sce.Span.Start))\n+\t\tfailedMeta.addFailedItem(specPath, scenarioRef)\n+\t\treturn\n \t}\n+\t// A scenario can emit multiple ScenarioEnd events when retries are enabled.\n+\t// If a later retry passes, remove any failed entry captured from earlier attempts.\n+\tfailedMeta.removeFailedItem(specPath, scenarioRef)\n }\n \n func addSpecFailedMetadata(res result.Result, args []string) {\ndiff --git a/version/version.go b/version/version.go\nindex 011cd9d34..205f2abc0 100644\n--- a/version/version.go\n+++ b/version/version.go\n@@ -14,7 +14,7 @@ import (\n )\n \n // CurrentGaugeVersion represents the current version of Gauge\n-var CurrentGaugeVersion = &Version{1, 6, 28}\n+var CurrentGaugeVersion = &Version{1, 6, 29}\n \n // BuildMetadata represents build information of current release (e.g, nightly build information)\n var BuildMetadata = \"\"\n",
+  "test_patch": "diff --git a/execution/rerun/rerun_test.go b/execution/rerun/rerun_test.go\nindex 922f25cf2..f8c9d3f23 100644\n--- a/execution/rerun/rerun_test.go\n+++ b/execution/rerun/rerun_test.go\n@@ -62,6 +62,22 @@ func (s *MySuite) TestGetScenarioFailedMetadata(c *C) {\n \tc.Assert(failedMeta.failedItemsMap[spec1Abs][spec1Rel+\":2\"], Equals, true)\n }\n \n+func (s *MySuite) TestScenarioPassingOnRetryRemovesFailedMetadata(c *C) {\n+\tspec1Rel := filepath.Join(\"specs\", \"example1.spec\")\n+\tspec1Abs := filepath.Join(config.ProjectRoot, spec1Rel)\n+\tsce := &gauge.Scenario{Span: &gauge.Span{Start: 2}}\n+\texecInfo := &gauge_messages.ExecutionInfo{CurrentSpec: &gauge_messages.SpecInfo{FileName: spec1Abs}}\n+\tfailedResult := &result.ScenarioResult{ProtoScenario: &gauge_messages.ProtoScenario{ExecutionStatus: gauge_messages.ExecutionStatus_FAILED}}\n+\tpassedResult := &result.ScenarioResult{ProtoScenario: &gauge_messages.ProtoScenario{ExecutionStatus: gauge_messages.ExecutionStatus_PASSED}}\n+\n+\tprepareScenarioFailedMetadata(failedResult, sce, execInfo)\n+\tc.Assert(failedMeta.failedItemsMap[spec1Abs][spec1Rel+\":2\"], Equals, true)\n+\n+\tprepareScenarioFailedMetadata(passedResult, sce, execInfo)\n+\t_, exists := failedMeta.failedItemsMap[spec1Abs]\n+\tc.Assert(exists, Equals, false)\n+}\n+\n func (s *MySuite) TestAddSpecPreHookFailedMetadata(c *C) {\n \tspec1Rel := filepath.Join(\"specs\", \"example1.spec\")\n \tspec1Abs := filepath.Join(config.ProjectRoot, spec1Rel)\n",
+  "problem_statement": "--failed performs retry for passed tests with --max-retry-count flag\nWhen max-retry-count is enabled and after that a gauge run --failed is performed, specs that passed with --max-retry-count will be executed anyway as if they failed.\r\n\r\n**To Reproduce**\r\n1. Perform an execution with max-retry-count=2\r\n2. Some tests will pass after 1 retry\r\n3. Perform gauge run --failed\r\n4. Failed tests and those who passed with max-retry-count=2 will execute\r\n\r\n**Expected behavior**\r\nI would expect that only tests that completely failed would be triggered by --failed\r\n\r\n\r\nYour Environment Information -----------\r\n\tlinux, 1.4.1, a82478a\r\n\thtml-report (4.1.2), java (0.7.9), json-report (0.3.1), spectacle (0.1.4), xml-report (0.2.3)\r\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/getgauge/gauge/commit/8d59807428abd7bddb187f2d826f763dc03bda5d"
+  ],
+  "created_at": "2026-03-30T08:37:16Z",
+  "language": "Go",
+  "commit_url": "https://github.com/getgauge/gauge/tree/7ed820590da30e22a9a516c727693b80c9e90a18",
+  "setup_cmds": [
+    "go mod download  (exit code: 1)",
+    "GOTOOLCHAIN=auto go mod download  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 1)",
+    "GOTOOLCHAIN=auto go mod download  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "GOTOOLCHAIN=auto go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:getgauge__gauge-2836_linux"
+}

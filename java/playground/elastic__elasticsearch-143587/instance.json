@@ -1,0 +1,47 @@
+{
+  "repo": "elastic/elasticsearch",
+  "pull_number": 143587,
+  "instance_id": "elastic__elasticsearch-143587",
+  "issue_numbers": [
+    111559
+  ],
+  "base_commit": "ef82867f737e1994070c16d0b9f3d2caa4a1dc72",
+  "patch": "diff --git a/x-pack/plugin/ml/src/main/java/org/elasticsearch/xpack/ml/action/TransportStartDataFrameAnalyticsAction.java b/x-pack/plugin/ml/src/main/java/org/elasticsearch/xpack/ml/action/TransportStartDataFrameAnalyticsAction.java\nindex be905caeacba0..25786c4e1442b 100644\n--- a/x-pack/plugin/ml/src/main/java/org/elasticsearch/xpack/ml/action/TransportStartDataFrameAnalyticsAction.java\n+++ b/x-pack/plugin/ml/src/main/java/org/elasticsearch/xpack/ml/action/TransportStartDataFrameAnalyticsAction.java\n@@ -391,7 +391,7 @@ private void validateSourceIndexRowsCount(StartContext startContext, ActionListe\n                         Strings.arrayToCommaDelimitedString(startContext.config.getSource().getIndex())\n                     )\n                 );\n-            } else if (Math.floor(startContext.config.getAnalysis().getTrainingPercent() * dataSummary.rows) >= Math.pow(2, 32)) {\n+            } else if (tooManyDocumentsForAnalysis(dataSummary.rows, startContext.config.getAnalysis().getTrainingPercent())) {\n                 listener.onFailure(\n                     ExceptionsHelper.badRequestException(\n                         \"Unable to start because too many documents \"\n@@ -404,6 +404,10 @@ private void validateSourceIndexRowsCount(StartContext startContext, ActionListe\n         }, listener::onFailure));\n     }\n \n+    static boolean tooManyDocumentsForAnalysis(long rows, double trainingPercent) {\n+        return Math.floor(rows * trainingPercent / 100.0) >= Math.pow(2, 32);\n+    }\n+\n     private void getProgress(DataFrameAnalyticsConfig config, ActionListener<List<PhaseProgress>> listener) {\n         GetDataFrameAnalyticsStatsAction.Request getStatsRequest = new GetDataFrameAnalyticsStatsAction.Request(config.getId());\n         executeAsyncWithOrigin(\n",
+  "test_patch": "diff --git a/x-pack/plugin/ml/src/test/java/org/elasticsearch/xpack/ml/action/TransportStartDataFrameAnalyticsActionTests.java b/x-pack/plugin/ml/src/test/java/org/elasticsearch/xpack/ml/action/TransportStartDataFrameAnalyticsActionTests.java\nindex 550352954bfbc..ab43d053d0d9d 100644\n--- a/x-pack/plugin/ml/src/test/java/org/elasticsearch/xpack/ml/action/TransportStartDataFrameAnalyticsActionTests.java\n+++ b/x-pack/plugin/ml/src/test/java/org/elasticsearch/xpack/ml/action/TransportStartDataFrameAnalyticsActionTests.java\n@@ -42,6 +42,7 @@\n import java.util.Map;\n import java.util.Set;\n \n+import static org.elasticsearch.xpack.ml.action.TransportStartDataFrameAnalyticsAction.tooManyDocumentsForAnalysis;\n import static org.hamcrest.Matchers.allOf;\n import static org.hamcrest.Matchers.containsString;\n import static org.hamcrest.Matchers.emptyString;\n@@ -122,6 +123,34 @@ public void testGetAssignment_MlNodeIsNewerThanTheMlJobButTheAssignmentSuceeds()\n         assertThat(assignment.getExplanation(), is(emptyString()));\n     }\n \n+    public void testTooManyDocumentsForAnalysis_FullTrainingPercentBelowLimit() {\n+        assertFalse(tooManyDocumentsForAnalysis(50_000_000L, 100.0));\n+    }\n+\n+    public void testTooManyDocumentsForAnalysis_FullTrainingPercentAtLimit() {\n+        long twoTo32 = 1L << 32;\n+        assertTrue(tooManyDocumentsForAnalysis(twoTo32, 100.0));\n+    }\n+\n+    public void testTooManyDocumentsForAnalysis_FullTrainingPercentJustBelowLimit() {\n+        long justBelow = (1L << 32) - 1;\n+        assertFalse(tooManyDocumentsForAnalysis(justBelow, 100.0));\n+    }\n+\n+    public void testTooManyDocumentsForAnalysis_PartialTrainingPercentBelowLimit() {\n+        long twoTo32 = 1L << 32;\n+        assertFalse(tooManyDocumentsForAnalysis(twoTo32, 50.0));\n+    }\n+\n+    public void testTooManyDocumentsForAnalysis_PartialTrainingPercentAboveLimit() {\n+        long twiceTheLimit = (1L << 32) * 2;\n+        assertTrue(tooManyDocumentsForAnalysis(twiceTheLimit, 50.0));\n+    }\n+\n+    public void testTooManyDocumentsForAnalysis_LargeRowCountWithFullTrainingPercent() {\n+        assertFalse(tooManyDocumentsForAnalysis(1_000_000_000L, 100.0));\n+    }\n+\n     private static TaskExecutor createTaskExecutor() {\n         ClusterService clusterService = mock(ClusterService.class);\n         ClusterSettings clusterSettings = new ClusterSettings(\n",
+  "problem_statement": "DFA ML Job fails with \"Too Many Documents\" error despite index having less than 2^32 documents\n### Elasticsearch Version\n\n8.14\n\n### Installed Plugins\n\n_No response_\n\n### Java Version\n\n_bundled_\n\n### OS Version\n\nall\n\n### Problem Description\n\nWhen creating a Dataframe Analytics Job for in Elasticsearch, users may encounter an error stating, `Unable to start because too many documents (more than 2^32) are included in the analysis. Consider downsampling.` This issue arises when `training_percent` is 100 and the number of rows in DataSummary are >= 42.949.672\r\n\r\nhttps://github.com/elastic/elasticsearch/commit/d1e963e426aaf490d85075df42fa931a615977c2 introduced the bug while aiming to introduce an upper bound of documents. \n\n### Steps to Reproduce\n\n\r\n1. Create an index with approximately 50 million documents.\r\n2. Attempt to create a Dataframe Analytics Job with default `training_percent` (it will be `100.0` according to [this line](https://github.com/elastic/elasticsearch/blob/a0480ce17c3078a8d6c071519b550ef09291881c/x-pack/plugin/core/src/main/java/org/elasticsearch/xpack/core/ml/dataframe/analyses/DataFrameAnalysis.java#L92))\n\n### Logs (if relevant)\n\n_No response_\n",
+  "hints_text": "Pinging @elastic/ml-core (Team:ML)\n\n",
+  "all_hints_text": "Pinging @elastic/ml-core (Team:ML)\n\n",
+  "commit_urls": [
+    "https://github.com/elastic/elasticsearch/commit/e2693f959a1ff256c433764b1328b0cb46865e6c",
+    "https://github.com/elastic/elasticsearch/commit/fa4cd591213206801bdb6b257df0ed6269254311"
+  ],
+  "created_at": "2026-03-04T14:38:00Z",
+  "language": "Java",
+  "commit_url": "https://github.com/elastic/elasticsearch/tree/ef82867f737e1994070c16d0b9f3d2caa4a1dc72",
+  "setup_cmds": [
+    "./gradlew :server:test --tests \"org.elasticsearch.VersionTests\"  (exit code: 1)",
+    "rg \"allow.*root\" -n test server build-tools-internal | head -n 20  (exit code: 0)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y ripgrep  (exit code: 0)",
+    "rg \"allow.*root\" -n test server build-tools-internal | head -n 20  (exit code: 0)",
+    "rg -n \"run elasticsearch as root|root\" server/src/main/java/org/elasticsearch/bootstrap  (exit code: 0)",
+    "sed -n '430,490p' server/src/main/java/org/elasticsearch/bootstrap/Elasticsearch.java  (exit code: 0)",
+    "useradd -m tester && chown -R tester:tester /testbed  (exit code: 0)",
+    "su -s /bin/bash -c \"./gradlew :server:test --tests \\\"org.elasticsearch.VersionTests\\\"\" tester  (exit code: 0)",
+    "./gradlew :server:test --tests \"org.elasticsearch.VersionTests\"  (exit code: 1)",
+    "rg \"allow.*root\" -n test server build-tools-internal | head -n 20  (exit code: 0)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y ripgrep  (exit code: 0)",
+    "rg \"allow.*root\" -n test server build-tools-internal | head -n 20  (exit code: 0)",
+    "rg -n \"run elasticsearch as root|root\" server/src/main/java/org/elasticsearch/bootstrap  (exit code: 0)",
+    "sed -n '430,490p' server/src/main/java/org/elasticsearch/bootstrap/Elasticsearch.java  (exit code: 0)",
+    "useradd -m tester && chown -R tester:tester /testbed  (exit code: 0)",
+    "su -s /bin/bash -c \"./gradlew :server:test --tests \\\"org.elasticsearch.VersionTests\\\"\" tester  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "su -s /bin/bash -c \"./gradlew :server:test --tests \\\"org.elasticsearch.VersionTests\\\" -Dtests.output=always --info\" tester"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:elastic__elasticsearch-143587_linux"
+}

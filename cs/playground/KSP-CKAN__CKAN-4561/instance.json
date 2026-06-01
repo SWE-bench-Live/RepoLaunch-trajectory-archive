@@ -1,0 +1,61 @@
+{
+  "repo": "KSP-CKAN/CKAN",
+  "pull_number": 4561,
+  "instance_id": "KSP-CKAN__CKAN-4561",
+  "issue_numbers": [
+    4510
+  ],
+  "base_commit": "709fa71d509217cf33713c9322519b2f2007704e",
+  "patch": "diff --git a/Core/Relationships/RelationshipResolver.cs b/Core/Relationships/RelationshipResolver.cs\nindex 0c1314af6..8bd13fce7 100644\n--- a/Core/Relationships/RelationshipResolver.cs\n+++ b/Core/Relationships/RelationshipResolver.cs\n@@ -281,7 +281,10 @@ private void ResolveStanza(List<RelationshipDescriptor>?        stanza,\n                 IReadOnlyList<CkanModule>? candidates = null;\n                 try\n                 {\n-                    candidates = resolved.Candidates(descriptor, modlist.Values,\n+                    candidates = resolved.Candidates(descriptor,\n+                                                     options.get_recommenders\n+                                                         ? Dependencies().ToArray()\n+                                                         : modlist.Values,\n                                                      registry, game);\n                     log.DebugFormat(\"Got {0} candidates for {1}\",\n                                     candidates.Count, descriptor);\n@@ -338,7 +341,10 @@ private void ResolveStanza(List<RelationshipDescriptor>?        stanza,\n                 // Finally, check our candidate against everything which might object\n                 // to it being installed; that's all the mods which are fixed in our\n                 // list thus far, as well as everything on the system.\n-                var fixed_mods = modlist.Values.Concat(installed_modules).ToHashSet();\n+                var fixed_mods = (options.get_recommenders ? Dependencies()\n+                                                           : modlist.Values)\n+                                     .Concat(installed_modules)\n+                                     .ToHashSet();\n \n                 var conflicting_mod = fixed_mods.FirstOrDefault(mod => mod.ConflictsWith(candidate));\n                 if (conflicting_mod == null)\ndiff --git a/GUI/Controls/InstallationHistory.Designer.cs b/GUI/Controls/InstallationHistory.Designer.cs\nindex bff892bc1..0e9680bc5 100644\n--- a/GUI/Controls/InstallationHistory.Designer.cs\n+++ b/GUI/Controls/InstallationHistory.Designer.cs\n@@ -69,7 +69,7 @@ private void InitializeComponent()\n             //\n             // InstallButton\n             //\n-            //this.InstallButton.Image = global::CKAN.GUI.Properties.Resources.install;\n+            this.InstallButton.Image = global::CKAN.GUI.EmbeddedImages.apply;\n             this.InstallButton.ImageScaling = System.Windows.Forms.ToolStripItemImageScaling.None;\n             this.InstallButton.Name = \"InstallButton\";\n             this.InstallButton.Size = new System.Drawing.Size(114, 56);\n",
+  "test_patch": "diff --git a/Tests/Core/IO/ModuleInstallerTests.cs b/Tests/Core/IO/ModuleInstallerTests.cs\nindex d7e5e99da..4e94ebbc8 100644\n--- a/Tests/Core/IO/ModuleInstallerTests.cs\n+++ b/Tests/Core/IO/ModuleInstallerTests.cs\n@@ -974,6 +974,55 @@ public void FindRecommendations_ReplaceParallaxWithParallaxContinued_1ThousandRe\n             }\n         }\n \n+        [Test]\n+        public void FindRecommendations_WithConflictingRecommendations_FindsAll()\n+        {\n+            // Arrange\n+            var user            = new NullUser();\n+            var modGen          = new RandomModuleGenerator(new Random());\n+            var recommendation1 = modGen.GenerateRandomModule();\n+            var recommendation2 = modGen.GenerateRandomModule(conflicts: new List<RelationshipDescriptor>()\n+            {\n+                new ModuleRelationshipDescriptor() { name = recommendation1.identifier },\n+            });\n+            var recommendation3 = modGen.GenerateRandomModule(conflicts: new List<RelationshipDescriptor>()\n+            {\n+                new ModuleRelationshipDescriptor() { name = recommendation1.identifier },\n+                new ModuleRelationshipDescriptor() { name = recommendation2.identifier },\n+            });\n+            var recommender = modGen.GenerateRandomModule(recommends: new List<RelationshipDescriptor>()\n+            {\n+                new ModuleRelationshipDescriptor() { name = recommendation3.identifier },\n+                new ModuleRelationshipDescriptor() { name = recommendation1.identifier },\n+                new ModuleRelationshipDescriptor() { name = recommendation2.identifier },\n+            });\n+            using (var inst = new DisposableKSP())\n+            using (var repo = new TemporaryRepository(recommendation1.ToJson(),\n+                                                      recommendation2.ToJson(),\n+                                                      recommendation3.ToJson(),\n+                                                      recommender.ToJson()))\n+            using (var repoData = new TemporaryRepositoryData(user, repo.repo))\n+            {\n+                var registry = new CKAN.Registry(repoData.Manager, repo.repo);\n+\n+                // Act\n+                var result = ModuleInstaller.FindRecommendations(inst.KSP,\n+                                                                 new CkanModule[] { recommender },\n+                                                                 new CkanModule[] { recommender },\n+                                                                 new CkanModule[] { },\n+                                                                 new CkanModule[] { },\n+                                                                 registry,\n+                                                                 out var recs,\n+                                                                 out var sugs,\n+                                                                 out var sups);\n+\n+                // Assert\n+                Assert.IsTrue(result);\n+                CollectionAssert.AreEquivalent(new CkanModule[] { recommendation1, recommendation2, recommendation3 },\n+                                               recs.Keys);\n+            }\n+        }\n+\n         [TestCase(new string[]\n                   {\n                       @\"{\ndiff --git a/Tests/Data/TestData.cs b/Tests/Data/TestData.cs\nindex 99b4382cc..68294f78f 100644\n--- a/Tests/Data/TestData.cs\n+++ b/Tests/Data/TestData.cs\n@@ -1004,6 +1004,7 @@ public CkanModule GenerateRandomModule(\n             GameVersion?                  ksp_version = null,\n             List<RelationshipDescriptor>? conflicts   = null,\n             List<RelationshipDescriptor>? depends     = null,\n+            List<RelationshipDescriptor>? recommends  = null,\n             List<RelationshipDescriptor>? suggests    = null,\n             List<string>?                 provides    = null,\n             string?                       identifier  = null,\n@@ -1021,6 +1022,7 @@ public CkanModule GenerateRandomModule(\n                 ksp_version = ksp_version,\n                 conflicts   = conflicts,\n                 depends     = depends,\n+                recommends  = recommends,\n                 suggests    = suggests,\n                 provides    = provides,\n             };\n",
+  "problem_statement": "[Bug]: Installing from a ckan file has issues with suggests or recommends stanza having conflicts\n### Is there an existing issue for this?\n\n- [x] I have checked the existing issues for an existing issue. I even actually looked at the ones that are pinned to the top!\n\n### Operating System\n\nWin-11\n\n### CKAN Version\n\n1.36.3.26017\n\n### Games\n\nKSP 1\n\n### Game Version\n\n1.12.5\n\n### Did you make any manual changes to your game folder (i.e., not via CKAN)?\n\n_No response_\n\n### Describe the bug\n\nHaving a \"recommends\" or a \"suggests\" stanza in the ckan will cause any mods which are listed as a conflict in an earlier line to hide the later ones.\n\n### Steps to reproduce\n\nCreate a .ckan export\nAdd the following: to the end, following the \"depends\" stanza\n\n```json\n  \"recommends\": [\n            { \"name\": \"KcalbelohSystem\" },\n            { \"name\": \"PromisedWorldsCore\" },\n            { \"name\": \"JNSQ\" },\n            { \"name\": \"GPP\" },\n            { \"name\": \"OuterPlanetsMod\" }\n      ]\n```\n\nTry to install from the ckan.\nThe following mods will be shown in the Recommendations line:\n    JNSQ\n    Kcalbeloh System\n    Promised Worlds Core\n\nMoving JNSQ after the GPP line will show the following:\n    Galileio's Planet Pack\n    Kcalbeloh System\n    Outer Planets Mod\n    Promised Worlds - Core\n\nI would have expected all the mods to be listed, and if two selected which have a conflict, to show them in red\n\n### Relevant log output\n\n_No response_\n",
+  "hints_text": "I haven't checked yet, but I would assume this affects _all_ recommendations and suggestions, not just modpacks.\n\n",
+  "all_hints_text": "I haven't checked yet, but I would assume this affects _all_ recommendations and suggestions, not just modpacks.\n\n",
+  "commit_urls": [
+    "https://github.com/KSP-CKAN/CKAN/commit/c354926e700d5c8dda19fb27d7cd0e5a44702df1",
+    "https://github.com/KSP-CKAN/CKAN/commit/d0aa5fad1de11a07b03a09e6abc3add7236e08ce"
+  ],
+  "created_at": "2026-04-13T05:13:06Z",
+  "language": "C#",
+  "commit_url": "https://github.com/KSP-CKAN/CKAN/tree/709fa71d509217cf33713c9322519b2f2007704e",
+  "setup_cmds": [
+    "dotnet restore CKAN.sln  (exit code: 1)",
+    "dotnet restore CKAN.sln -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet build CKAN.sln -p:NuGetAudit=false  (exit code: 1)",
+    "cat build/Build.csproj  (exit code: 0)",
+    "sed -n '1,200p' Core/CKAN-core.csproj  (exit code: 0)",
+    "grep -R \"NuGetAudit\" -n build  (exit code: 1)",
+    "sed -n '1,160p' GUI/CKAN-GUI.csproj  (exit code: 0)",
+    "sed -n '1,240p' build/MakeTasks.cs  (exit code: 0)",
+    "sed -n '1,200p' Cmdline/CKAN-cmdline.csproj  (exit code: 0)",
+    "sed -n '1,240p' build/Build.cs  (exit code: 2)",
+    "ls -l build  (exit code: 0)",
+    "sed -n '1,240p' build/Program.cs  (exit code: 0)",
+    "sed -n '1,200p' Tests/Tests.csproj  (exit code: 0)",
+    "./build.sh Generate-GlobalAssemblyVersionInfo  (exit code: 0)",
+    "dotnet build Tests/Tests.csproj -c Debug -f net8.0 -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet test Tests/Tests.csproj -c Debug -f net8.0 -p:NuGetAudit=false --filter \"Category!=FlakyNetwork\"  (exit code: 0)",
+    "dotnet restore CKAN.sln  (exit code: 1)",
+    "dotnet restore CKAN.sln -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet build CKAN.sln -p:NuGetAudit=false  (exit code: 1)",
+    "cat build/Build.csproj  (exit code: 0)",
+    "sed -n '1,200p' Core/CKAN-core.csproj  (exit code: 0)",
+    "grep -R \"NuGetAudit\" -n build  (exit code: 1)",
+    "sed -n '1,160p' GUI/CKAN-GUI.csproj  (exit code: 0)",
+    "sed -n '1,240p' build/MakeTasks.cs  (exit code: 0)",
+    "sed -n '1,200p' Cmdline/CKAN-cmdline.csproj  (exit code: 0)",
+    "sed -n '1,240p' build/Build.cs  (exit code: 2)",
+    "ls -l build  (exit code: 0)",
+    "sed -n '1,240p' build/Program.cs  (exit code: 0)",
+    "sed -n '1,200p' Tests/Tests.csproj  (exit code: 0)",
+    "./build.sh Generate-GlobalAssemblyVersionInfo  (exit code: 0)",
+    "dotnet build Tests/Tests.csproj -c Debug -f net8.0 -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet test Tests/Tests.csproj -c Debug -f net8.0 -p:NuGetAudit=false --filter \"Category!=FlakyNetwork\"  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "dotnet test Tests/Tests.csproj -c Debug -f net8.0 -p:NuGetAudit=false --filter \"Category!=FlakyNetwork\" --logger \"console;verbosity=detailed\""
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:KSP-CKAN__CKAN-4561_linux"
+}

@@ -1,0 +1,37 @@
+{
+  "repo": "zeux/pugixml",
+  "pull_number": 702,
+  "instance_id": "zeux__pugixml-702",
+  "issue_numbers": [
+    701
+  ],
+  "base_commit": "59f944c46746bec4f5f6ad312a7ac8e389d0f6ba",
+  "patch": "diff --git a/src/pugixml.cpp b/src/pugixml.cpp\nindex 628111600..650e24236 100644\n--- a/src/pugixml.cpp\n+++ b/src/pugixml.cpp\n@@ -1253,16 +1253,36 @@ PUGI_IMPL_NS_BEGIN\n \t\t\tattr = next;\n \t\t}\n \n-\t\tfor (xml_node_struct* child = n->first_child; child; )\n+\t\talloc.deallocate_memory(n, sizeof(xml_node_struct), PUGI_IMPL_GETPAGE(n));\n+\t}\n+\n+\tinline void destroy_tree(xml_node_struct* n, xml_allocator& alloc)\n+\t{\n+\t\txml_node_struct* cur = n;\n+\n+\t\twhile (cur->first_child)\n+\t\t\tcur = cur->first_child;\n+\n+\t\twhile (cur != n)\n \t\t{\n-\t\t\txml_node_struct* next = child->next_sibling;\n+\t\t\t// loop invariant: cur is inside the subtree rooted at n, cur's subtree is destroyed\n+\t\t\txml_node_struct* parent = cur->parent;\n+\t\t\txml_node_struct* next = cur->next_sibling;\n \n-\t\t\tdestroy_node(child, alloc);\n+\t\t\tdestroy_node(cur, alloc);\n \n-\t\t\tchild = next;\n+\t\t\tif (next)\n+\t\t\t{\n+\t\t\t\tcur = next;\n+\n+\t\t\t\twhile (cur->first_child)\n+\t\t\t\t\tcur = cur->first_child;\n+\t\t\t}\n+\t\t\telse\n+\t\t\t\tcur = parent;\n \t\t}\n \n-\t\talloc.deallocate_memory(n, sizeof(xml_node_struct), PUGI_IMPL_GETPAGE(n));\n+\t\tdestroy_node(n, alloc);\n \t}\n \n \tinline void append_node(xml_node_struct* child, xml_node_struct* node)\n@@ -6599,7 +6619,7 @@ namespace pugi\n \t\tif (!alloc.reserve()) return false;\n \n \t\timpl::remove_node(n._root);\n-\t\timpl::destroy_node(n._root, alloc);\n+\t\timpl::destroy_tree(n._root, alloc);\n \n \t\treturn true;\n \t}\n@@ -6615,7 +6635,7 @@ namespace pugi\n \t\t{\n \t\t\txml_node_struct* next = cur->next_sibling;\n \n-\t\t\timpl::destroy_node(cur, alloc);\n+\t\t\timpl::destroy_tree(cur, alloc);\n \n \t\t\tcur = next;\n \t\t}\n",
+  "test_patch": "diff --git a/tests/test_dom_modify.cpp b/tests/test_dom_modify.cpp\nindex 61885318a..fcf215b07 100644\n--- a/tests/test_dom_modify.cpp\n+++ b/tests/test_dom_modify.cpp\n@@ -1716,6 +1716,30 @@ TEST(dom_node_copy_stackless)\n \tCHECK_NODE(doc, data.c_str());\n }\n \n+TEST(dom_node_remove_child_stackless)\n+{\n+\tunsigned int count = 20000;\n+\tstd::basic_string<char_t> data = STR(\"<root>\");\n+\n+\tfor (unsigned int i = 0; i < count; ++i)\n+\t\tdata += STR(\"<a>\");\n+\n+\tdata += STR(\"text\");\n+\n+\tfor (unsigned int j = 0; j < count; ++j)\n+\t\tdata += STR(\"</a>\");\n+\n+\tdata += STR(\"<tail/></root>\");\n+\n+\txml_document doc;\n+\tCHECK(doc.load_string(data.c_str()));\n+\n+\txml_node root = doc.child(STR(\"root\"));\n+\tCHECK(root.remove_child(root.child(STR(\"a\"))));\n+\n+\tCHECK_NODE(doc, STR(\"<root><tail/></root>\"));\n+}\n+\n TEST(dom_node_copy_copyless)\n {\n \tstd::basic_string<char_t> data;\n",
+  "problem_statement": "Stack overflow in destroy_node() via remove_child()/remove_children() on deeply nested XML\n### Description\n- **Version:** v1.15 (commit 3070fb6)\n- **Environment:** Ubuntu 20.04 x86_64, GCC/Clang with default 8MB stack\n- **Location:** function `destroy_node()` (pugixml.cpp:1239-1266)\n\nThe internal function `destroy_node()` (pugixml.cpp:1239-1266) uses unbounded recursion to deallocate child nodes. Since the XML parser (`parse_tree()`) is iterative and imposes no element nesting depth limit, it successfully parses arbitrarily deep XML documents. However, calling `xml_node::remove_child()` or `xml_node::remove_children()` on a deeply nested subtree causes `destroy_node()` to recurse to the full depth, resulting in a stack overflow (SIGSEGV) on the default 8MB stack.\n\nThis is different from #671 (XPath parser recursion), which was in the XPath code path. This bug is in the XML DOM node destruction code.\n\n### PoC\n```\n#include \"pugixml.hpp\"\n#include <string>\n#include <cstdio>\n\nint main() {\n    const int depth = 200000;\n    std::string xml;\n    xml.reserve(depth * 8);\n    for (int i = 0; i < depth; i++) xml += \"<a>\";\n    for (int i = 0; i < depth; i++) xml += \"</a>\";\n\n    pugi::xml_document doc;\n    pugi::xml_parse_result result = doc.load_string(xml.c_str());\n    printf(\"Parse: %s\\n\", result.description()); \n\n    doc.remove_children();  // Segmentation fault\n    return 0;\n}\n```\n```\ng++ -I ../src poc.cpp ../build/libpugixml.a -o poc\n./poc\n# Parse: No error\n# Segmentation fault\n```\n\n### ASan Output\n```\nAddressSanitizer:DEADLYSIGNAL\n=================================================================\n==1506188==ERROR: AddressSanitizer: stack-overflow on address 0x7ffc07bfbff8 (pc 0x55922fd67449 bp 0x7ffc07bfc010 sp 0x7ffc07bfc000 T0)\n    #0 0x55922fd67449 in destroy_node /home/test/fuzz/realworld/pugixml/pugixml/src/pugixml.cpp:1240\n    #1 0x55922fd67f44 in destroy_node /home/test/fuzz/realworld/pugixml/pugixml/src/pugixml.cpp:1260\n    #2 0x55922fd67f44 in destroy_node /home/test/fuzz/realworld/pugixml/pugixml/src/pugixml.cpp:1260\n    ...\n    #247 0x55922fd67f44 in destroy_node /home/test/fuzz/realworld/pugixml/pugixml/src/pugixml.cpp:1260\n    #248 0x55922fd67f44 in destroy_node /home/test/fuzz/realworld/pugixml/pugixml/src/pugixml.cpp:1260\n\nSUMMARY: AddressSanitizer: stack-overflow /home/test/fuzz/realworld/pugixml/pugixml/src/pugixml.cpp:1240 in destroy_node\n==1506188==ABORTING\n```\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/zeux/pugixml/commit/b15ee298f47c6aa676fef65113db1e65d1b65bc1",
+    "https://github.com/zeux/pugixml/commit/e57923672d15332f176548868535a57a57c19cae"
+  ],
+  "created_at": "2026-04-13T17:05:39Z",
+  "language": "C++",
+  "commit_url": "https://github.com/zeux/pugixml/tree/59f944c46746bec4f5f6ad312a7ac8e389d0f6ba",
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -DPUGIXML_BUILD_TESTS=ON  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -DPUGIXML_BUILD_TESTS=ON  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "ctest --test-dir build -V"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:zeux__pugixml-702_linux"
+}

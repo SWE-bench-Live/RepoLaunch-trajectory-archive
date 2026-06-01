@@ -1,0 +1,51 @@
+{
+  "repo": "gohugoio/hugo",
+  "pull_number": 14657,
+  "instance_id": "gohugoio__hugo-14657",
+  "issue_numbers": [
+    4621
+  ],
+  "base_commit": "d88a29e002ebc31bf9b4e1e024f141cc0b39a657",
+  "patch": "diff --git a/commands/convert.go b/commands/convert.go\nindex ebf81cfb3e2..06982984935 100644\n--- a/commands/convert.go\n+++ b/commands/convert.go\n@@ -18,10 +18,12 @@ import (\n \t\"context\"\n \t\"fmt\"\n \t\"path/filepath\"\n+\t\"slices\"\n \t\"strings\"\n \t\"time\"\n \n \t\"github.com/bep/simplecobra\"\n+\t\"github.com/gohugoio/hugo/common/hugio\"\n \t\"github.com/gohugoio/hugo/config\"\n \t\"github.com/gohugoio/hugo/helpers\"\n \t\"github.com/gohugoio/hugo/hugofs\"\n@@ -200,6 +202,56 @@ func (c *convertCommand) convertAndSavePage(p page.Page, site *hugolib.Site, tar\n \treturn nil\n }\n \n+func (c *convertCommand) copyContentDirsForOutput(pagesBackedByFile page.Pages) error {\n+\tcontentDirs := make(map[string]bool)\n+\tfor _, p := range pagesBackedByFile {\n+\t\tfilename := p.File().Filename()\n+\t\tcontentDir := strings.TrimSuffix(filename, p.File().Path())\n+\t\tif contentDir == filename {\n+\t\t\tcontinue\n+\t\t}\n+\t\tcontentDirs[filepath.Clean(contentDir)] = true\n+\t}\n+\n+\tvar contentDirList []string\n+\tfor contentDir := range contentDirs {\n+\t\tcontentDirList = append(contentDirList, contentDir)\n+\t}\n+\tslices.Sort(contentDirList)\n+\n+\toutputDirAbs, err := filepath.Abs(c.outputDir)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"failed to resolve output path %q: %w\", c.outputDir, err)\n+\t}\n+\n+\tfor _, contentDir := range contentDirList {\n+\t\toutputContentDirAbs := filepath.Join(outputDirAbs, filepath.Base(contentDir))\n+\n+\t\tskipDirs := make(map[string]bool)\n+\t\trelToOutputDir, err := filepath.Rel(contentDir, outputDirAbs)\n+\t\tif err == nil && relToOutputDir != \"..\" && !strings.HasPrefix(relToOutputDir, \"..\"+string(filepath.Separator)) {\n+\t\t\tskipDirs[filepath.Clean(outputDirAbs)] = true\n+\t\t}\n+\t\trelToOutputContentDir, err := filepath.Rel(contentDir, outputContentDirAbs)\n+\t\tif err == nil && relToOutputContentDir != \"..\" && !strings.HasPrefix(relToOutputContentDir, \"..\"+string(filepath.Separator)) {\n+\t\t\tskipDirs[filepath.Clean(outputContentDirAbs)] = true\n+\t\t}\n+\n+\t\tvar shouldCopy func(filename string) bool\n+\t\tif len(skipDirs) > 0 {\n+\t\t\tshouldCopy = func(filename string) bool {\n+\t\t\t\treturn !skipDirs[filepath.Clean(filename)]\n+\t\t\t}\n+\t\t}\n+\n+\t\tif err := hugio.CopyDir(hugofs.Os, contentDir, outputContentDirAbs, shouldCopy); err != nil {\n+\t\t\treturn fmt.Errorf(\"failed to copy %q to %q: %w\", contentDir, outputContentDirAbs, err)\n+\t\t}\n+\t}\n+\n+\treturn nil\n+}\n+\n func (c *convertCommand) convertContents(format metadecoders.Format) error {\n \tif c.outputDir == \"\" && !c.unsafe {\n \t\treturn newUserError(\"Unsafe operation not allowed, use --unsafe or set a different output path\")\n@@ -219,6 +271,12 @@ func (c *convertCommand) convertContents(format metadecoders.Format) error {\n \t\tpagesBackedByFile = append(pagesBackedByFile, p)\n \t}\n \n+\tif c.outputDir != \"\" {\n+\t\tif err := c.copyContentDirsForOutput(pagesBackedByFile); err != nil {\n+\t\t\treturn err\n+\t\t}\n+\t}\n+\n \tsite.Log.Println(\"processing\", len(pagesBackedByFile), \"content files\")\n \tfor _, p := range site.AllPages() {\n \t\tif err := c.convertAndSavePage(p, site, format); err != nil {\n",
+  "test_patch": "diff --git a/testscripts/commands/convert.txt b/testscripts/commands/convert.txt\nindex 811aeecc8ac..4c325f17b9c 100644\n--- a/testscripts/commands/convert.txt\n+++ b/testscripts/commands/convert.txt\n@@ -10,14 +10,21 @@ hugo convert toYAML -h\n stdout 'to use YAML for the front matter'\n \n hugo convert toJSON -o myjsoncontent\n-stdout 'processing 3 content files'\n+stdout 'processing 4 content files'\n grep '^{' myjsoncontent/content/mytoml.md\n grep '^{' myjsoncontent/content/myjson.md\n grep '^{' myjsoncontent/content/myyaml.md\n+grep '^{' myjsoncontent/content/bundle/index.md\n+exists myjsoncontent/content/bundle/data.txt\n+exists myjsoncontent/content/bundle/nested/asset.dat\n hugo convert toYAML -o myyamlcontent\n-stdout 'processing 3 content files'\n+stdout 'processing 4 content files'\n+exists myyamlcontent/content/bundle/data.txt\n+exists myyamlcontent/content/bundle/nested/asset.dat\n hugo convert toTOML -o mytomlcontent\n-stdout 'processing 3 content files'\n+stdout 'processing 4 content files'\n+exists mytomlcontent/content/bundle/data.txt\n+exists mytomlcontent/content/bundle/nested/asset.dat\n \n \n \n@@ -40,3 +47,12 @@ JSON content\n title: YAML\n ---\n YAML content\n+-- content/bundle/index.md --\n+---\n+title: Bundle\n+---\n+Bundle content\n+-- content/bundle/data.txt --\n+bundle resource\n+-- content/bundle/nested/asset.dat --\n+nested resource\n",
+  "problem_statement": "hugo convert does not copy \"non content file\" files if --output is set\nHi all,\r\n\r\nI probably found another issue concerning _page resources:_\r\n\r\n`hugo convert` deletes all page resources if the flag `output` is set, e.\u00a0g.:\r\n\r\n```\r\nhugo convert toTOML --output converted\r\n```\r\n\r\nWith the `unsafe` flag set everything works as expected:\r\n\r\n```\r\nhugo convert toTOML --unsafe\r\n```\n",
+  "hints_text": "I've just run `hugo convert toTOML --output converted` and all it did was copy the md files to the specified directory - no deleting, but also no converting.\nThis issue has been automatically marked as stale because it has not had recent activity. The resources of the Hugo team are limited, and so we are asking for your help.\nIf this is a **bug** and you can still reproduce this error on the <code>master</code> branch, please reply with all of the information you have about it in order to keep the issue open.\nIf this is a **feature request**, and you feel that it is still relevant and valuable, please tell us why.\nThis issue will automatically be closed in the near future if no further activity occurs. Thank you for all your contributions.\n\nI just checked this, and yes, it does not copy any non-content files. Maybe it should. Not sure.\n\n",
+  "all_hints_text": "I've just run `hugo convert toTOML --output converted` and all it did was copy the md files to the specified directory - no deleting, but also no converting.\nThis issue has been automatically marked as stale because it has not had recent activity. The resources of the Hugo team are limited, and so we are asking for your help.\nIf this is a **bug** and you can still reproduce this error on the <code>master</code> branch, please reply with all of the information you have about it in order to keep the issue open.\nIf this is a **feature request**, and you feel that it is still relevant and valuable, please tell us why.\nThis issue will automatically be closed in the near future if no further activity occurs. Thank you for all your contributions.\n\nI just checked this, and yes, it does not copy any non-content files. Maybe it should. Not sure.\nThis issue has been automatically locked since there has not been any recent activity after it was closed. Please open a new issue for related bugs.\n\n",
+  "commit_urls": [
+    "https://github.com/gohugoio/hugo/commit/b07a2bbcc5c2c82fd35d96489b7b7be3ea4c455c",
+    "https://github.com/gohugoio/hugo/commit/5859f6a88af71f29b5845bfd241b07cd362a388b"
+  ],
+  "created_at": "2026-03-23T01:59:36Z",
+  "language": "Go",
+  "commit_url": "https://github.com/gohugoio/hugo/tree/d88a29e002ebc31bf9b4e1e024f141cc0b39a657",
+  "setup_cmds": [
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "sed -n '1,220p' codegen/methods.go  (exit code: 0)",
+    "sed -n '1,160p' codegen/methods_test.go  (exit code: 0)",
+    "apt-get update -y  (exit code: 0)",
+    "apt-get install -y pandoc ruby-full python3-pip  (exit code: 0)",
+    "gem install asciidoctor -v \"2.0.26\" && gem install asciidoctor-diagram -v \"3.1.0\" && pip install docutils  (exit code: 1)",
+    "apt-get install -y python3-docutils  (exit code: 0)",
+    "ln -s /testbed /tmp/hugo  (exit code: 0)",
+    "cd /tmp/hugo && go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "sed -n '1,220p' codegen/methods.go  (exit code: 0)",
+    "sed -n '1,160p' codegen/methods_test.go  (exit code: 0)",
+    "apt-get update -y  (exit code: 0)",
+    "apt-get install -y pandoc ruby-full python3-pip  (exit code: 0)",
+    "gem install asciidoctor -v \"2.0.26\" && gem install asciidoctor-diagram -v \"3.1.0\" && pip install docutils  (exit code: 1)",
+    "apt-get install -y python3-docutils  (exit code: 0)",
+    "ln -s /testbed /tmp/hugo  (exit code: 0)",
+    "cd /tmp/hugo && go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "go test ./... -v"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:gohugoio__hugo-14657_linux"
+}

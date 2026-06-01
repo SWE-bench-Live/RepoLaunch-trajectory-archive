@@ -1,0 +1,38 @@
+{
+  "repo": "lima-vm/lima",
+  "pull_number": 4803,
+  "instance_id": "lima-vm__lima-4803",
+  "issue_numbers": [
+    4760
+  ],
+  "base_commit": "fc744fa4a9508d2bc8b8b726c5bf6b95b7531214",
+  "patch": "diff --git a/pkg/limatmpl/embed.go b/pkg/limatmpl/embed.go\nindex c95b29adeb4..79a74da40b7 100644\n--- a/pkg/limatmpl/embed.go\n+++ b/pkg/limatmpl/embed.go\n@@ -225,7 +225,8 @@ const mergeDocuments = `\n | $b | select((.base | tag == \"!!str\") and ($a.base | tag == \"!!seq\")) | .base = [ \"\" + .base ]\n \n # Delete base DNS entries if the template list is not empty.\n-| $a | select(.dns) | del($b.dns, $c.dns)\n+| $b | select($a.dns | length > 0) | del(.dns)\n+| $c | select($a.dns | length > 0) | del(.dns)\n \n # Mark all new list fields with a custom tag. This is needed to avoid appending\n # newly copied lists to themselves again when we merge lists.\n",
+  "test_patch": "diff --git a/pkg/limatmpl/embed_test.go b/pkg/limatmpl/embed_test.go\nindex 5c82fe00292..c3d5916d766 100644\n--- a/pkg/limatmpl/embed_test.go\n+++ b/pkg/limatmpl/embed_test.go\n@@ -100,6 +100,18 @@ minimumLimaVersion: 1.0.2  # or later\n \t\t\"dns: [8.8.8.8, 1.2.3.4]\",\n \t\t\"dns: [1.1.1.1]\",\n \t},\n+\t{\n+\t\t\"dns is copied from base when template has no dns\",\n+\t\t\"\",\n+\t\t\"dns: [1.1.1.1, 8.8.8.8]\",\n+\t\t\"dns: [1.1.1.1, 8.8.8.8]\",\n+\t},\n+\t{\n+\t\t\"dns is copied from base when template has empty list\",\n+\t\t\"dns: []\",\n+\t\t\"dns: [1.1.1.1, 8.8.8.8]\",\n+\t\t\"dns: [1.1.1.1, 8.8.8.8]\",\n+\t},\n \t{\n \t\t\"Update comments on existing maps and lists that don't have comments yet\",\n \t\t`#\n",
+  "problem_statement": "DNS settings are not propagated when using a base template\n### Description\n\nDNS settings are not propagated from base template to main template.\n> Discussion on [Slack](https://cloud-native.slack.com/archives/C043N6ZFV9S/p1773853580695349)\n\n## Example:\n### Base template:\n```yaml\n# Debian 13 (trixie) base image\nimages:\n  - location: \"https://cdimage.debian.org/images/cloud/trixie/20260316-2418/debian-13-generic-amd64-20260316-2418.qcow2\"\n    arch: \"x86_64\"\n    digest: \"sha512:c6523db54404e320ed30787038f155f649995392697fa2a41e49458d36e056fda020593a03cf910fa7bf93bd5c510b12d6e7c7bf7852a03ee3a64536fecf0127\"\n  - location: \"https://cdimage.debian.org/images/cloud/trixie/20260316-2418/debian-13-generic-arm64-20260316-2418.qcow2\"\n    arch: \"aarch64\"\n    digest: \"sha512:f0460932cd6992539c7c9142bb02a24af83243503bad0179b0813bd6269195785655348ea889daf5927f80853f63b3402a78176967854887dbca9da3859599a0\"\n  # Fallback images\n  - location: \"https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2\"\n    arch: \"x86_64\"\n  - location: \"https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-arm64.qcow2\"\n    arch: \"aarch64\"\n\nmounts: []\n# containerd is managed by k3s, not by Lima, so the values are set to false here.\ncontainerd:\n  system: false\n  user: false\ndns:\n  - 1.1.1.1\n  - 8.8.8.8\n\nhostResolver:\n  enabled: false\n\nprovision:\n  - mode: system\n    script: |\n      #!/bin/sh\n      if [ ! -f /usr/bin/fish ]; then\n        apt update\n        apt install -y curl gnupg2\n        echo 'deb https://download.opensuse.org/repositories/shells:/fish:/release:/4/Debian_13/ /' | sudo tee /etc/apt/sources.list.d/shells:fish:release:4.list\n        curl -fsSL https://download.opensuse.org/repositories/shells:fish:release:4/Debian_13/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/shells_fish_release_4.gpg > /dev/null\n        apt update\n        apt install -y fish vim make\n        chsh -s $(which fish) {{.User}}\n        chsh -s $(which fish)\n        hostnamectl set-hostname debian\n        reboot\n      fi\n\n\nprobes:\n  - script: |\n      #!/bin/sh\n      if ! timeout 30s bash -c \"until test -f /usr/bin/fish; do sleep 3; done\"; then\n           echo >&2 \"fish is not installed yet\"\n           exit 1\n      fi\n\nssh:\n  loadDotSSHPubKeys: true\n\nnetworks:\n  - vzNAT: true\n    interface: \"eth1\"\n\nportForwards:\n  - ignore: true\n    proto: any\n    guestIP: 0.0.0.0\nvmType: vz\narch: aarch64\ncpus: 4\nmemory: 12GiB\ndisk: 50GiB\nupgradePackages: true\nuser:\n  home: /home/{{.User}}\n```\n### Main template\n```yaml\nbase:\n  - base/debian.yaml\n```\n\n### Issue:\nDNS setting set on the base template is not propagated to the main template. Not sure if `hostResolver` settings are also propagated.\n",
+  "hints_text": "Can I work on this issue?\n> Can I work on this issue?\n\nI've assigned it to you. I'm pretty sure the issue originates from https://github.com/lima-vm/lima/blob/077330a1af14fca926bea4e76c50381a43dcc861/pkg/limatmpl/embed.go#L227-L228\n\nBut I can't tell at a glance why this goes wrong; there should be not `dns` entry in the main template, so the DNS list in the base template should not get deleted.\n\nI would start by creating a test for this scenario in `embed_test.go` and then see if the test passes when you comment out the line I quoted above.\n\nThe real task is to figure out why it would trigger even when the main template doesn't have a DNS list.\n\n",
+  "all_hints_text": "Can I work on this issue?\n> Can I work on this issue?\n\nI've assigned it to you. I'm pretty sure the issue originates from https://github.com/lima-vm/lima/blob/077330a1af14fca926bea4e76c50381a43dcc861/pkg/limatmpl/embed.go#L227-L228\n\nBut I can't tell at a glance why this goes wrong; there should be not `dns` entry in the main template, so the DNS list in the base template should not get deleted.\n\nI would start by creating a test for this scenario in `embed_test.go` and then see if the test passes when you comment out the line I quoted above.\n\nThe real task is to figure out why it would trigger even when the main template doesn't have a DNS list.\n\n",
+  "commit_urls": [
+    "https://github.com/lima-vm/lima/commit/6379574c936e09c76cc9d22a87eeccbd4a304acd"
+  ],
+  "created_at": "2026-04-06T11:14:59Z",
+  "language": "Go",
+  "commit_url": "https://github.com/lima-vm/lima/tree/fc744fa4a9508d2bc8b8b726c5bf6b95b7531214",
+  "setup_cmds": [
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "apt-get update && apt-get install -y bzip2  (exit code: 0)",
+    "go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "apt-get update && apt-get install -y bzip2  (exit code: 0)",
+    "go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:lima-vm__lima-4803_linux"
+}

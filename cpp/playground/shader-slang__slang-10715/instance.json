@@ -1,0 +1,57 @@
+{
+  "repo": "shader-slang/slang",
+  "pull_number": 10715,
+  "instance_id": "shader-slang__slang-10715",
+  "issue_numbers": [
+    10714
+  ],
+  "base_commit": "6ab12651a27581d663d26837e5206b5374802056",
+  "patch": "diff --git a/.github/actions/check-disk-space/action.yml b/.github/actions/check-disk-space/action.yml\nnew file mode 100644\nindex 00000000000..821e8dc4c3e\n--- /dev/null\n+++ b/.github/actions/check-disk-space/action.yml\n@@ -0,0 +1,35 @@\n+name: Check Disk Space\n+description: Fail early if available disk space is below threshold\n+\n+inputs:\n+  min-disk-gb:\n+    description: \"Minimum required free disk space in GB\"\n+    required: false\n+    default: \"3\"\n+\n+runs:\n+  using: composite\n+  steps:\n+    - name: Check available disk space\n+      shell: bash\n+      run: |\n+        min_gb=\"${{ inputs.min-disk-gb }}\"\n+\n+        # Get available space in KB for the current filesystem\n+        avail_kb=$(df -k . | tail -1 | awk '{print $4}')\n+\n+        if ! [[ \"$avail_kb\" =~ ^[0-9]+$ ]]; then\n+          echo \"::warning::Could not parse available disk space from df output\"\n+          df -k .\n+          exit 0\n+        fi\n+\n+        avail_gb=$(awk \"BEGIN {printf \\\"%.1f\\\", $avail_kb / 1048576}\")\n+\n+        echo \"Available disk space: ${avail_gb} GB (minimum: ${min_gb} GB)\"\n+\n+        if awk \"BEGIN {exit !($avail_gb < $min_gb)}\"; then\n+          echo \"::error::Insufficient disk space: ${avail_gb} GB available, ${min_gb} GB required\"\n+          df -h .\n+          exit 1\n+        fi\ndiff --git a/.github/actions/common-setup/action.yml b/.github/actions/common-setup/action.yml\nindex edeeede044b..3f49dec3430 100644\n--- a/.github/actions/common-setup/action.yml\n+++ b/.github/actions/common-setup/action.yml\n@@ -16,6 +16,10 @@ inputs:\n   use-cached-llvm:\n     default: true\n     required: false\n+  min-disk-gb:\n+    description: \"Minimum required free disk space in GB\"\n+    default: \"3\"\n+    required: false\n runs:\n   using: composite\n   steps:\n@@ -26,6 +30,11 @@ runs:\n         Add-Content -Path $env:GITHUB_PATH -Value \"C:\\\\Program Files\\\\Git\\\\bin\"\n         Add-Content -Path $env:GITHUB_PATH -Value \"C:\\\\Program Files\\\\Git\\\\usr\\\\bin\"\n \n+    - name: Check disk space\n+      uses: ./.github/actions/check-disk-space\n+      with:\n+        min-disk-gb: ${{ inputs.min-disk-gb }}\n+\n     - name: Set up MSVC dev tools on Windows\n       uses: ilammy/msvc-dev-cmd@v1\n \ndiff --git a/.github/workflows/ci-slang-build-container.yml b/.github/workflows/ci-slang-build-container.yml\nindex 4ab01d1bbf1..ff216bd0419 100644\n--- a/.github/workflows/ci-slang-build-container.yml\n+++ b/.github/workflows/ci-slang-build-container.yml\n@@ -68,6 +68,11 @@ jobs:\n           submodules: \"recursive\"\n           fetch-depth: \"2\"\n \n+      - name: Check disk space\n+        uses: ./.github/actions/check-disk-space\n+        with:\n+          min-disk-gb: \"5\"\n+\n       # Restore sccache local cache from master\n       - name: Restore sccache cache\n         uses: actions/cache/restore@v4\ndiff --git a/.github/workflows/compile-rtx-remix-shaders-nightly.yml b/.github/workflows/compile-rtx-remix-shaders-nightly.yml\nindex feab653a70e..0621754b6d8 100644\n--- a/.github/workflows/compile-rtx-remix-shaders-nightly.yml\n+++ b/.github/workflows/compile-rtx-remix-shaders-nightly.yml\n@@ -30,6 +30,9 @@ jobs:\n           submodules: \"recursive\"\n           fetch-depth: 0 # Need full history for version tags\n \n+      - name: Check disk space\n+        uses: ./.github/actions/check-disk-space\n+\n       # Explicitly fetch tags for version detection\n       # actions/checkout doesn't always fetch tags properly\n       - name: Fetch version tags\ndiff --git a/.github/workflows/compile-sascha-willems-shaders-nightly.yml b/.github/workflows/compile-sascha-willems-shaders-nightly.yml\nindex 651d1c55c9c..4ad97d56ee9 100644\n--- a/.github/workflows/compile-sascha-willems-shaders-nightly.yml\n+++ b/.github/workflows/compile-sascha-willems-shaders-nightly.yml\n@@ -27,6 +27,9 @@ jobs:\n       - name: Checkout Slang repository\n         uses: actions/checkout@v4\n \n+      - name: Check disk space\n+        uses: ./.github/actions/check-disk-space\n+\n       - name: Add bash to PATH\n         shell: pwsh\n         run: |\n",
+  "test_patch": "diff --git a/.github/workflows/materialx-test.yml b/.github/workflows/materialx-test.yml\nindex c304966c60a..067b2cfa8f2 100644\n--- a/.github/workflows/materialx-test.yml\n+++ b/.github/workflows/materialx-test.yml\n@@ -33,6 +33,9 @@ jobs:\n           submodules: \"recursive\"\n           fetch-depth: \"1\"\n \n+      - name: Check disk space\n+        uses: ./.github/actions/check-disk-space\n+\n       - name: Download Slang Artifacts\n         uses: actions/download-artifact@v4\n         with:\n",
+  "problem_statement": "CI: Add early disk space check to fail fast on low disk\n## Problem\n\nCI jobs that run on runners with insufficient disk space fail mid-build with cryptic errors, wasting runner time and compute resources. This is especially problematic on self-hosted runners where previous jobs may have left behind artifacts.\n\n## Proposed Solution\n\nAdd an early disk space check at the beginning of CI jobs that fails immediately with a clear error message if available space is below a threshold (e.g., 3 GB). This avoids spending 10-30 minutes on a build that will inevitably fail.\n\nThe check should cover:\n- All build and test jobs (via the shared `common-setup` composite action)\n- Container builds (which already do disk cleanup but don't verify the result)\n- Standalone workflows like nightly shader compilations and MaterialX tests\n\nA small reusable composite action (`check-disk-space`) can be shared across all these workflows.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/shader-slang/slang/commit/a3266ed28bd37ace477c95878dd2decff92cc580",
+    "https://github.com/shader-slang/slang/commit/e9291b7f0750752a79bf63a43d65d49d41ab8f4f",
+    "https://github.com/shader-slang/slang/commit/edbf00bd8316632ccee01e27c7fe9d9895f8bc11",
+    "https://github.com/shader-slang/slang/commit/e6d637da935b8af7887b6d8af1f8495df305ee5a"
+  ],
+  "created_at": "2026-04-02T04:59:37Z",
+  "language": "C++",
+  "commit_url": "https://github.com/shader-slang/slang/tree/6ab12651a27581d663d26837e5206b5374802056",
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 1)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "git fetch --tags  (exit code: 1)",
+    "git -c submodule.recurse=false fetch --tags  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 2  (exit code: 1)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y libx11-dev  (exit code: 0)",
+    "cmake --build build --parallel 2  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 1)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "git fetch --tags  (exit code: 1)",
+    "git -c submodule.recurse=false fetch --tags  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 2  (exit code: 1)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y libx11-dev  (exit code: 0)",
+    "cmake --build build --parallel 2  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "ctest --test-dir build -V",
+    "build/Release/bin/slang-test --help",
+    "build/Release/bin/slang-test -v verbose"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:shader-slang__slang-10715_linux"
+}

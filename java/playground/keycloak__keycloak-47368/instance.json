@@ -1,0 +1,61 @@
+{
+  "repo": "keycloak/keycloak",
+  "pull_number": 47368,
+  "instance_id": "keycloak__keycloak-47368",
+  "issue_numbers": [
+    47366
+  ],
+  "base_commit": "fa79f27415bb0ddea3f4039a575c416995772013",
+  "patch": "diff --git a/model/infinispan/src/main/java/org/keycloak/infinispan/compatibility/CachingEmbeddedMetadataProvider.java b/model/infinispan/src/main/java/org/keycloak/infinispan/compatibility/CachingEmbeddedMetadataProvider.java\nindex 74f7438362c6..67b2c52c030a 100644\n--- a/model/infinispan/src/main/java/org/keycloak/infinispan/compatibility/CachingEmbeddedMetadataProvider.java\n+++ b/model/infinispan/src/main/java/org/keycloak/infinispan/compatibility/CachingEmbeddedMetadataProvider.java\n@@ -4,20 +4,28 @@\n import java.nio.file.Files;\n import java.nio.file.Path;\n import java.nio.file.Paths;\n+import java.util.Arrays;\n import java.util.Base64;\n+import java.util.HashMap;\n import java.util.Map;\n+import java.util.Optional;\n import java.util.regex.Matcher;\n import java.util.regex.Pattern;\n import java.util.stream.Stream;\n \n import org.keycloak.Config;\n+import org.keycloak.common.Profile;\n import org.keycloak.compatibility.AbstractCompatibilityMetadataProvider;\n import org.keycloak.crypto.JavaAlgorithm;\n import org.keycloak.infinispan.util.InfinispanUtils;\n import org.keycloak.jose.jws.crypto.HashUtils;\n+import org.keycloak.spi.infinispan.impl.embedded.CacheConfigurator;\n \n import org.infinispan.commons.util.Version;\n+import org.infinispan.configuration.cache.HashConfiguration;\n \n+import static org.keycloak.connections.infinispan.InfinispanConnectionProvider.CLUSTERED_CACHE_NUM_OWNERS;\n+import static org.keycloak.connections.infinispan.InfinispanConnectionProvider.USER_AND_CLIENT_SESSION_CACHES;\n import static org.keycloak.spi.infinispan.CacheEmbeddedConfigProviderSpi.SPI_NAME;\n import static org.keycloak.spi.infinispan.impl.embedded.DefaultCacheEmbeddedConfigProviderFactory.CONFIG;\n import static org.keycloak.spi.infinispan.impl.embedded.DefaultCacheEmbeddedConfigProviderFactory.PROVIDER_ID;\n@@ -38,17 +46,34 @@ protected boolean isEnabled(Config.Scope scope) {\n \n     @Override\n     public Map<String, String> customMeta() {\n-        return Map.of(\n-                \"version\", majorMinorOf(Version.getVersion()),\n-                \"jgroupsVersion\", majorMinorOf(org.jgroups.Version.printVersion()),\n-                CONFIG, sha256Of(Paths.get(config.get(CONFIG)))\n-        );\n+        var meta = new HashMap<String, String>(8);\n+        var defaultNumOwners = HashConfiguration.NUM_OWNERS.getDefaultValue();\n+        Arrays.stream(CLUSTERED_CACHE_NUM_OWNERS)\n+                .map(CacheConfigurator::numOwnerConfigKey)\n+                .forEach(configKey -> addInt(meta, configKey, defaultNumOwners));\n+        if (Profile.isFeatureEnabled(Profile.Feature.PERSISTENT_USER_SESSIONS)) {\n+            // persistent user sessions always force num_owners=1.\n+            // the spi option is ignored\n+            Arrays.stream(USER_AND_CLIENT_SESSION_CACHES)\n+                    .map(CacheConfigurator::numOwnerConfigKey)\n+                    .forEach(meta::remove);\n+        }\n+        meta.put(\"version\", majorMinorOf(Version.getVersion()));\n+        meta.put(\"jgroupsVersion\", majorMinorOf(org.jgroups.Version.printVersion()));\n+        meta.put(CONFIG, sha256Of(Paths.get(config.get(CONFIG))));\n+        return meta;\n     }\n     @Override\n     public Stream<String> configKeys() {\n         return Stream.of(STACK);\n     }\n \n+    private void addInt(Map<String, String> meta, String configKey, int defaultValue) {\n+        Optional.ofNullable(config.getInt(configKey, defaultValue))\n+                .map(String::valueOf)\n+                .ifPresent(value -> meta.put(configKey, value));\n+    }\n+\n     public static String sha256Of(Path filePath) {\n         try {\n             var hash = HashUtils.hash(JavaAlgorithm.SHA256, Files.readAllBytes(filePath));\n",
+  "test_patch": "diff --git a/quarkus/tests/integration/src/test/java/org/keycloak/it/cli/dist/UpdateCommandDistTest.java b/quarkus/tests/integration/src/test/java/org/keycloak/it/cli/dist/UpdateCommandDistTest.java\nindex 768025e5d5ca..37cca7707aa3 100644\n--- a/quarkus/tests/integration/src/test/java/org/keycloak/it/cli/dist/UpdateCommandDistTest.java\n+++ b/quarkus/tests/integration/src/test/java/org/keycloak/it/cli/dist/UpdateCommandDistTest.java\n@@ -338,6 +338,9 @@ private Map<String, String> embeddedCachingMeta() {\n         m.put(\"version\", majorMinorOf(org.infinispan.commons.util.Version.getVersion()));\n         m.put(\"jgroupsVersion\", majorMinorOf(org.jgroups.Version.printVersion()));\n         m.put(CONFIG, CONFIG_FILE_NOT_FOUND);\n+        m.put(\"actionTokensOwners\", \"2\");\n+        m.put(\"loginFailuresOwners\", \"2\");\n+        m.put(\"authenticationSessionsOwners\", \"2\");\n         return m;\n     }\n }\n",
+  "problem_statement": "Add Infinispan numOwners SPI option to compatibility metadata\n### Description\n\nAdd the `spi-cache-embedded--default--<cache>-owners` values to the compatibility metadata.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "@pruivo - I'm about to merge the PR. \n\nStill, please add why this is necessary / a good idea to this issue, so others will know once the track the code change back to this issue. \n@ahus1 Infinispan does not support/test cache with different `numOwners`. If a user updates, for example, the `actionToken' `numOwners` from 2 to 3, Infinispan reads/writes may not be correct. Better safe than sorry. \n\n",
+  "commit_urls": [
+    "https://github.com/keycloak/keycloak/commit/b1dd6e4d64994c473cca0130e14f22a318a71561"
+  ],
+  "created_at": "2026-03-23T13:46:29Z",
+  "language": "Java",
+  "commit_url": "https://github.com/keycloak/keycloak/tree/fa79f27415bb0ddea3f4039a575c416995772013",
+  "setup_cmds": [
+    "cat pom.xml  (exit code: 0)",
+    "./mvnw -q dependency:resolve  (exit code: 1)",
+    "./mvnw -q -DskipTests -DskipTestsuite -DskipDocs -DskipExamples install  (exit code: 1)",
+    "cat js/pom.xml  (exit code: 0)",
+    "grep -R \"pnpm-build\" -n ..  (exit code: 124)",
+    "grep -R \"skip.*pnpm\" -n .  (exit code: 0)",
+    "grep -R \"frontend-maven-plugin\" -n pom.xml js/pom.xml */pom.xml  (exit code: 0)",
+    "grep -n \"<modules>\" -n -B2 -A40 pom.xml  (exit code: 0)",
+    "grep -R \"skip.*js\" -n pom.xml js/pom.xml */pom.xml  (exit code: 1)",
+    "./mvnw -q -DskipTests -DskipTestsuite -DskipDocs -DskipExamples -pl '!js' -am install  (exit code: 0)",
+    "apt-get update && apt-get install -y maven  (exit code: 0)",
+    "./mvnw -q -pl common test  (exit code: 0)",
+    "cat pom.xml  (exit code: 0)",
+    "./mvnw -q dependency:resolve  (exit code: 1)",
+    "./mvnw -q -DskipTests -DskipTestsuite -DskipDocs -DskipExamples install  (exit code: 1)",
+    "cat js/pom.xml  (exit code: 0)",
+    "grep -R \"pnpm-build\" -n ..  (exit code: 124)",
+    "grep -R \"skip.*pnpm\" -n .  (exit code: 0)",
+    "grep -R \"frontend-maven-plugin\" -n pom.xml js/pom.xml */pom.xml  (exit code: 0)",
+    "grep -n \"<modules>\" -n -B2 -A40 pom.xml  (exit code: 0)",
+    "grep -R \"skip.*js\" -n pom.xml js/pom.xml */pom.xml  (exit code: 1)",
+    "./mvnw -q -DskipTests -DskipTestsuite -DskipDocs -DskipExamples -pl '!js' -am install  (exit code: 0)",
+    "apt-get update && apt-get install -y maven  (exit code: 0)",
+    "./mvnw -q -pl common test  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "./mvnw -pl common test",
+    "./mvnw -pl common test",
+    "ls -1 common/target/surefire-reports",
+    "python - <<'PY'\nimport glob\nimport xml.etree.ElementTree as ET\n\nfiles = sorted(glob.glob(\"common/target/surefire-reports/TEST-*.xml\"))\nfor path in files:\n    tree = ET.parse(path)\n    root = tree.getroot()\n    for case in root.iter(\"testcase\"):\n        classname = case.attrib.get(\"classname\")\n        name = case.attrib.get(\"name\")\n        status = \"PASSED\"\n        if case.find(\"failure\") is not None or case.find(\"error\") is not None:\n            status = \"FAILED\"\n        elif case.find(\"skipped\") is not None:\n            status = \"SKIPPED\"\n        print(f\"{status} {classname}::{name}\")\nPY",
+    "python3 - <<'PY'\nimport glob\nimport xml.etree.ElementTree as ET\n\nfiles = sorted(glob.glob(\"common/target/surefire-reports/TEST-*.xml\"))\nfor path in files:\n    tree = ET.parse(path)\n    root = tree.getroot()\n    for case in root.iter(\"testcase\"):\n        classname = case.attrib.get(\"classname\")\n        name = case.attrib.get(\"name\")\n        status = \"PASSED\"\n        if case.find(\"failure\") is not None or case.find(\"error\") is not None:\n            status = \"FAILED\"\n        elif case.find(\"skipped\") is not None:\n            status = \"SKIPPED\"\n        print(f\"{status} {classname}::{name}\")\nPY",
+    "awk '\n  function attr(line, key,   m) {\n    m = match(line, key\"=\\\"[^\\\"]+\\\"\")\n    if (m) {\n      return substr(line, RSTART+length(key)+2, RLENGTH-length(key)-2)\n    }\n    return \"\"\n  }\n  /<testcase / {\n    tc_class = attr($0, \"classname\")\n    tc_name = attr($0, \"name\")\n    tc_status = \"PASSED\"\n  }\n  /<failure/ { tc_status = \"FAILED\" }\n  /<error/ { tc_status = \"FAILED\" }\n  /<skipped/ { tc_status = \"SKIPPED\" }\n  /<\\/testcase>/ {\n    if (tc_name != \"\") {\n      print tc_status \" \" tc_class \"::\" tc_name\n    }\n    tc_class = \"\"; tc_name = \"\"; tc_status = \"\"\n  }\n' common/target/surefire-reports/TEST-*.xml",
+    "sed -n '1,160p' common/target/surefire-reports/org.keycloak.common.ProfileTest.txt",
+    "sed -n '1,120p' common/target/surefire-reports/TEST-org.keycloak.common.ProfileTest.xml",
+    "perl -ne '\n  if (/<testcase /) {\n    ($classname) = /classname=\"([^\"]+)\"/;\n    ($name) = /name=\"([^\"]+)\"/;\n    $status = \"PASSED\";\n  }\n  if (/<failure/ || /<error/) { $status = \"FAILED\"; }\n  if (/<skipped/) { $status = \"SKIPPED\"; }\n  if (/<\\/testcase>/) {\n    if ($name) { print \"$status $classname\\::$name\\n\"; }\n    $classname = $name = $status = undef;\n  }\n' common/target/surefire-reports/TEST-*.xml",
+    "perl -ne '\n  while (/<testcase\\s+[^>]*\\/>/g) {\n    my $tag = $&;\n    my ($classname) = $tag =~ /classname=\"([^\"]+)\"/;\n    my ($name) = $tag =~ /name=\"([^\"]+)\"/;\n    print \"PASSED $classname\\::$name\\n\" if $name;\n  }\n  if (/<testcase\\s+[^>]*>/ && $& !~ /\\/>/) {\n    ($current_class) = $& =~ /classname=\"([^\"]+)\"/;\n    ($current_name) = $& =~ /name=\"([^\"]+)\"/;\n    $current_status = \"PASSED\";\n  }\n  if (/<failure/ || /<error/) { $current_status = \"FAILED\"; }\n  if (/<skipped/) { $current_status = \"SKIPPED\"; }\n  if (/<\\/testcase>/) {\n    if ($current_name) {\n      print \"$current_status $current_class\\::$current_name\\n\";\n    }\n    undef $current_class;\n    undef $current_name;\n    undef $current_status;\n  }\n' common/target/surefire-reports/TEST-*.xml"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:keycloak__keycloak-47368_linux"
+}

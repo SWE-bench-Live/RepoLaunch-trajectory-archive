@@ -1,0 +1,60 @@
+{
+  "repo": "JasperFx/wolverine",
+  "pull_number": 2428,
+  "instance_id": "JasperFx__wolverine-2428",
+  "issue_numbers": [
+    2397
+  ],
+  "base_commit": "9a302d2cc0bad67cb59fa0d2e792ceb0da646571",
+  "patch": "diff --git a/src/Wolverine/Transports/MessageRoutingConvention.cs b/src/Wolverine/Transports/MessageRoutingConvention.cs\nindex a20ff26d9..128f74673 100644\n--- a/src/Wolverine/Transports/MessageRoutingConvention.cs\n+++ b/src/Wolverine/Transports/MessageRoutingConvention.cs\n@@ -57,7 +57,7 @@ void IMessageRoutingConvention.DiscoverListeners(IWolverineRuntime runtime, IRea\n                 foreach (var handler in chain.Handlers)\n                 {\n                     var handlerType = handler.HandlerType;\n-                    var endpoint = maybeCreateListenerForMessageOrHandlerType(transport, handlerType, runtime);\n+                    var endpoint = maybeCreateListenerForMessageOrHandlerType(transport, handlerType, runtime, messageType);\n                     if (endpoint != null)\n                     {\n                         endpoint.StickyHandlers.Add(handlerType);\n@@ -118,7 +118,7 @@ void IMessageRoutingConvention.DiscoverListeners(IWolverineRuntime runtime, IRea\n         return endpoint;\n     }\n \n-    private Endpoint? maybeCreateListenerForMessageOrHandlerType(TTransport transport, Type messageOrHandlerType, IWolverineRuntime runtime)\n+    private Endpoint? maybeCreateListenerForMessageOrHandlerType(TTransport transport, Type messageOrHandlerType, IWolverineRuntime runtime, Type? originalMessageType = null)\n     {\n         // Can be null, so bail out if there's no queue\n         var queueName = _queueNameForListener(messageOrHandlerType);\n@@ -139,8 +139,11 @@ void IMessageRoutingConvention.DiscoverListeners(IWolverineRuntime runtime, IRea\n         _configureListener(configuration, context);\n \n         configuration!.As<IDelayedEndpointConfiguration>().Apply();\n-            \n-        ApplyListenerRoutingDefaults(corrected, transport, messageOrHandlerType);\n+\n+        // When using FromHandlerType naming, the exchange should still be named\n+        // after the message type so that senders (which always use message type)\n+        // and listeners share the same exchange. See GH-2397.\n+        ApplyListenerRoutingDefaults(corrected, transport, originalMessageType ?? messageOrHandlerType);\n \n         return endpoint;\n     }\n",
+  "test_patch": "diff --git a/src/Transports/RabbitMQ/Wolverine.RabbitMQ.Tests/ConventionalRouting/when_using_handler_type_naming.cs b/src/Transports/RabbitMQ/Wolverine.RabbitMQ.Tests/ConventionalRouting/when_using_handler_type_naming.cs\nindex 4c5ae3583..85cf36bae 100644\n--- a/src/Transports/RabbitMQ/Wolverine.RabbitMQ.Tests/ConventionalRouting/when_using_handler_type_naming.cs\n+++ b/src/Transports/RabbitMQ/Wolverine.RabbitMQ.Tests/ConventionalRouting/when_using_handler_type_naming.cs\n@@ -21,9 +21,8 @@ public when_using_handler_type_naming()\n         _host = WolverineHost.For(opts =>\n         {\n             opts.UseRabbitMq()\n-                .UseConventionalRouting(NamingSource.FromHandlerType)\n                 .AutoProvision()\n-                .AutoPurgeOnStartup();\n+                .UseConventionalRouting(NamingSource.FromHandlerType);\n \n             opts.Discovery.DisableConventionalDiscovery()\n                 .IncludeType(typeof(HandlerTypeNamingHandler));\n@@ -69,6 +68,40 @@ public void listener_endpoint_should_be_active()\n             .ShouldBeTrue($\"Expected active listener at {expectedUri}\");\n     }\n \n+    [Fact]\n+    public void exchange_should_be_named_after_message_type_not_handler_type()\n+    {\n+        var messageName = typeof(HandlerTypeNamingMessage).ToMessageTypeName();\n+        var handlerName = typeof(HandlerTypeNamingHandler).ToMessageTypeName();\n+\n+        var transport = _runtime.Options.RabbitMqTransport();\n+\n+        // The exchange should be named after the message type\n+        transport.Exchanges.Any(e => e.Name == messageName).ShouldBeTrue(\n+            $\"Expected exchange named '{messageName}' for message type, but found exchanges: {string.Join(\", \", transport.Exchanges.Select(e => e.Name))}\");\n+\n+        // The exchange should NOT be named after the handler type\n+        transport.Exchanges.Any(e => e.Name == handlerName).ShouldBeFalse(\n+            $\"Exchange should not be named '{handlerName}' (handler type). Exchanges should use the message type name.\");\n+    }\n+\n+    [Fact]\n+    public void queue_should_be_bound_to_message_type_exchange()\n+    {\n+        var queueName = typeof(HandlerTypeNamingHandler).ToMessageTypeName();\n+        var messageName = typeof(HandlerTypeNamingMessage).ToMessageTypeName();\n+\n+        var transport = _runtime.Options.RabbitMqTransport();\n+        var queue = transport.Queues[queueName];\n+\n+        queue.HasBindings.ShouldBeTrue(\n+            $\"Queue '{queueName}' should have bindings\");\n+\n+        // The queue should be bound to the exchange named after the message type\n+        queue.Bindings().Any(b => b.ExchangeName == messageName).ShouldBeTrue(\n+            $\"Queue '{queueName}' should be bound to exchange '{messageName}', but found bindings to: {string.Join(\", \", queue.Bindings().Select(b => b.ExchangeName))}\");\n+    }\n+\n     public void Dispose()\n     {\n         _host.Dispose();\n",
+  "problem_statement": "UseConventionalRouting(NamingSource.FromHandlerType) renames exchange as well\n**Describe the bug**\nThe recently introduced conventional naming source FromHandlerType changes the Exchange name as well, and not only the Queue name. \n\n**To Reproduce**\nSet UseConventionalRouting(NamingSource.FromHandlerType)\n\n**Expected behavior**\nIt should only rename the queue and not the exchange\n\n**Screenshots**\n\n<img width=\"1050\" height=\"551\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/cba4d761-3a46-4a21-a61c-b6edd771fd92\" />\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/JasperFx/wolverine/commit/f0d89d9244e00cc94f6d8054f5ad49e61c7bedca"
+  ],
+  "created_at": "2026-04-03T19:50:42Z",
+  "language": "C#",
+  "commit_url": "https://github.com/JasperFx/wolverine/tree/9a302d2cc0bad67cb59fa0d2e792ceb0da646571",
+  "setup_cmds": [
+    "dotnet restore slim.sln  (exit code: 1)",
+    "dotnet restore wolverine_slim.sln  (exit code: 1)",
+    "grep -n \"/jasperfx\\|/weasel\\|/marten\\|/lamar\\|/alba\" -n wolverine_slim.sln | head -n 20  (exit code: 0)",
+    "grep -n \"/jasperfx\\|/weasel\\|/marten\\|/lamar\\|/alba\" wolverine_slim.sln  (exit code: 1)",
+    "rg -n \"jasperfx|weasel|marten|lamar|alba\" /testbed  (exit code: 127)",
+    "grep -R -n \"jasperfx\\|weasel\\|marten\\|lamar\\|alba\" /testbed | head -n 50  (exit code: 0)",
+    "dotnet restore wolverine.sln  (exit code: 1)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && chmod +x /tmp/dotnet-install.sh && /tmp/dotnet-install.sh --channel 10.0 --install-dir /root/.dotnet  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet restore wolverine.sln  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet build wolverine.sln -c Release --no-restore  (exit code: 1)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && chmod +x /tmp/dotnet-install.sh && /tmp/dotnet-install.sh --channel 8.0 --install-dir /root/.dotnet  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet --list-runtimes  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet build wolverine.sln -c Release --no-restore  (exit code: 1)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && chmod +x /tmp/dotnet-install.sh && /tmp/dotnet-install.sh --channel 9.0 --install-dir /root/.dotnet  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet --list-runtimes  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet test src/Testing/CoreTests/CoreTests.csproj -c Release --framework net9.0 --no-restore  (exit code: 0)",
+    "dotnet restore slim.sln  (exit code: 1)",
+    "dotnet restore wolverine_slim.sln  (exit code: 1)",
+    "grep -n \"/jasperfx\\|/weasel\\|/marten\\|/lamar\\|/alba\" -n wolverine_slim.sln | head -n 20  (exit code: 0)",
+    "grep -n \"/jasperfx\\|/weasel\\|/marten\\|/lamar\\|/alba\" wolverine_slim.sln  (exit code: 1)",
+    "rg -n \"jasperfx|weasel|marten|lamar|alba\" /testbed  (exit code: 127)",
+    "grep -R -n \"jasperfx\\|weasel\\|marten\\|lamar\\|alba\" /testbed | head -n 50  (exit code: 0)",
+    "dotnet restore wolverine.sln  (exit code: 1)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && chmod +x /tmp/dotnet-install.sh && /tmp/dotnet-install.sh --channel 10.0 --install-dir /root/.dotnet  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet restore wolverine.sln  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet build wolverine.sln -c Release --no-restore  (exit code: 1)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && chmod +x /tmp/dotnet-install.sh && /tmp/dotnet-install.sh --channel 8.0 --install-dir /root/.dotnet  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet --list-runtimes  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet build wolverine.sln -c Release --no-restore  (exit code: 1)",
+    "curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && chmod +x /tmp/dotnet-install.sh && /tmp/dotnet-install.sh --channel 9.0 --install-dir /root/.dotnet  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet --list-runtimes  (exit code: 0)",
+    "export PATH=/root/.dotnet:$PATH && dotnet test src/Testing/CoreTests/CoreTests.csproj -c Release --framework net9.0 --no-restore  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "export PATH=/root/.dotnet:$PATH && dotnet test src/Testing/CoreTests/CoreTests.csproj -c Release --framework net9.0 --no-restore --logger \"trx;LogFileName=core.trx\" && cat src/Testing/CoreTests/TestResults/core.trx"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:JasperFx__wolverine-2428_linux"
+}

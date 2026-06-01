@@ -1,0 +1,47 @@
+{
+  "repo": "nodejs/undici",
+  "pull_number": 5011,
+  "instance_id": "nodejs__undici-5011",
+  "issue_numbers": [
+    4983
+  ],
+  "base_commit": "0143e1bae27ef6f6eb0225dc0934d69719d55c09",
+  "patch": "diff --git a/lib/dispatcher/proxy-agent.js b/lib/dispatcher/proxy-agent.js\nindex 259f3909375..f7bb461e5d4 100644\n--- a/lib/dispatcher/proxy-agent.js\n+++ b/lib/dispatcher/proxy-agent.js\n@@ -104,7 +104,7 @@ class ProxyAgent extends DispatcherBase {\n       throw new InvalidArgumentError('Proxy opts.clientFactory must be a function.')\n     }\n \n-    const { proxyTunnel = true } = opts\n+    const { proxyTunnel = true, connectTimeout } = opts\n \n     super()\n \n@@ -128,9 +128,9 @@ class ProxyAgent extends DispatcherBase {\n       this[kProxyHeaders]['proxy-authorization'] = `Basic ${Buffer.from(`${decodeURIComponent(username)}:${decodeURIComponent(password)}`).toString('base64')}`\n     }\n \n-    const connect = buildConnector({ ...opts.proxyTls })\n-    this[kConnectEndpoint] = buildConnector({ ...opts.requestTls })\n-    this[kConnectEndpointHTTP1] = buildConnector({ ...opts.requestTls, allowH2: false })\n+    const connect = buildConnector({ timeout: connectTimeout, ...opts.proxyTls })\n+    this[kConnectEndpoint] = buildConnector({ timeout: connectTimeout, ...opts.requestTls })\n+    this[kConnectEndpointHTTP1] = buildConnector({ timeout: connectTimeout, ...opts.requestTls, allowH2: false })\n \n     const agentFactory = opts.factory || defaultAgentFactory\n     const factory = (origin, options) => {\n",
+  "test_patch": "diff --git a/test/proxy-agent.js b/test/proxy-agent.js\nindex 333680c3306..e8c22278558 100644\n--- a/test/proxy-agent.js\n+++ b/test/proxy-agent.js\n@@ -4,11 +4,12 @@ const { tspl } = require('@matteo.collina/tspl')\n const { test, after } = require('node:test')\n const diagnosticsChannel = require('node:diagnostics_channel')\n const { request, fetch, setGlobalDispatcher, getGlobalDispatcher } = require('..')\n-const { InvalidArgumentError, SecureProxyConnectionError } = require('../lib/core/errors')\n+const { InvalidArgumentError, ConnectTimeoutError, SecureProxyConnectionError } = require('../lib/core/errors')\n const ProxyAgent = require('../lib/dispatcher/proxy-agent')\n const Pool = require('../lib/dispatcher/pool')\n const { createServer } = require('node:http')\n const https = require('node:https')\n+const net = require('node:net')\n const { Socket } = require('node:net')\n const { createProxy } = require('proxy')\n \n@@ -121,6 +122,65 @@ test('should accept string, URL and object as options', (t) => {\n   t.doesNotThrow(() => new ProxyAgent({ uri: 'http://example.com' }))\n })\n \n+test('ProxyAgent forwards connectTimeout to the proxy connector', async (t) => {\n+  t = tspl(t, { plan: 4 })\n+\n+  const originalConnect = net.connect\n+  let connect\n+  let socket\n+  const proxyAgent = new ProxyAgent({\n+    uri: 'http://localhost:9000',\n+    connectTimeout: 1e3,\n+    clientFactory (_origin, options) {\n+      connect = options.connect\n+      return {\n+        close () {\n+          return Promise.resolve()\n+        },\n+        destroy () {\n+          return Promise.resolve()\n+        }\n+      }\n+    }\n+  })\n+\n+  try {\n+    net.connect = function (options) {\n+      return new net.Socket(options)\n+    }\n+\n+    t.ok(typeof connect === 'function')\n+\n+    const timeout = setTimeout(() => {\n+      if (socket && !socket.destroyed) {\n+        socket.destroy()\n+      }\n+      t.fail('connectTimeout was not forwarded to the proxy connector')\n+    }, 2e3)\n+\n+    await new Promise((resolve, reject) => {\n+      socket = connect({ hostname: 'localhost', protocol: 'http:', port: 9000 }, (err) => {\n+        try {\n+          t.ok(err instanceof ConnectTimeoutError)\n+          t.strictEqual(err.code, 'UND_ERR_CONNECT_TIMEOUT')\n+          t.strictEqual(err.message, 'Connect Timeout Error (attempted address: localhost:9000, timeout: 1000ms)')\n+          clearTimeout(timeout)\n+          resolve()\n+        } catch (error) {\n+          clearTimeout(timeout)\n+          reject(error)\n+        }\n+      })\n+    })\n+  } finally {\n+    net.connect = originalConnect\n+    if (socket && !socket.destroyed) {\n+      socket.destroy()\n+    }\n+    await proxyAgent.close()\n+  }\n+})\n+\n test('use proxy-agent to connect through proxy (keep alive)', async (t) => {\n   t = tspl(t, { plan: 10 })\n   const server = await buildServer()\n",
+  "problem_statement": "Proxies don't accept my timeout and always have a static 10_000 ms.\n```\nconst options = { ... };\noptions.dispatcher = new ProxyAgent({\n\turi: origin,\n\theadersTimeout: 600000,\n\tbodyTimeout: 600000,\n\tconnectTimeout: 600000\n})\nconst response = await fetch(url, options);\n```\n\nProxies don't accept my timeout and always have a static 10_000 ms.\n\nv23.3.0 and 8.0.2\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/nodejs/undici/commit/3ca265ea63e87722c899055778ae472dc45a7e40",
+    "https://github.com/nodejs/undici/commit/b04759c1b46e1aee43ab577e844421e0d63890c0"
+  ],
+  "created_at": "2026-04-09T15:02:43Z",
+  "language": "JavaScript",
+  "commit_url": "https://github.com/nodejs/undici/tree/0143e1bae27ef6f6eb0225dc0934d69719d55c09",
+  "setup_cmds": [
+    "ls  (exit code: 0)",
+    "ls -a  (exit code: 0)",
+    "npm install  (exit code: 0)",
+    "npm test  (exit code: 1)",
+    "sed -n '1450,1700p' test/node-fetch/main.js  (exit code: 0)",
+    "sed -n '1,120p' test/node-fetch/main.js  (exit code: 0)",
+    "sed -n '1,200p' test/node-fetch/utils/server.js  (exit code: 0)",
+    "cat /etc/hosts  (exit code: 0)",
+    "NODE_OPTIONS=--dns-result-order=ipv4first npm run test:node-fetch  (exit code: 0)",
+    "ls  (exit code: 0)",
+    "ls -a  (exit code: 0)",
+    "npm install  (exit code: 0)",
+    "npm test  (exit code: 1)",
+    "sed -n '1450,1700p' test/node-fetch/main.js  (exit code: 0)",
+    "sed -n '1,120p' test/node-fetch/main.js  (exit code: 0)",
+    "sed -n '1,200p' test/node-fetch/utils/server.js  (exit code: 0)",
+    "cat /etc/hosts  (exit code: 0)",
+    "NODE_OPTIONS=--dns-result-order=ipv4first npm run test:node-fetch  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "NODE_OPTIONS=--dns-result-order=ipv4first npm run test:node-fetch -- --reporter tap"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:nodejs__undici-5011_linux"
+}

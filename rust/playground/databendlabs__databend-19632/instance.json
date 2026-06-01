@@ -1,0 +1,47 @@
+{
+  "repo": "databendlabs/databend",
+  "pull_number": 19632,
+  "instance_id": "databendlabs__databend-19632",
+  "issue_numbers": [
+    19555
+  ],
+  "base_commit": "578811cb348bd2507abed2c7c94f106a8d3b14fe",
+  "patch": "diff --git a/.gitignore b/.gitignore\nindex 788d6712db0d1..ee63af7c23b9f 100644\n--- a/.gitignore\n+++ b/.gitignore\n@@ -8,8 +8,14 @@\n .bash_history\n .mysql_history\n \n+\n # Rust\n target/\n+.cargo-home/\n+.cargo-target/\n+.toolchain-bin/\n+.worktrees/\n+\n \n # OS related\n ### MacOS ###\ndiff --git a/src/query/sql/src/planner/plans/scan.rs b/src/query/sql/src/planner/plans/scan.rs\nindex dc6fad6d6d8ac..71ebc24914282 100644\n--- a/src/query/sql/src/planner/plans/scan.rs\n+++ b/src/query/sql/src/planner/plans/scan.rs\n@@ -175,6 +175,19 @@ impl Scan {\n     }\n }\n \n+fn reduce_ndv_by_datum_range(ndv: Ndv, min: &Datum, max: &Datum) -> Ndv {\n+    match (max, min) {\n+        (Datum::UInt(m), Datum::UInt(n)) if m >= n => {\n+            ndv.reduce(m.saturating_sub(*n).saturating_add(1) as _)\n+        }\n+        (Datum::Int(m), Datum::Int(n)) if m >= n => {\n+            ndv.reduce(m.saturating_add(1).saturating_sub(*n) as _)\n+        }\n+        _ if max == min => Ndv::Stat(1.0),\n+        _ => ndv,\n+    }\n+}\n+\n impl PartialEq for Scan {\n     fn eq(&self, other: &Self) -> bool {\n         self.table_index == other.table_index\n@@ -282,14 +295,7 @@ impl Operator for Scan {\n                 };\n \n                 // Alter ndv based on min and max if the datum is uint or int.\n-                let ndv = match (&max, &min) {\n-                    (Datum::UInt(m), Datum::UInt(n)) if m >= n => ndv.reduce((m - n + 1) as _),\n-                    (Datum::Int(m), Datum::Int(n)) if m >= n => {\n-                        ndv.reduce(m.saturating_add(1).saturating_sub(*n) as _)\n-                    }\n-                    _ if max == min => Ndv::Stat(1.0),\n-                    _ => ndv,\n-                };\n+                let ndv = reduce_ndv_by_datum_range(ndv, &min, &max);\n \n                 let histogram = if let Some(histogram) = self.statistics.histograms.get(k)\n                     && histogram.is_some()\n@@ -367,3 +373,19 @@ impl Operator for Scan {\n         ))\n     }\n }\n+\n+#[cfg(test)]\n+mod tests {\n+    use super::*;\n+\n+    #[test]\n+    fn test_reduce_ndv_by_uint_full_range_saturates() {\n+        let reduced = reduce_ndv_by_datum_range(\n+            Ndv::Stat((u64::MAX as f64) + 1.0),\n+            &Datum::UInt(0),\n+            &Datum::UInt(u64::MAX),\n+        );\n+\n+        assert_eq!(reduced.value(), u64::MAX as f64);\n+    }\n+}\n",
+  "test_patch": "diff --git a/tests/sqllogictests/suites/base/issues/issue_19555.test b/tests/sqllogictests/suites/base/issues/issue_19555.test\nnew file mode 100644\nindex 0000000000000..c8004d3d6f54d\n--- /dev/null\n+++ b/tests/sqllogictests/suites/base/issues/issue_19555.test\n@@ -0,0 +1,29 @@\n+# https://github.com/databendlabs/databend/issues/19555\n+\n+statement ok\n+create or replace database issue_19555;\n+\n+statement ok\n+use issue_19555;\n+\n+statement ok\n+drop table if exists t;\n+\n+statement ok\n+create table t as\n+select d::UInt64 as d\n+from (values\n+    (0),\n+    (18446744073709551615)\n+) as v(d);\n+\n+query T\n+select d::String from t order by d;\n+----\n+0\n+18446744073709551615\n+\n+query I\n+select count(*) from t;\n+----\n+2\n",
+  "problem_statement": "bug: planner panic on UInt64 full-range column stats: `attempt to add with overflow` in `Scan::derive_stats`\n\n\n## Summary\n\nDatabend can panic during planning when scanning a `UInt64` column whose statistics span the full unsigned range `[0,\n18446744073709551615]`.\n\nThe panic happens in `Scan::derive_stats` when NDV is reduced using:\n\n```rust\n(Datum::UInt(m), Datum::UInt(n)) if m >= n => ndv.reduce((m - n + 1) as _),\n\nIf m = u64::MAX and n = 0, then m - n + 1 overflows.\n```\n## Environment\n\n- Branch: main\n\n## Minimal Reproduction\n```\nDROP TABLE IF EXISTS t;\n\nCREATE TABLE t AS\nSELECT d::UInt64 AS d\nFROM (VALUES\n    (0),\n    (18446744073709551615)\n) AS v(d);\n\nSELECT d FROM t;\n```\n## Actual Result\n\nThe query fails and the server logs a panic similar to:\n\npanicked at src/query/sql/src/planner/plans/scan.rs:285:78:\nattempt to add with overflow\n\nI also reproduced the same failure with:\n```\nSELECT * FROM t;\nSELECT count(*) FROM t;\nEXPLAIN SELECT d FROM t;\n```\n## Expected Result\n\nDatabend should not panic during planning.\n\nThe query should either:\n\n- succeed normally, or\n- return a regular query error if the case is unsupported\n\nbut it should not crash due to integer overflow.\n\n## Suspected Root Cause\n\nIn src/query/sql/src/planner/plans/scan.rs:\n\n(Datum::UInt(m), Datum::UInt(n)) if m >= n => ndv.reduce((m - n + 1) as _),\n\nFor UInt64 stats with:\n\n- min = 0\n- max = 18446744073709551615\n\nthe expression m - n + 1 becomes u64::MAX + 1, which overflows.\n\n## Suggested Fix\n\nUse checked or saturating arithmetic when reducing NDV for unsigned integer ranges, for example:\n\nlet span = m.saturating_sub(*n).saturating_add(1);\n\nor equivalent checked logic that clamps safely.\n\n## Notes\n\nThis is not limited to the SQL above. Any table/imported data source that produces UInt64 column stats over the full domain can\ntrigger the same planner panic.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/databendlabs/databend/commit/31883fae6e364d1b24ae9527497de84ad32c9ff0",
+    "https://github.com/databendlabs/databend/commit/758fc6b2a15a9b15957e953e12329b87b589a73b"
+  ],
+  "created_at": "2026-03-29T04:44:17Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/databendlabs/databend/tree/578811cb348bd2507abed2c7c94f106a8d3b14fe",
+  "setup_cmds": [
+    "cargo check -q  (exit code: 101)",
+    "apt-get update && apt-get install -y clang mold  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "apt-get update && apt-get install -y protobuf-compiler  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "apt-get update && apt-get install -y cmake make  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "DATABEND_RELEASE_VERSION=0.0.0 cargo check -q  (exit code: 0)",
+    "DATABEND_RELEASE_VERSION=0.0.0 cargo test -q  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "apt-get update && apt-get install -y clang mold  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "apt-get update && apt-get install -y protobuf-compiler  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "apt-get update && apt-get install -y cmake make  (exit code: 0)",
+    "cargo check -q  (exit code: 101)",
+    "DATABEND_RELEASE_VERSION=0.0.0 cargo check -q  (exit code: 0)",
+    "DATABEND_RELEASE_VERSION=0.0.0 cargo test -q  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "DATABEND_RELEASE_VERSION=0.0.0 cargo test -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:databendlabs__databend-19632_linux"
+}

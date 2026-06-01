@@ -1,0 +1,60 @@
+{
+  "repo": "CleverRaven/Cataclysm-DDA",
+  "pull_number": 86316,
+  "instance_id": "CleverRaven__Cataclysm-DDA-86316",
+  "issue_numbers": [
+    86307
+  ],
+  "base_commit": "f1fe85b989e42f8fd739766399d98cef6bea5f5c",
+  "patch": "diff --git a/src/npcmove.cpp b/src/npcmove.cpp\nindex 830e962868431..43f4c3b31fb14 100644\n--- a/src/npcmove.cpp\n+++ b/src/npcmove.cpp\n@@ -994,8 +994,8 @@ void npc::assess_danger()\n     }\n     if( is_friendly( player_character ) && sees_player ) {\n         ai_cache.friends.emplace_back( g->shared_from( player_character ) );\n-    } else if( sees_player && is_enemy() && sees( here, player_character ) ) {\n-        // Unlike allies, hostile npcs should not see invisible players\n+    } else if( sees_player && guaranteed_hostile() && sees( here, player_character ) ) {\n+        // Includes faction hostility, not just the attitude enum.\n         ai_cache.hostile_guys.emplace_back( g->shared_from( player_character ) );\n     }\n \n@@ -1209,10 +1209,12 @@ void npc::assess_danger()\n         // NPC will try hard not to break and run while in formation.\n         // This code should eventually remove the 'player' special case and be applied to\n         // whoever the NPC perceives as their closest leader.\n-        float player_diff = std::max( evaluate_character( player_character, npc_ranged, is_enemy() ),\n+        const bool hostile_to_player = guaranteed_hostile();\n+        float player_diff = std::max( evaluate_character( player_character, npc_ranged,\n+                                      hostile_to_player ),\n                                       NPC_DANGER_VERY_LOW );\n         int dist = rl_dist( pos_bub(), player_character.pos_bub() );\n-        if( is_enemy() ) {\n+        if( hostile_to_player ) {\n             add_msg_debug( debugmode::DF_NPC_COMBATAI,\n                            \"<color_light_gray>%s identified player as an</color> <color_red>enemy</color> <color_light_gray>of threat level %1.2f</color>\",\n                            name, player_diff );\n@@ -1587,6 +1589,8 @@ void npc::move()\n         } else {\n             set_attitude( NPCATT_KILL );    // Yeah, we think we could take you!\n         }\n+        // Rebuild cache so danger/target reflect the new attitude.\n+        regen_ai_cache();\n     }\n \n     // Top-level decision BT: evaluate before side-effecting cascade for convergence\n",
+  "test_patch": "diff --git a/tests/npc_test.cpp b/tests/npc_test.cpp\nindex d952c5f88dd15..4bd8cab5d3cc5 100644\n--- a/tests/npc_test.cpp\n+++ b/tests/npc_test.cpp\n@@ -1386,6 +1386,67 @@ TEST_CASE( \"npc_nonally_sleeps_when_tired\", \"[npc][needs]\" )\n     }\n }\n \n+// Thugs are guaranteed_hostile() by faction but start NPCATT_NULL.\n+// assess_danger() must detect faction hostility so combat beats sleep.\n+\n+TEST_CASE( \"faction_hostile_npc_detects_player_threat\", \"[npc][npc_ai]\" )\n+{\n+    g->faction_manager_ptr->create_if_needed();\n+    clear_map_without_vision();\n+    clear_avatar();\n+    set_time_to_day();\n+\n+    Character &player_character = get_player_character();\n+    npc &bandit = spawn_npc( player_character.pos_bub().xy() + point::south, \"thug\" );\n+    REQUIRE( rl_dist( player_character.pos_bub(), bandit.pos_bub() ) <= 1 );\n+\n+    // Thug is guaranteed_hostile by faction, but attitude has not flipped yet.\n+    REQUIRE( bandit.guaranteed_hostile() );\n+    REQUIRE_FALSE( bandit.is_enemy() );\n+\n+    bandit.regen_ai_cache();\n+\n+    // assess_danger() must count the player as a threat even before the\n+    // attitude enum flips to NPCATT_KILL.\n+    CHECK( bandit.get_ai_danger() > 0 );\n+    CHECK( bandit.current_target() == static_cast<Creature *>( &player_character ) );\n+}\n+\n+TEST_CASE( \"faction_hostile_tired_npc_fights_not_sleeps\", \"[npc][npc_ai][needs]\" )\n+{\n+    g->faction_manager_ptr->create_if_needed();\n+    clear_map_without_vision();\n+    clear_avatar();\n+    // 30+ minutes past turn_zero so can_sleep() cooldown does not interfere.\n+    calendar::turn = calendar::turn_zero + 1_hours;\n+\n+    Character &player_character = get_player_character();\n+    npc &bandit = spawn_npc( player_character.pos_bub().xy() + point( 0, 3 ), \"thug\" );\n+    clear_character( bandit, true );\n+    bandit.set_hunger( 0 );\n+    bandit.set_thirst( 0 );\n+    bandit.set_stored_kcal( bandit.get_healthy_kcal() );\n+    bandit.set_all_parts_temp_conv( BODYTEMP_NORM );\n+    bandit.set_all_parts_temp_cur( BODYTEMP_NORM );\n+    // Exhausted -- would sleep if no danger present.\n+    bandit.set_sleepiness( 800 );\n+    bandit.set_moves( 100 );\n+\n+    // Thug is guaranteed_hostile by faction, but attitude starts neutral.\n+    // The move() pipeline must detect the player as a threat and choose\n+    // combat over sleep.\n+    REQUIRE( bandit.guaranteed_hostile() );\n+    REQUIRE_FALSE( bandit.is_enemy() );\n+\n+    bandit.move();\n+\n+    // Must NOT have fallen asleep.\n+    CHECK_FALSE( bandit.has_effect( effect_sleep ) );\n+    CHECK_FALSE( bandit.has_effect( effect_lying_down ) );\n+    // The attitude must have flipped to hostile.\n+    CHECK( bandit.is_enemy() );\n+}\n+\n // ---------------------------------------------------------------------------\n // Helper-level tests for local resource acquisition\n // ---------------------------------------------------------------------------\n",
+  "problem_statement": "Bandits decided to take a nap after aggroing on me\n### Describe the bug\n\nI got the refugee center mission from Smokes to deal with the caravan raiders. However as soon as I got in range of the bandits they became angry and then immediately fell asleep, allowing me to punch them trivially.\n\n### Attach save file\n\nn/a\n\n### Steps to reproduce\n\n1. Get Smokes' caravan quest (immediately after Back Bay)\n2. Approach bandits\n3. Observe them sleeping?\n\n### Expected behavior\n\nBandits don't immediately go to bed after they see me\n\n### Screenshots\n\n<img width=\"1086\" height=\"157\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/5f6475e2-e5b5-40d2-82cc-df4a7741f0fd\" />\n\n### Versions and configuration\n\n- OS: Windows\n    - OS Version: 10.0.26200.8037 (25H2)\n- Game Version: cdda-experimental-2026-04-06-0609-dirty [64-bit]\n- Graphics Version: Tiles\n- Game Language: English [en]\n- Mods loaded: [\n    Dark Days Ahead [dda],\n    Disable NPC Needs [no_npc_food],\n    Bionic Slots [cbm_slots],\n    Portal Storms Ignore NPCs [personal_portal_storms],\n    Mind Over Matter [mindovermatter],\n    Bombastic Perks [bombastic_perks],\n    Magiclysm [magiclysm],\n    Xedra Evolved [xedra_evolved],\n    DinoMod [DinoMod],\n    Railroads [railroads]\n]\n\n\n### Additional context\n\n_No response_\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "I have also seen this, but for me it took the form of a wild NPC falling asleep while bandits were coming for us. I tried yelling at her to wake up, but she was too sleepy. Ironically she found a nearby tent to nap in while I had to fight off the bandits and then the zombies drawn by the noise. I found her after, still asleep and completely fine. \n\n",
+  "commit_urls": [
+    "https://github.com/CleverRaven/Cataclysm-DDA/commit/828ac66bb3cedc1aa357517a613df1400e4da41a"
+  ],
+  "created_at": "2026-04-07T12:58:47Z",
+  "language": "C++",
+  "commit_url": "https://github.com/CleverRaven/Cataclysm-DDA/tree/f1fe85b989e42f8fd739766399d98cef6bea5f5c",
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1  (exit code: 124)",
+    "cmake --build build --parallel 1  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 8)",
+    "sed -n '1,120p' tests/speed_description_test.cpp  (exit code: 0)",
+    "build/tests/cata_test \"[monster][speed_description]\" --reporter compact --success  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 8)",
+    "sed -n '1,200p' build/tests/CTestTestfile.cmake  (exit code: 0)",
+    "rg -n \"USER_DIR|user-dir|CATA_.*DIR\" src tests  (exit code: 127)",
+    "apt-get update && apt-get install -y ripgrep  (exit code: 0)",
+    "rm -rf test_user_dir cache  (exit code: 0)",
+    "rg -n \"USER_DIR|user-dir|CATA_.*DIR\" src tests  (exit code: 0)",
+    "sed -n '1,120p' tests/CMakeLists.txt  (exit code: 0)",
+    "build/tests/cata_test --rng-seed time --order lex --user-dir test_user_dir  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1  (exit code: 124)",
+    "cmake --build build --parallel 1  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 8)",
+    "sed -n '1,120p' tests/speed_description_test.cpp  (exit code: 0)",
+    "build/tests/cata_test \"[monster][speed_description]\" --reporter compact --success  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 8)",
+    "sed -n '1,200p' build/tests/CTestTestfile.cmake  (exit code: 0)",
+    "rg -n \"USER_DIR|user-dir|CATA_.*DIR\" src tests  (exit code: 127)",
+    "apt-get update && apt-get install -y ripgrep  (exit code: 0)",
+    "rm -rf test_user_dir cache  (exit code: 0)",
+    "rg -n \"USER_DIR|user-dir|CATA_.*DIR\" src tests  (exit code: 0)",
+    "sed -n '1,120p' tests/CMakeLists.txt  (exit code: 0)",
+    "build/tests/cata_test --rng-seed time --order lex --user-dir test_user_dir  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "build/tests/cata_test \"[monster][speed_description]\" --reporter compact --success --user-dir test_user_dir"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:CleverRaven__Cataclysm-DDA-86316_linux"
+}

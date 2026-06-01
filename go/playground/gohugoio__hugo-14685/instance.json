@@ -1,0 +1,56 @@
+{
+  "repo": "gohugoio/hugo",
+  "pull_number": 14685,
+  "instance_id": "gohugoio__hugo-14685",
+  "issue_numbers": [
+    14684
+  ],
+  "base_commit": "ea7eac65589a7c6e138a2dfba12615335b29bef3",
+  "patch": "diff --git a/resources/page/pagemeta/page_frontmatter.go b/resources/page/pagemeta/page_frontmatter.go\nindex b5f9149b763..7c32e89e61a 100644\n--- a/resources/page/pagemeta/page_frontmatter.go\n+++ b/resources/page/pagemeta/page_frontmatter.go\n@@ -555,7 +555,10 @@ func (s Source) ValueAsString() string {\n }\n \n func (s Source) ValueAsOpenReadSeekCloser() hugio.OpenReadSeekCloser {\n-\treturn hugio.NewOpenReadSeekCloser(hugio.NewReadSeekerNoOpCloserFromString(s.ValueAsString()))\n+\tcontent := s.ValueAsString()\n+\treturn func() (hugio.ReadSeekCloser, error) {\n+\t\treturn hugio.NewReadSeekerNoOpCloserFromString(content), nil\n+\t}\n }\n \n // FrontMatterOnlyValues holds values that can only be set via front matter.\n",
+  "test_patch": "diff --git a/hugolib/pagesfromdata/pagesfromgotmpl_integration_test.go b/hugolib/pagesfromdata/pagesfromgotmpl_integration_test.go\nindex 30b6cab3372..2b3aa6e29db 100644\n--- a/hugolib/pagesfromdata/pagesfromgotmpl_integration_test.go\n+++ b/hugolib/pagesfromdata/pagesfromgotmpl_integration_test.go\n@@ -893,3 +893,29 @@ baseURL = \"https://example.com\"\n \t// _content.gotmpl which was siblings of index.md (leaf bundles) was mistakingly classified as a content resource.\n \thugolib.Test(t, files)\n }\n+\n+// Issue 14684\n+func TestPagesFromGoTmplAddResourceFromStringContent(t *testing.T) {\n+\tt.Parallel()\n+\n+\tfiles := `\n+-- hugo.toml --\n+disableKinds = [\"taxonomy\", \"term\", \"rss\", \"sitemap\"]\n+baseURL = \"https://example.com\"\n+-- assets/a/pixel.png --\n+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\n+-- layouts/single.html --\n+{{ with .Resources.Get \"pixel.png\" }}\n+{{ with .Resize \"1x1\" }}Resized: {{ .Width }}x{{ .Height }}|{{ end }}\n+{{ end }}\n+-- content/_content.gotmpl --\n+{{ $pixel := resources.Get \"a/pixel.png\" }}\n+{{ $content := dict \"mediaType\" $pixel.MediaType.Type \"value\" $pixel.Content }}\n+{{ $.AddPage (dict \"path\" \"p1\" \"title\" \"p1\") }}\n+{{ $.AddResource (dict \"path\" \"p1/pixel.png\" \"content\" $content) }}\n+`\n+\n+\tb := hugolib.Test(t, files)\n+\n+\tb.AssertFileContent(\"public/p1/index.html\", \"Resized: 1x1|\")\n+}\ndiff --git a/resources/page/pagemeta/page_frontmatter_test.go b/resources/page/pagemeta/page_frontmatter_test.go\nindex 39074ee15f2..d99d75248b0 100644\n--- a/resources/page/pagemeta/page_frontmatter_test.go\n+++ b/resources/page/pagemeta/page_frontmatter_test.go\n@@ -14,6 +14,7 @@\n package pagemeta_test\n \n import (\n+\t\"io\"\n \t\"strings\"\n \t\"testing\"\n \t\"time\"\n@@ -154,6 +155,39 @@ func TestFrontMatterDatesDefaultKeyword(t *testing.T) {\n \tc.Assert(d.PageConfigLate.Dates.ExpiryDate.IsZero(), qt.Equals, true)\n }\n \n+// Issue 14684\n+// Each call to the opener must return an independent reader. With the old\n+// implementation, opener() returned the same shared reader seeked to 0, so a\n+// second open would reset the position of a reader already in use.\n+func TestSourceValueAsOpenReadSeekCloserIsIndependent(t *testing.T) {\n+\tc := qt.New(t)\n+\ts := pagemeta.Source{Value: \"abcdefgh\"}\n+\topener := s.ValueAsOpenReadSeekCloser()\n+\n+\tr1, err := opener()\n+\tc.Assert(err, qt.IsNil)\n+\tdefer r1.Close()\n+\n+\t// Partially consume r1.\n+\tbuf := make([]byte, 4)\n+\t_, err = io.ReadFull(r1, buf)\n+\tc.Assert(err, qt.IsNil)\n+\tc.Assert(string(buf), qt.Equals, \"abcd\")\n+\n+\t// Open a second reader and fully consume it.\n+\tr2, err := opener()\n+\tc.Assert(err, qt.IsNil)\n+\tdefer r2.Close()\n+\tall, err := io.ReadAll(r2)\n+\tc.Assert(err, qt.IsNil)\n+\tc.Assert(string(all), qt.Equals, \"abcdefgh\")\n+\n+\t// r1's position must be unaffected; it should yield the remaining half.\n+\trest, err := io.ReadAll(r1)\n+\tc.Assert(err, qt.IsNil)\n+\tc.Assert(string(rest), qt.Equals, \"efgh\")\n+}\n+\n func TestContentMediaTypeFromMarkup(t *testing.T) {\n \tc := qt.New(t)\n \tlogger := loggers.NewDefault()\n",
+  "problem_statement": "Intermittent problem with AddResource in content adapter\nSee <https://discourse.gohugo.io/t/56922/11>.\n\nThis isn't anything new.\n\nIn short, creating a page resource (an image) by setting `content.value` to the string returned by a global resource's `.Content` value results in intermittent errors:\n\n> error calling Resize: failed to resize image \"/home/kijana/Code/hugo-forum-topic-54852/content/products/_content.gotmpl\": resize /products/window-frame/01.jpg: invalid JPEG format: short Huffman data\n\nBut the image is not corrupt in any way (views fine in any app, exiftool likes it, ImageMagick has no complaints, etc.).\n\nIn some cases I had to run this command 20 times to trigger the error:\n\n```text\nrm -rf resources && hugo\n```\n\nThe page resource is created without error if I set `content.value` to the global resource itself, which per the documentation is noted to be \"more efficient\".\n\n\n\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "I had Claude Sonnet 4.6 take a look at this...\n\nRoot cause: `Source.ValueAsOpenReadSeekCloser()` in `page_frontmatter.go:557` used `hugio.NewOpenReadSeekCloser` which wraps a single shared `strings.Reader` and seeks it to position `0` before returning it on each call. When multiple goroutines call `ReadSeekCloser()` concurrently on the same resource (e.g., hashing, publishing, and image decode/resize), their reads interleave on the shared reader, corrupting binary data like JPEGs.\n\nFix: Changed `ValueAsOpenReadSeekCloser()` to return a closure that creates a fresh `strings.Reader` on each call, matching the pattern used elsewhere in the codebase (e.g., `cloneWithUpdates`):\n\n```go\nfunc (s Source) ValueAsOpenReadSeekCloser() hugio.OpenReadSeekCloser {\n    content := s.ValueAsString()\n    return func() (hugio.ReadSeekCloser, error) {\n        return hugio.NewReadSeekerNoOpCloserFromString(content), nil\n    }\n}\n```\n\nThe bug only triggered when `content.value` was a string (e.g., from `.Content`); when it was a `resource.Resource`, a different code path was used that reads directly from the resource's own (safe) opener.\n\nI'll submit a PR for this in a bit.\nThis issue has been automatically locked since there has not been any recent activity after it was closed. Please open a new issue for related bugs.\n\n",
+  "commit_urls": [
+    "https://github.com/gohugoio/hugo/commit/c6a6cd0a6050df9ed8e867cd26777b9999242582"
+  ],
+  "created_at": "2026-03-28T18:14:43Z",
+  "language": "Go",
+  "commit_url": "https://github.com/gohugoio/hugo/tree/ea7eac65589a7c6e138a2dfba12615335b29bef3",
+  "setup_cmds": [
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "sed -n '150,220p' codegen/methods.go  (exit code: 0)",
+    "rg \"ProjectRootDir|HUGO\" codegen -n  (exit code: 127)",
+    "apt-get update -y && apt-get install -y ripgrep  (exit code: 0)",
+    "rg \"ProjectRootDir|HUGO\" codegen -n  (exit code: 0)",
+    "sed -n '1,80p' codegen/methods.go  (exit code: 0)",
+    "sed -n '1,120p' codegen/methods_test.go  (exit code: 0)",
+    "apt-get update -y && apt-get install -y ruby-full pandoc python3-pip  (exit code: 0)",
+    "gem install asciidoctor -v \"2.0.26\" && gem install asciidoctor-diagram -v \"3.1.0\" && pip3 install docutils  (exit code: 1)",
+    "apt-get update -y && apt-get install -y python3-docutils  (exit code: 0)",
+    "ln -s /testbed /tmp/hugo  (exit code: 0)",
+    "cd /tmp/hugo && go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 1)",
+    "sed -n '150,220p' codegen/methods.go  (exit code: 0)",
+    "rg \"ProjectRootDir|HUGO\" codegen -n  (exit code: 127)",
+    "apt-get update -y && apt-get install -y ripgrep  (exit code: 0)",
+    "rg \"ProjectRootDir|HUGO\" codegen -n  (exit code: 0)",
+    "sed -n '1,80p' codegen/methods.go  (exit code: 0)",
+    "sed -n '1,120p' codegen/methods_test.go  (exit code: 0)",
+    "apt-get update -y && apt-get install -y ruby-full pandoc python3-pip  (exit code: 0)",
+    "gem install asciidoctor -v \"2.0.26\" && gem install asciidoctor-diagram -v \"3.1.0\" && pip3 install docutils  (exit code: 1)",
+    "apt-get update -y && apt-get install -y python3-docutils  (exit code: 0)",
+    "ln -s /testbed /tmp/hugo  (exit code: 0)",
+    "cd /tmp/hugo && go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:gohugoio__hugo-14685_linux"
+}

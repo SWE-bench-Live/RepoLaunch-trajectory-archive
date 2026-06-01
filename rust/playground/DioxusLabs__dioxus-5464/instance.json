@@ -1,0 +1,59 @@
+{
+  "repo": "DioxusLabs/dioxus",
+  "pull_number": 5464,
+  "instance_id": "DioxusLabs__dioxus-5464",
+  "issue_numbers": [
+    5463
+  ],
+  "base_commit": "71df8c790f0790ea1d2d87d14d094000c0fa2a45",
+  "patch": "diff --git a/packages/autofmt/src/writer.rs b/packages/autofmt/src/writer.rs\nindex d9dfbd3ec8..462a4ba83d 100644\n--- a/packages/autofmt/src/writer.rs\n+++ b/packages/autofmt/src/writer.rs\n@@ -426,7 +426,13 @@ impl<'a> Writer<'a> {\n         {\n             let comments = self.accumulate_full_line_comments(brace.span.span().end());\n             if !comments.is_empty() {\n+                // Undo the tab from tabbed_line(). It positioned for the closing\n+                // brace, but trailing comments need child-level indentation\n+                let tab_width = self.out.indent.indent_str().len() * self.out.indent_level;\n+                self.out.buf.truncate(self.out.buf.len() - tab_width);\n+                self.out.indent_level += 1;\n                 self.apply_line_comments(comments)?;\n+                self.out.indent_level -= 1;\n                 self.out.tab()?;\n             }\n         }\n",
+  "test_patch": "diff --git a/packages/autofmt/tests/samples.rs b/packages/autofmt/tests/samples.rs\nindex 7a8257f735..d38cfef931 100644\n--- a/packages/autofmt/tests/samples.rs\n+++ b/packages/autofmt/tests/samples.rs\n@@ -69,6 +69,11 @@ twoway![\n     blank_lines,\n     blank_lines_preserved,\n     forloop_tuple,\n+    commented_rsx_block,\n+    commented_rsx_block_nested,\n+    commented_rsx_block_only,\n+    commented_rsx_block_between,\n+    commented_rsx_block_deep,\n ];\n \n fn assert_idempotent(src: &str) {\ndiff --git a/packages/autofmt/tests/samples/commented_rsx_block.rsx b/packages/autofmt/tests/samples/commented_rsx_block.rsx\nnew file mode 100644\nindex 0000000000..5de4d232dd\n--- /dev/null\n+++ b/packages/autofmt/tests/samples/commented_rsx_block.rsx\n@@ -0,0 +1,9 @@\n+rsx! {\n+    div {\n+        h2 { \"Title\" }\n+        // div { class: \"wrapper\",\n+        //     p { \"A\" }\n+        //     p { \"B\" }\n+        // }\n+    }\n+}\ndiff --git a/packages/autofmt/tests/samples/commented_rsx_block_between.rsx b/packages/autofmt/tests/samples/commented_rsx_block_between.rsx\nnew file mode 100644\nindex 0000000000..a547417f55\n--- /dev/null\n+++ b/packages/autofmt/tests/samples/commented_rsx_block_between.rsx\n@@ -0,0 +1,9 @@\n+rsx! {\n+    div {\n+        h1 { \"Before\" }\n+        // div { class: \"commented\",\n+        //     p { \"A\" }\n+        // }\n+        h2 { \"After\" }\n+    }\n+}\ndiff --git a/packages/autofmt/tests/samples/commented_rsx_block_deep.rsx b/packages/autofmt/tests/samples/commented_rsx_block_deep.rsx\nnew file mode 100644\nindex 0000000000..3affb9327a\n--- /dev/null\n+++ b/packages/autofmt/tests/samples/commented_rsx_block_deep.rsx\n@@ -0,0 +1,12 @@\n+rsx! {\n+    div {\n+        div {\n+            div {\n+                h2 { \"Title\" }\n+                // div { class: \"deep\",\n+                //     p { \"A\" }\n+                // }\n+            }\n+        }\n+    }\n+}\ndiff --git a/packages/autofmt/tests/samples/commented_rsx_block_nested.rsx b/packages/autofmt/tests/samples/commented_rsx_block_nested.rsx\nnew file mode 100644\nindex 0000000000..1da97f33ea\n--- /dev/null\n+++ b/packages/autofmt/tests/samples/commented_rsx_block_nested.rsx\n@@ -0,0 +1,13 @@\n+rsx! {\n+    Component {\n+        field: rsx! {\n+            div {\n+                h2 { \"Title\" }\n+                // div { class: \"wrapper\",\n+                //     // nested comment\n+                //     p { \"A\" }\n+                // }\n+            }\n+        },\n+    }\n+}\ndiff --git a/packages/autofmt/tests/samples/commented_rsx_block_only.rsx b/packages/autofmt/tests/samples/commented_rsx_block_only.rsx\nnew file mode 100644\nindex 0000000000..bbbc099f51\n--- /dev/null\n+++ b/packages/autofmt/tests/samples/commented_rsx_block_only.rsx\n@@ -0,0 +1,6 @@\n+rsx! {\n+    div {\n+        // p { \"A\" }\n+        // p { \"B\" }\n+    }\n+}\n",
+  "problem_statement": "dx fmt breaks indentation of commented-out RSX blocks (regression since v0.7.3)\nSince v0.7.4 (commit b6793dc2b, PR #5257), `dx fmt` mangles the indentation of commented-out RSX blocks. Two variants:\n\n**Variant 1: First line keeps indentation, rest gets dedented**\n\nIdempotency test with this input fails:\n\n```diff\n rsx! {\n     div {\n         h2 { \"Title\" }\n         // div { class: \"wrapper\",\n-        //     p { \"A\" }\n-        //     p { \"B\" }\n-        // }\n+    //     p { \"A\" }\n+    //     p { \"B\" }\n+    // }\n     }\n }\n```\n\n**Variant 2: Entire block gets dedented (nested rsx!)**\n\n```diff\n rsx! {\n     Component {\n         field: rsx! {\n             div {\n                 h2 { \"Title\" }\n-                // div { class: \"wrapper\",\n-                //     // nested comment\n-                //     p { \"A\" }\n-                // }\n+            // div { class: \"wrapper\",\n+            //     // nested comment\n+            //     p { \"A\" }\n+            // }\n             }\n         },\n     }\n }\n```\n\nRoot cause is the rewritten comment-handling in `packages/autofmt/src/writer.rs` (PR #5257). Commented-out RSX blocks aren't covered by existing tests.\n\nHappy to submit a PR with the test cases (and a fix) if that's helpful.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/DioxusLabs/dioxus/commit/67f57bfd67dec689f03dcc89dd1ec067bc01741d",
+    "https://github.com/DioxusLabs/dioxus/commit/56bd704041fd1830fceb8e83de319978df2f5dec"
+  ],
+  "created_at": "2026-04-08T11:38:38Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/DioxusLabs/dioxus/tree/71df8c790f0790ea1d2d87d14d094000c0fa2a45",
+  "setup_cmds": [
+    "cargo check --workspace  (exit code: 101)",
+    "apt-get update -qq &amp;&amp; apt-get install -y -qq pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libatk1.0-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libglib2.0-dev  (exit code: 2)",
+    "apt-get update -qq && apt-get install -y -qq pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libatk1.0-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libglib2.0-dev  (exit code: 0)",
+    "cargo check --workspace  (exit code: 101)",
+    "apt-get update -qq && apt-get install -y -qq libasound2-dev  (exit code: 0)",
+    "cargo check --workspace  (exit code: 101)",
+    "apt-get update -qq && apt-get install -y -qq libudev-dev  (exit code: 0)",
+    "cargo check --workspace  (exit code: 0)",
+    "cargo test --workspace --tests  (exit code: 101)",
+    "apt-get update -qq && apt-get install -y -qq libxdo-dev  (exit code: 0)",
+    "cargo test --workspace --tests  (exit code: 101)",
+    "rustup component add rustfmt  (exit code: 0)",
+    "cargo test --workspace --tests  (exit code: 101)",
+    "apt-get update -qq && apt-get install -y -qq xvfb  (exit code: 0)",
+    "xvfb-run -a cargo test --workspace --tests  (exit code: 0)",
+    "cargo check --workspace  (exit code: 101)",
+    "apt-get update -qq &amp;&amp; apt-get install -y -qq pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libatk1.0-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libglib2.0-dev  (exit code: 2)",
+    "apt-get update -qq && apt-get install -y -qq pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libatk1.0-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libglib2.0-dev  (exit code: 0)",
+    "cargo check --workspace  (exit code: 101)",
+    "apt-get update -qq && apt-get install -y -qq libasound2-dev  (exit code: 0)",
+    "cargo check --workspace  (exit code: 101)",
+    "apt-get update -qq && apt-get install -y -qq libudev-dev  (exit code: 0)",
+    "cargo check --workspace  (exit code: 0)",
+    "cargo test --workspace --tests  (exit code: 101)",
+    "apt-get update -qq && apt-get install -y -qq libxdo-dev  (exit code: 0)",
+    "cargo test --workspace --tests  (exit code: 101)",
+    "rustup component add rustfmt  (exit code: 0)",
+    "cargo test --workspace --tests  (exit code: 101)",
+    "apt-get update -qq && apt-get install -y -qq xvfb  (exit code: 0)",
+    "xvfb-run -a cargo test --workspace --tests  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "xvfb-run -a cargo test --workspace --tests -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:DioxusLabs__dioxus-5464_linux"
+}

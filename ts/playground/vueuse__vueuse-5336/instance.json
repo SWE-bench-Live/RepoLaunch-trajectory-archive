@@ -1,0 +1,60 @@
+{
+  "repo": "vueuse/vueuse",
+  "pull_number": 5336,
+  "instance_id": "vueuse__vueuse-5336",
+  "issue_numbers": [
+    5335
+  ],
+  "base_commit": "b46d7ae4813b383dae66b40325df61c25839c5a4",
+  "patch": "diff --git a/packages/core/onClickOutside/index.ts b/packages/core/onClickOutside/index.ts\nindex edc1450a9f9..9c6a8e70993 100644\n--- a/packages/core/onClickOutside/index.ts\n+++ b/packages/core/onClickOutside/index.ts\n@@ -178,8 +178,11 @@ export function onClickOutside(\n     detectIframe && useEventListener(window, 'blur', (event) => {\n       setTimeout(() => {\n         const el = unrefElement(target)\n+        let activeEl: Element | null | undefined = window.document.activeElement\n+        while (activeEl?.shadowRoot)\n+          activeEl = activeEl.shadowRoot.activeElement\n         if (\n-          window.document.activeElement?.tagName === 'IFRAME'\n+          activeEl?.tagName === 'IFRAME'\n           && !el?.contains(window.document.activeElement)\n         ) {\n           handler(event as any)\n",
+  "test_patch": "diff --git a/packages/core/onClickOutside/index.browser.test.ts b/packages/core/onClickOutside/index.browser.test.ts\nindex f177b6abe40..5178a31b34b 100644\n--- a/packages/core/onClickOutside/index.browser.test.ts\n+++ b/packages/core/onClickOutside/index.browser.test.ts\n@@ -1,4 +1,4 @@\n-import { describe, expect, it, vi } from 'vitest'\n+import { beforeEach, describe, expect, it, vi } from 'vitest'\n import { page, userEvent } from 'vitest/browser'\n import { defineComponent, useTemplateRef } from 'vue'\n import { onClickOutside } from './index'\n@@ -46,6 +46,10 @@ function getComplexComponent(useGetter = false) {\n }\n \n describe('onClickOutside', () => {\n+  beforeEach(() => {\n+    document.body.innerHTML = ''\n+  })\n+\n   it('should work with ignored element', async () => {\n     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})\n     const screen = page.render(getComplexComponent())\n@@ -65,6 +69,65 @@ describe('onClickOutside', () => {\n     expect(consoleSpy).toHaveBeenCalled()\n   })\n \n+  it('should detect iframe inside shadow DOM with detectIframe option', async () => {\n+    const handler = vi.fn()\n+\n+    const component = defineComponent({\n+      template: `<div ref=\"target\">Inside</div>`,\n+      setup() {\n+        const target = useTemplateRef<HTMLDivElement>('target')\n+        onClickOutside(target, handler, { detectIframe: true })\n+        return { target }\n+      },\n+    })\n+\n+    const screen = page.render(component)\n+    await expect.element(screen.getByText('Inside')).toBeInTheDocument()\n+\n+    const host = document.createElement('div')\n+    const shadowRoot = host.attachShadow({ mode: 'open' })\n+    const iframe = document.createElement('iframe')\n+    shadowRoot.appendChild(iframe)\n+    document.body.appendChild(host)\n+\n+    await userEvent.click(iframe)\n+    await vi.waitFor(() => {\n+      expect(handler).toHaveBeenCalledOnce()\n+    })\n+  })\n+\n+  it('should detect iframe inside nested shadow DOM with detectIframe option', async () => {\n+    const handler = vi.fn()\n+\n+    const component = defineComponent({\n+      template: `<div ref=\"target\">Inside</div>`,\n+      setup() {\n+        const target = useTemplateRef<HTMLDivElement>('target')\n+        onClickOutside(target, handler, { detectIframe: true })\n+        return { target }\n+      },\n+    })\n+\n+    const screen = page.render(component)\n+    await expect.element(screen.getByText('Inside')).toBeInTheDocument()\n+\n+    // <outer-host> > shadow-root > <inner-host> > shadow-root > <iframe>\n+    const outerHost = document.createElement('div')\n+    const outerShadow = outerHost.attachShadow({ mode: 'open' })\n+    const innerHost = document.createElement('div')\n+    const innerShadow = innerHost.attachShadow({ mode: 'open' })\n+    const iframe = document.createElement('iframe')\n+    innerShadow.appendChild(iframe)\n+    outerShadow.appendChild(innerHost)\n+    document.body.appendChild(outerHost)\n+\n+    // Playwright cannot click an iframe nested 2 levels deep in shadow DOM\n+    iframe.focus()\n+    await vi.waitFor(() => {\n+      expect(handler).toHaveBeenCalledOnce()\n+    })\n+  })\n+\n   it('allow the value of target to be a getter', async () => {\n     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})\n     const screen = page.render(getComplexComponent(true))\n",
+  "problem_statement": "BUG | `onClickOutside` | Detecting iFrame clicks fails if the iFrame is within a custom element Shadow DOM, even when enabling `detectIframe` option\n### Describe the bug\n\n`onClickOutside` doesn't trigger when clicking an iframe which is wrapped in a custom element within a Shadow DOM, even if `detectIframe` is enabled.\nThis is because `detectIframe` actually verifies that the activeElement is an iFrame so it won't detect clicks in custom elements. I confirmed that the window `blur` event is indeed firing when clicking the iframe, but onClickOutside is not triggering.\n\nCould the check be made broader, to trigger any time the window loses focus?\n\n### Reproduction\n\nhttps://stackblitz.com/edit/vitejs-vite-jcsqmkbs?file=src%2FApp.vue\n\n### System Info\n\n```Shell\n  System:\n    OS: Linux 5.0 undefined\n    CPU: (8) x64 Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz\n    Memory: 0 Bytes / 0 Bytes\n    Shell: 1.0 - /bin/jsh\n  Binaries:\n    Node: 22.22.0 - /usr/local/bin/node\n    Yarn: 1.22.19 - /usr/local/bin/yarn\n    npm: 10.8.2 - /usr/local/bin/npm\n    pnpm: 8.15.6 - /usr/local/bin/pnpm\n  npmPackages:\n    @vueuse/core: ^14.2.1 => 14.2.1 \n    vue: ^3.2.25 => 3.5.30\n```\n\n### Used Package Manager\n\nnpm\n\n### Validations\n\n- [x] Follow our [Code of Conduct](https://github.com/vueuse/vueuse/blob/main/CODE_OF_CONDUCT.md)\n- [x] Read the [Contributing Guidelines](https://github.com/vueuse/vueuse/blob/main/CONTRIBUTING.md).\n- [x] Read the [docs](https://vueuse.org/guide).\n- [x] Check that there isn't [already an issue](https://github.com/vueuse/vueuse/issues) that reports the same bug to avoid creating a duplicate.\n- [x] Make sure this is a VueUse issue and not a framework-specific issue. For example, if it's a Vue SFC related bug, it should likely be reported to https://github.com/vuejs/core instead.\n- [x] Check that this is a concrete bug. For Q&A open a [GitHub Discussion](https://github.com/vueuse/vueuse/discussions).\n- [x] The provided reproduction is a [minimal reproducible example](https://stackoverflow.com/help/minimal-reproducible-example) of the bug.\n",
+  "hints_text": "@richrd \nTry using the latest version\nhttps://stackblitz.com/edit/vitejs-vite-t5ymv7ag?file=package.json\n@babu-ch thanks, I didn't realise I wasn't running the latest version. I have updated to the latest version 14.2.1, and also updated the repro link, along with adding a Shadow DOM which apparently was my issue in the app I'm building. Can you test the new repro? https://stackblitz.com/edit/vitejs-vite-jcsqmkbs?file=src%2FApp.vue,src%2Fmain.js\n\nI have updated the Bug title and description accordingly.\n\n",
+  "all_hints_text": "@richrd \nTry using the latest version\nhttps://stackblitz.com/edit/vitejs-vite-t5ymv7ag?file=package.json\n@babu-ch thanks, I didn't realise I wasn't running the latest version. I have updated to the latest version 14.2.1, and also updated the repro link, along with adding a Shadow DOM which apparently was my issue in the app I'm building. Can you test the new repro? https://stackblitz.com/edit/vitejs-vite-jcsqmkbs?file=src%2FApp.vue,src%2Fmain.js\n\nI have updated the Bug title and description accordingly.\n\n",
+  "commit_urls": [
+    "https://github.com/vueuse/vueuse/commit/5bbc636f97404344987e92165b2977450915b238",
+    "https://github.com/vueuse/vueuse/commit/1e216ebfc99bd10a3702511c8d958c94e7eafc03",
+    "https://github.com/vueuse/vueuse/commit/0ae684cd979dcc92308eba488b9a100b9be5809f",
+    "https://github.com/vueuse/vueuse/commit/db066fb4755ee143dd0973ea0d0298140ba15a2e",
+    "https://github.com/vueuse/vueuse/commit/6652b39b23414a4395c80af87de3c11eafecae33"
+  ],
+  "created_at": "2026-03-24T01:44:17Z",
+  "language": "TypeScript",
+  "commit_url": "https://github.com/vueuse/vueuse/tree/b46d7ae4813b383dae66b40325df61c25839c5a4",
+  "setup_cmds": [
+    "npm install -g pnpm@10.28.2  (exit code: 0)",
+    "pnpm install  (exit code: 0)",
+    "pnpm test:unit  (exit code: 124)",
+    "sed -n '1,160p' test/exports.test.ts  (exit code: 0)",
+    "pnpm build:packages  (exit code: 1)",
+    "pnpm update  (exit code: 1)",
+    "cat packages/metadata/package.json  (exit code: 0)",
+    "pnpm run update  (exit code: 0)",
+    "pnpm build:types  (exit code: 0)",
+    "pnpm run update  (exit code: 0)",
+    "ls -l packages/metadata  (exit code: 0)",
+    "pnpm build:packages  (exit code: 0)",
+    "pnpm test:unit  (exit code: 124)",
+    "pnpm exec vitest run --project unit  (exit code: 0)",
+    "npm install -g pnpm@10.28.2  (exit code: 0)",
+    "pnpm install  (exit code: 0)",
+    "pnpm test:unit  (exit code: 124)",
+    "sed -n '1,160p' test/exports.test.ts  (exit code: 0)",
+    "pnpm build:packages  (exit code: 1)",
+    "pnpm update  (exit code: 1)",
+    "cat packages/metadata/package.json  (exit code: 0)",
+    "pnpm run update  (exit code: 0)",
+    "pnpm build:types  (exit code: 0)",
+    "pnpm run update  (exit code: 0)",
+    "ls -l packages/metadata  (exit code: 0)",
+    "pnpm build:packages  (exit code: 0)",
+    "pnpm test:unit  (exit code: 124)",
+    "pnpm exec vitest run --project unit  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "pnpm exec vitest run --project unit --reporter verbose"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:vueuse__vueuse-5336_linux"
+}

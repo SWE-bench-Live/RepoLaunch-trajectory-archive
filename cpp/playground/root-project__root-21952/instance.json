@@ -1,0 +1,60 @@
+{
+  "repo": "root-project/root",
+  "pull_number": 21952,
+  "instance_id": "root-project__root-21952",
+  "issue_numbers": [
+    11768
+  ],
+  "base_commit": "0481b1d8e800df283518bc00a8795abfdaba32c6",
+  "patch": "diff --git a/roofit/roostats/src/SPlot.cxx b/roofit/roostats/src/SPlot.cxx\nindex d13e8e35dd92f..c18eefd053ecd 100644\n--- a/roofit/roostats/src/SPlot.cxx\n+++ b/roofit/roostats/src/SPlot.cxx\n@@ -400,10 +400,27 @@ Int_t SPlot::GetNumSWeightVars() const\n /// and will be considered parameters, not observables.\n /// \\param[in] includeWeights Include weights of the input data in calculation of s weights.\n /// \\param[in] arg5,arg6,arg7,arg8 Optional additional arguments for the fitting step.\n-void SPlot::AddSWeight( RooAbsPdf* pdf, const RooArgList &yieldsTmp,\n-         const RooArgSet &projDeps, bool includeWeights,\n-         const RooCmdArg& arg5, const RooCmdArg& arg6, const RooCmdArg& arg7, const RooCmdArg& arg8)\n+void SPlot::AddSWeight(RooAbsPdf *pdf, const RooArgList &yieldsTmp, const RooArgSet &projDeps, bool includeWeights,\n+                       const RooCmdArg &arg5, const RooCmdArg &arg6, const RooCmdArg &arg7, const RooCmdArg &arg8)\n {\n+   // Check that no yield variable is also a discriminating variable used in the fit.\n+   // The sPlot formalism requires that the yield parameters are independent of the\n+   // discriminating observables; otherwise, the resulting sWeights are mathematically\n+   // invalid. See https://github.com/root-project/root/issues/11768.\n+   std::unique_ptr<RooArgSet> discrimVars{pdf->getObservables(fSData)};\n+   for (auto const *yield : yieldsTmp) {\n+      if (discrimVars->find(yield->GetName()) || yield->dependsOn(*discrimVars)) {\n+         coutE(InputArguments) << \"SPlot::AddSWeight(\" << GetName() << \") the yield variable \\\"\" << yield->GetName()\n+                               << \"\\\" is also a discriminating variable used in the fit, \"\n+                               << \"or depends on one. The sPlot formalism requires the yield parameters to be \"\n+                               << \"independent of the discriminating observables. The resulting sWeights would \"\n+                               << \"be invalid. Please remove this variable from either the fit observables or \"\n+                               << \"from the list of yields.\" << std::endl;\n+         throw std::invalid_argument(Form(\"SPlot::AddSWeight(%s) yield variable \\\"%s\\\" is also used \"\n+                                          \"as a discriminating variable in the fit.\",\n+                                          GetName(), yield->GetName()));\n+      }\n+   }\n \n   // Find Parameters in the PDF to be considered fixed when calculating the SWeights\n   // and be sure to NOT include the yields in that list\n",
+  "test_patch": "diff --git a/roofit/roostats/test/testSPlot.cxx b/roofit/roostats/test/testSPlot.cxx\nindex 3bb64807f5119..357ce1b751b63 100644\n--- a/roofit/roostats/test/testSPlot.cxx\n+++ b/roofit/roostats/test/testSPlot.cxx\n@@ -32,3 +32,27 @@ TEST(SPlot, UseWithRooLinearVar) {\n   EXPECT_EQ(splot.GetNumSWeightVars(), 2);\n   EXPECT_NE(data->get(0)->find(\"c1_sw\"), nullptr);\n }\n+\n+// Regression test for https://github.com/root-project/root/issues/11768:\n+// passing a discriminating variable of the fit in the yields list must\n+// produce an error, since the resulting sWeights would be invalid.\n+TEST(SPlot, ErrorOnDiscriminatingVariableAsYield)\n+{\n+   RooRealVar x(\"x\", \"observable\", 0, 0, 20);\n+   RooRealVar m(\"m\", \"mean\", 5., -10, 10);\n+   RooRealVar s(\"s\", \"sigma\", 2., 0.1, 10);\n+   RooGaussian gauss(\"gauss\", \"gauss\", x, m, s);\n+\n+   RooRealVar a(\"a\", \"exp\", -0.2, -10., 0.);\n+   RooExponential ex(\"ex\", \"ex\", x, a);\n+\n+   RooRealVar nsig(\"nsig\", \"nsig\", 500, 0, 1000);\n+   RooRealVar nbkg(\"nbkg\", \"nbkg\", 500, 0, 1000);\n+   RooAddPdf sum(\"sum\", \"sum\", RooArgSet(gauss, ex), RooArgSet(nsig, nbkg));\n+\n+   std::unique_ptr<RooDataSet> data{sum.generate(x, 1000)};\n+\n+   // \"x\" is a discriminating variable of the fit, so using it in the yields\n+   // list is a user error that must throw.\n+   EXPECT_THROW(RooStats::SPlot(\"splot\", \"splot\", *data, &sum, RooArgList(nsig, x)), std::invalid_argument);\n+}\n",
+  "problem_statement": "[RF] Error out in `RooStats::sPlot` if variable for sWeights is already used in the fit\nError out in `RooStats::sPlot` if variable for sWeights is already used as a discriminating variable in the fit. In this case, the `sWeights` are invalid and it has recently confused two users already:\r\n\r\n* https://root-forum.cern.ch/t/splot-result-doesnt-match-the-fit-result\r\n* https://root-forum.cern.ch/t/strange-results-in-rs301-splot-c\r\n\r\nWhen implementing this, consider also changing the sPlots documentation to have a clickable link to the arXiv paper instead of just the tag like it is there right now:\r\nhttps://root.cern/doc/master/classRooStats_1_1SPlot.html#:~:text=Using%20ratios%20as%20yield%20parameters\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/root-project/root/commit/0832d9e8e3b5270fa4d98be04d50e9560583db7c"
+  ],
+  "created_at": "2026-04-19T18:33:14Z",
+  "language": "C++",
+  "commit_url": "https://github.com/root-project/root/tree/0481b1d8e800df283518bc00a8795abfdaba32c6",
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -Dgminimal=ON -Dtesting=ON  (exit code: 1)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y liblz4-dev liblzma-dev libzstd-dev  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -Dgminimal=ON -Dtesting=ON  (exit code: 1)",
+    "apt-get install -y libfreetype6-dev libx11-dev libxpm-dev libxft-dev libxext-dev  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -Dgminimal=ON -Dtesting=ON  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 2  (exit code: 124)",
+    "cmake --build build --parallel 2  (exit code: 1)",
+    "rm -rf build  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -Dgminimal=ON -Dtesting=ON  (exit code: 0)",
+    "cmake --build build --parallel 2  (exit code: 124)",
+    "cmake --build build --parallel 1  (exit code: 124)",
+    "cmake --build build --parallel 1  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -Dgminimal=ON -Dtesting=ON  (exit code: 1)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y liblz4-dev liblzma-dev libzstd-dev  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -Dgminimal=ON -Dtesting=ON  (exit code: 1)",
+    "apt-get install -y libfreetype6-dev libx11-dev libxpm-dev libxft-dev libxext-dev  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -Dgminimal=ON -Dtesting=ON  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 2  (exit code: 124)",
+    "cmake --build build --parallel 2  (exit code: 1)",
+    "rm -rf build  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -Dgminimal=ON -Dtesting=ON  (exit code: 0)",
+    "cmake --build build --parallel 2  (exit code: 124)",
+    "cmake --build build --parallel 1  (exit code: 124)",
+    "cmake --build build --parallel 1  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "ctest --test-dir build --output-on-failure -V"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:root-project__root-21952_linux"
+}

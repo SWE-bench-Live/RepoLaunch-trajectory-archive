@@ -1,0 +1,1655 @@
+2026-05-10 19:21:53,413 - Using language: java
+2026-05-10 19:21:59,089 - Loading image repolaunch/dev:openrewrite__rewrite-7310_linux.
+2026-05-10 20:19:18,282 - Repo root in the host cleaned up: /home/v-kenanli/SWE-bench-Live/launch/data/java1/playground/openrewrite__rewrite-7310/repo
+2026-05-10 20:19:18,312 - Setting up environment for language: java
+2026-05-10 20:19:18,313 - No language-specific server needed
+2026-05-10 20:19:19,254 - setup state: None, 0, None ... 
+2026-05-10 20:19:19,254 - ----------Start rebuild conversation----------
+2026-05-10 20:19:34,049 - 
+================================== Ai Message ==================================
+
+Thought: Inspect rewrite-python and rewrite-javascript build setup to decide if additional package manager install commands are needed.
+Action: <command>sed -n '1,200p' rewrite-python/build.gradle.kts</command>
+2026-05-10 20:19:34,639 - 
+================================ Human Message =================================
+
+Observation:
+sed -n '1,200p' rewrite-python/build.gradle.kts
+@file:Suppress("UnstableApiUsage")
+
+import com.gradle.develocity.agent.gradle.test.ImportJUnitXmlReports
+import com.gradle.develocity.agent.gradle.test.JUnitXmlDialect
+import nl.javadude.gradle.plugins.license.LicenseExtension
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+
+plugins {
+    id("org.openrewrite.build.language-library")
+    id("org.openrewrite.build.moderne-source-available-license")
+    id("jvm-test-suite")
+    id("publishing")
+}
+
+normalization {
+    runtimeClasspath {
+        ignore("META-INF/rewrite-python-version.txt")
+    }
+}
+
+dependencies {
+    api(project(":rewrite-core"))
+    api(project(":rewrite-java"))
+    api(project(":rewrite-toml"))
+
+    api("org.jetbrains:annotations:latest.release")
+    api("com.fasterxml.jackson.core:jackson-annotations")
+
+    implementation("io.moderne:jsonrpc:latest.integration")
+    implementation(project(":rewrite-maven"))
+
+    compileOnly(project(":rewrite-test"))
+
+    testImplementation(project(":rewrite-test"))
+    testImplementation("io.moderne:jsonrpc:latest.integration")
+    testRuntimeOnly(project(":rewrite-java-21"))
+}
+
+tasks.withType<Javadoc>().configureEach {
+    (options as StandardJavadocDocletOptions).addStringOption("Xdoclint:none", "-quiet")
+    exclude("**/Py.java")
+}
+
+// Python-specific build tasks
+val pythonDir = projectDir.resolve("rewrite")
+val venvDir = pythonDir.resolve(".venv")
+val isWindows = System.getProperty("os.name").lowercase().contains("windows")
+val pythonExe = if (isWindows) venvDir.resolve("Scripts/python.exe") else venvDir.resolve("bin/python")
+val pipExe = if (isWindows) venvDir.resolve("Scripts/pip.exe") else venvDir.resolve("bin/pip")
+
+// Find system Python
+fun findPython(): String {
+    val candidates = if (isWindows) {
+        listOf("python", "python3", "py")
+    } else {
+        listOf("python3", "python")
+    }
+    for (cmd in candidates) {
+        try {
+            val process = ProcessBuilder(cmd, "--version")
+                .redirectErrorStream(true)
+                .start()
+            if (process.waitFor() == 0) {
+                return cmd
+            }
+        } catch (e: Exception) {
+            // Command not found, try next
+        }
+    }
+    throw GradleException("Python 3 not found. Please install Python 3.10+ and ensure it's on your PATH.")
+}
+
+val pythonSetupVenv by tasks.registering(Exec::class) {
+    group = "python"
+    description = "Create Python virtual environment"
+
+    onlyIf { !venvDir.exists() }
+
+    workingDir = pythonDir
+    commandLine(findPython(), "-m", "venv", ".venv")
+
+    doFirst {
+        logger.lifecycle("Creating Python virtual environment in ${venvDir}")
+    }
+}
+
+val pythonUpgradePip by tasks.registering(Exec::class) {
+    group = "python"
+    description = "Upgrade pip in virtual environment"
+
+    dependsOn(pythonSetupVenv)
+    onlyIf { venvDir.exists() }
+
+    workingDir = pythonDir
+    commandLine(pythonExe.absolutePath, "-m", "pip", "install", "--upgrade", "pip")
+
+    doFirst {
+        logger.lifecycle("Upgrading pip in virtual environment")
+    }
+}
+
+val pythonInstall by tasks.registering(Exec::class) {
+    group = "python"
+    description = "Install Python package in development mode"
+
+    dependsOn(pythonUpgradePip)
+
+    workingDir = pythonDir
+    commandLine(pipExe.absolutePath, "install", "-e", ".[dev]")
+
+    // Re-run if pyproject.toml changes
+    inputs.file(pythonDir.resolve("pyproject.toml"))
+
+    doFirst {
+        logger.lifecycle("Installing Python package with pip")
+    }
+}
+
+testing {
+    suites {
+        register<JvmTestSuite>("integTest") {
+            useJUnitJupiter()
+
+            dependencies {
+                implementation(project())
+                implementation(project(":rewrite-java-21"))
+                implementation(project(":rewrite-test"))
+                implementation("org.assertj:assertj-core:latest.release")
+                implementation("org.junit.platform:junit-platform-suite-api")
+                runtimeOnly("org.junit.platform:junit-platform-suite-engine")
+            }
+        }
+
+        register<JvmTestSuite>("py2CompatibilityTest") {
+            useJUnitJupiter()
+
+            dependencies {
+                implementation(project())
+                implementation(project(":rewrite-test"))
+                implementation(project(":rewrite-java-21"))
+                implementation("org.assertj:assertj-core:latest.release")
+                implementation("io.moderne:jsonrpc:latest.integration")
+            }
+
+            targets {
+                all {
+                    testTask.configure {
+                        // Include the main test classes so common tests run with the Python 2 parser
+                        testClassesDirs += sourceSets["test"].output.classesDirs
+                        classpath += sourceSets["test"].runtimeClasspath
+
+                        systemProperty("rewrite.python.version", "2")
+
+                        useJUnitPlatform {
+                            excludeTags("python3")
+                        }
+
+                        shouldRunAfter(tasks.named("test"))
+                    }
+                }
+            }
+        }
+    }
+}
+
+val pytestTest by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Run Python pytest tests"
+
+    dependsOn(pythonInstall)
+
+    workingDir = pythonDir
+    // Use relative path for python executable to avoid absolute paths in cache key
+    val relativePythonExe = if (isWindows) ".venv/Scripts/python.exe" else ".venv/bin/python"
+    commandLine(relativePythonExe, "-m", "pytest", "tests/", "-v",
+        "--junitxml=build/test-results/pytest/junit.xml")
+
+    inputs.files(fileTree(pythonDir.resolve("src")) { exclude("**/__pycache__/**") })
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(fileTree(pythonDir.resolve("tests")) { exclude("**/__pycache__/**") })
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(pythonDir.resolve("pyproject.toml"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.file(pythonDir.resolve("build/test-results/pytest/junit.xml"))
+    outputs.cacheIf { true }
+}
+
+ImportJUnitXmlReports.register(tasks, pytestTest, JUnitXmlDialect.GENERIC)
+
+tasks.named("check") {
+    dependsOn(testing.suites.named("py2CompatibilityTest"))
+    dependsOn(pytestTest)
+}
+
+// Run tests serially to avoid issues with concurrent Python RPC processes
+// The Python RPC server uses ThreadLocal, but test state can interfere
+// when multiple tests run rapidly on the same thread
+tasks.withType<Test> {
+
+root@22404d6ace1d:/testbed $
+
+exit code: 0
+
+2026-05-10 20:19:45,015 - 
+================================== Ai Message ==================================
+
+Thought: Check rewrite-javascript build to see if it has package install tasks that should be included in minimal rebuild.
+Action: <command>sed -n '1,200p' rewrite-javascript/build.gradle.kts</command>
+2026-05-10 20:19:45,354 - 
+================================ Human Message =================================
+
+Observation:
+sed -n '1,200p' rewrite-javascript/build.gradle.kts
+@file:Suppress("UnstableApiUsage")
+
+import com.github.gradle.node.NodeExtension
+import com.github.gradle.node.npm.task.NpmTask
+import com.gradle.develocity.agent.gradle.test.ImportJUnitXmlReports
+import com.gradle.develocity.agent.gradle.test.JUnitXmlDialect
+import nl.javadude.gradle.plugins.license.LicenseExtension
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+
+plugins {
+    id("org.openrewrite.build.language-library")
+    id("org.openrewrite.build.moderne-source-available-license")
+    id("com.github.node-gradle.node") version "latest.release"
+    id("jvm-test-suite")
+    id("publishing")
+}
+
+normalization {
+    runtimeClasspath {
+        ignore("META-INF/rewrite-javascript-version.txt")
+    }
+}
+
+dependencies {
+    api(project(":rewrite-core"))
+    api(project(":rewrite-java"))
+    api(project(":rewrite-json"))
+
+    api("org.jetbrains:annotations:latest.release")
+    api("com.fasterxml.jackson.core:jackson-annotations")
+
+    implementation("io.moderne:jsonrpc:latest.integration")
+
+    compileOnly(project(":rewrite-test"))
+
+    testImplementation(project(":rewrite-test"))
+    testImplementation(project(":rewrite-yaml"))
+    testImplementation("io.moderne:jsonrpc:latest.integration")
+    testRuntimeOnly(project(":rewrite-java-21"))
+}
+
+tasks.withType<Javadoc>().configureEach {
+    // generated ANTLR sources violate doclint
+    (options as StandardJavadocDocletOptions).addStringOption("Xdoclint:none", "-quiet")
+
+    // Items besides JavaParser due to lombok error which looks similar to this:
+    //     /openrewrite/rewrite/rewrite-javascript/src/main/java/org/openrewrite/javascript/tree/JS.java:4239: error: cannot find symbol
+    // @AllArgsConstructor(onConstructor_=@JsonCreator)
+    //                     ^
+    //   symbol:   method onConstructor_()
+    //   location: @interface AllArgsConstructor
+    // 1 error
+    exclude("**/JS.java")
+}
+
+// Override the defaults because the JavaScript code is one directory down (rewrite/).
+extensions.configure<NodeExtension> {
+    workDir.set(projectDir.resolve("rewrite"))
+    npmWorkDir.set(projectDir.resolve("rewrite"))
+    nodeProjectDir.set(projectDir.resolve("rewrite"))
+}
+
+// Generate a timestamped version for CI builds, or use the regular version for local development
+// Uses git commit timestamp for determinism (same commit always produces same version)
+fun gitCommitTimestamp(): String {
+    val process = ProcessBuilder("git", "log", "-1", "--format=%ct")
+        .directory(rootProject.projectDir)
+        .redirectErrorStream(true)
+        .start()
+    val timestamp = process.inputStream.bufferedReader().readText().trim()
+    process.waitFor()
+    return Instant.ofEpochSecond(timestamp.toLong())
+        .atZone(ZoneOffset.UTC)
+        .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+}
+
+val datedSnapshotVersion = if (System.getenv("CI") != null) {
+    project.version.toString().replace(
+        "SNAPSHOT",
+        gitCommitTimestamp()
+    )
+} else {
+    project.version.toString()
+}
+
+// Helper function to extract version from the JAR if it exists
+fun extractVersionFromJar(): String? {
+    val jarTask = tasks.named("jar", Jar::class).get()
+    val jarFile = jarTask.archiveFile.get().asFile
+    if (!jarFile.exists()) return null
+
+    return zipTree(jarFile).matching {
+        include("META-INF/rewrite-javascript-version.txt")
+    }.singleFile.readText().trim()
+}
+
+val npmVersion = tasks.register<NpmTask>("npmVersion") {
+    val versionDir = layout.buildDirectory.file("tmp/npmVersion")
+    inputs.file("rewrite/package.json")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.dir(versionDir)
+
+    doFirst {
+        copy {
+            from("rewrite/package.json")
+            into(versionDir)
+        }
+    }
+
+    // Use version from JAR if available (second Gradle invocation), otherwise use generated version
+    val versionToUse = provider { extractVersionFromJar() ?: datedSnapshotVersion }
+    args = listOf("version", "--no-git-tag-version", versionToUse.get())
+    workingDir = versionDir
+}
+
+val npmInstall = tasks.named("npmInstall")
+
+val npmTest = tasks.register<NpmTask>("npmTest") {
+    dependsOn(npmInstall)
+    inputs.files(fileTree("rewrite/node_modules") { exclude(".vite-temp/**", ".vite/**", ".cache/**") })
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(fileTree("rewrite") {
+        include("*.json")
+        include("vitest.config.mts")
+    }).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(fileTree("rewrite/src"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(fileTree("rewrite/test"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.files("rewrite/build/test-results/vitest/junit.xml")
+    outputs.cacheIf { true }
+
+    args = listOf("run", "ci:test")
+}
+
+ImportJUnitXmlReports.register(tasks, npmTest, JUnitXmlDialect.GENERIC)
+
+tasks.named("check") {
+    dependsOn(npmTest)
+}
+
+val npmBuild = tasks.register<NpmTask>("npmBuild") {
+    inputs.files(npmInstall)
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(file("rewrite/package.json"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(fileTree("rewrite/src"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.dir(file("rewrite/dist/"))
+
+    val versionTxt = file("src/main/resources/META-INF/rewrite-javascript-version.txt")
+    outputs.file(versionTxt)
+    doLast {
+        versionTxt.writeText(datedSnapshotVersion)
+    }
+
+    args = listOf("run", "build")
+}
+
+// Because each of these sees rewrite-javascript-version.txt as an input
+listOf("sourcesJar", "processResources", "licenseMain", "assemble").forEach {
+    tasks.named(it) {
+        dependsOn(npmBuild)
+    }
+}
+
+val npmPack = tasks.register<Tar>("npmPack") {
+    from("rewrite/src") {
+        into("package/src")
+    }
+    from(npmBuild) {
+        into("package/dist/")
+    }
+    from(npmVersion) {
+        into("package")
+    }
+    from("rewrite/README.md") {
+        into("package")
+    }
+
+    archiveBaseName = "openrewrite-rewrite"
+    // Use version from JAR if available (second Gradle invocation), otherwise use generated version
+    archiveVersion = provider { extractVersionFromJar() ?: datedSnapshotVersion }.get()
+    compression = Compression.GZIP
+    archiveExtension = "tgz"
+    destinationDirectory = layout.buildDirectory.dir("distributions")
+}
+
+val npmFixturesBuild = tasks.register<NpmTask>("npmFixturesBuild") {
+    inputs.files(npmInstall)
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(file("rewrite/package.json"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(npmBuild)
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(fileTree("rewrite/fixtures"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.dir(file("rewrite/dist-fixtures/"))
+
+root@22404d6ace1d:/testbed $
+
+exit code: 0
+
+2026-05-10 20:20:00,391 - 
+================================== Ai Message ==================================
+
+<submit>./gradlew :rewrite-python:pythonInstall assemble</submit>
+2026-05-10 20:20:00,466 - Agent submitted commands: ./gradlew :rewrite-python:pythonInstall assemble
+2026-05-10 20:20:00,467 - Automatically verifying submitted commands...
+2026-05-10 20:24:20,593 - Verification PASSED - LLM determined commands executed successfully
+2026-05-10 20:24:20,593 - ----------End rebuild organization conversation----------
+2026-05-10 20:24:22,845 - setup state: True, None ... 
+2026-05-10 20:24:22,846 - ----------Start test conversation----------
+2026-05-10 20:24:42,236 - 
+================================== Ai Message ==================================
+
+<command>./gradlew test --info</command>
+2026-05-10 21:28:18,292 - 
+================================ Human Message =================================
+
+Observation:
+./gradlew test --info
+Initialized native services in: /root/.gradle/native
+Initialized jansi services in: /root/.gradle/native
+
+The client will now receive all logging from the daemon (pid: 63). The daemon log file: /root/.gradle/daemon/9.3.1/daemon-63.out.log
+Starting 2nd build in daemon [uptime: 4 mins 32.151 secs, performance: 100%, GC rate: 0.00/s, heap usage: 0% of 3 GiB]
+Using 6 worker leases.
+Operational build model parameters: {requiresToolingModels=false, parallelProjectExecution=true, configureOnDemand=false, configurationCache=false, configurationCacheParallelStore=false, configurationCacheParallelLoad=true, isolatedProjects=false, parallelProjectConfiguration=false, intermediateModelCache=false, parallelToolingApiActions=true, invalidateCoupledProjects=false, modelAsProjectDependency=false, resilientModelBuilding=false}
+Not watching /testbed since the file system is not supported
+Watching the file system is configured to be enabled if available
+File system watching is active
+Starting Build
+Resolved plugin [id: 'com.gradle.develocity', version: 'latest.release']
+Resolved plugin [id: 'com.gradle.common-custom-user-data-gradle-plugin', version: 'latest.release']
+Settings evaluated using settings file '/testbed/settings.gradle.kts'.
+Using local directory build cache for the root build (location = /root/.gradle/caches/build-cache-1, remove unused entries = after 7 days).
+Using remote Develocity build cache for the root build (pull-only, Allow insecure protocol = false, Allow untrusted server = false, Build cache server = https://ge.openrewrite.org, Cache path = cache, Develocity server = https://ge.openrewrite.org, Use Edge discovery = false, Use ExpectContinue = false, Use access key = false, Use username/password = false).
+
+
+<-------------> 0% CONFIGURING [123ms]> Loading projectsProjects loaded. Root project using build file '/testbed/build.gradle.kts'.
+Included projects: [root project 'rewrite', project ':rewrite-benchmarks', project ':rewrite-bom', project ':rewrite-core', project ':rewrite-csharp', project ':rewrite-docker', project ':rewrite-go', project ':rewrite-gradle', project ':rewrite-gradle-tooling-model', project ':rewrite-groovy', project ':rewrite-hcl', project ':rewrite-java', project ':rewrite-java-11', project ':rewrite-java-17', project ':rewrite-java-21', project ':rewrite-java-25', project ':rewrite-java-8', project ':rewrite-java-lombok', project ':rewrite-java-tck', project ':rewrite-java-test', project ':rewrite-javascript', project ':rewrite-json', project ':rewrite-kotlin', project ':rewrite-maven', project ':rewrite-properties', project ':rewrite-protobuf', project ':rewrite-python', project ':rewrite-scala', project ':rewrite-test', project ':rewrite-toml', project ':rewrite-xml', project ':rewrite-yaml', project ':rewrite-gradle-tooling-model:model', project ':rewrite-gradle-tooling-model:plugin']
+
+
+<-------------> 0% CONFIGURING [223ms]> root project > Resolve dependencies of classpath<-------------> 0% CONFIGURING [323ms]<-------------> 0% CONFIGURING [423ms]> root project > Resolve files of configuration 'classpath'<-------------> 0% CONFIGURING [523ms]> root project<-------------> 0% CONFIGURING [623ms]<-------------> 0% CONFIGURING [723ms]
+> Configure project :
+Evaluating root project 'rewrite' using build file '/testbed/build.gradle.kts'.
+Resolved plugin [id: 'org.openrewrite.build.root', version: 'latest.release']
+Resolved plugin [id: 'org.openrewrite.build.java-base', version: 'latest.release']
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed rev-parse
+Successfully started process 'command 'git''
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed rev-parse --abbrev-ref HEAD
+Successfully started process 'command 'git''
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed status --porcelain
+Successfully started process 'command 'git''
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed rev-list -n 1 --all
+Successfully started process 'command 'git''
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed status --porcelain
+Successfully started process 'command 'git''
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed rev-parse HEAD
+Successfully started process 'command 'git''
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed tag --points-at HEAD
+Successfully started process 'command 'git''
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed rev-list --count HEAD
+Successfully started process 'command 'git''
+found.git at /testbed/.git
+Project rewrite SCM information is being collected from provider nebula.plugin.info.scm.GitScmProvider
+Adding shared suppressions file: /testbed/build/suppressions.xml
+Adding root project suppressions file: /testbed/suppressions.xml
+Skipping snapshot strategy because stage (null) is not one of: [SNAPSHOT]
+Skipping immutable_snapshot strategy because stage (null) is not one of: [snapshot]
+Skipping development strategy because stage (null) is not one of: [dev]
+Skipping pre-release strategy because stage (null) is not one of: [milestone, rc]
+Skipping final strategy because stage (null) is not one of: [final]
+Using snapshot default strategy because repo is clean and no stage defined
+Falling back to default strategy: snapshot
+Beginning version inference using snapshot strategy and input scope (null) and stage (SNAPSHOT)
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed describe HEAD --tags --long --match v* --exclude *-rc.*
+Successfully started process 'command 'git''
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed describe HEAD --tags --long --match v*
+Successfully started process 'command 'git''
+Inferred project: rewrite, version: 0.1.0-SNAPSHOT
+
+
+<-------------> 2% CONFIGURING [823ms]> :rewrite-benchmarks
+> Configure project :rewrite-benchmarks
+Evaluating project ':rewrite-benchmarks' using build file '/testbed/rewrite-benchmarks/build.gradle.kts'.
+Resolved plugin [id: 'org.openrewrite.build.java-base']
+Resolved plugin [id: 'org.openrewrite.build.recipe-repositories']
+Resolved plugin [id: 'me.champeau.jmh', version: '0.7.3']
+Adding shared suppressions file: /testbed/rewrite-benchmarks/build/suppressions.xml
+Adding root project suppressions file: /testbed/suppressions.xml
+
+
+<-------------> 5% CONFIGURING [923ms]> :rewrite-bom
+> Configure project :rewrite-bom
+Evaluating project ':rewrite-bom' using build file '/testbed/rewrite-bom/build.gradle.kts'.
+Resolved plugin [id: 'org.gradle.java-platform']
+Resolved plugin [id: 'org.openrewrite.build.publish']
+Resolved plugin [id: 'org.openrewrite.build.metadata']
+found.git at /testbed/.git
+Project rewrite-bom SCM information is being collected from rootProject extension
+Starting process 'command 'git''. Working directory: /testbed Command: git --git-dir=/testbed/.git --work-tree=/testbed config --get remote.origin.url
+Successfully started process 'command 'git''
+
+
+<=------------> 8% CONFIGURING [1s]> :rewrite-corePath for java installation '/usr/lib/jvm/openjdk-21' (Common Linux Locations) auto-detected does not contain a java executable
+Path for java installation '/usr/lib/jvm/openjdk-25' (Common Linux Locations) auto-detected does not contain a java executable
+Path for java installation '/usr/lib/jvm/openjdk-11' (Common Linux Locations) auto-detected does not contain a java executable
+
+> Configure project :rewrite-core
+Evaluating project ':rewrite-core' using build file '/testbed/rewrite-core/build.gradle.kts'.
+Resolved plugin [id: 'org.openrewrite.build.language-library']
+Adding shared suppressions file: /testbed/rewrite-core/build/suppressions.xml
+A....stripped due to length....
+.jartool, jdk.javadoc, jdk.jconsole, jdk.jdi, jdk.jfr, jdk.jshell, jdk.jsobject, jdk.management, jdk.management.jfr, jdk.net, jdk.nio.mapmode, jdk.sctp, jdk.security.auth, jdk.security.jgss, jdk.unsupported, jdk.unsupported.desktop, jdk.xml.dom, java.base, java.compiler, java.datatransfer, java.desktop, java.xml, java.instrument, java.logging, java.management, java.management.rmi, java.rmi, java.naming, java.net.http, java.prefs, java.scripting, java.security.jgss, java.security.sasl, java.sql, java.transaction.xa, java.sql.rowset, java.xml.crypto, jdk.internal.jvmstat, jdk.internal.opt, jdk.zipfs, jdk.management.agent, jdk.jdwp.agent, jdk.internal.ed, jdk.internal.le]
+
+
+
+
+<===========--> 87% EXECUTING [37m 20s]> IDLE> :rewrite-gradle:test > Executing test org...trait.SpringDependencyManagementP> :rewrite-gradle:test > 1097 tests completed, 38 failed, 3 skipped> IDLE<===========--> 87% EXECUTING [37m 21s]
+SpringDependencyManagementPluginEntryTest > changeArtifactOnlyKotlin() STANDARD_ERROR
+    logging: using JDK home inferred from java.home: /usr/lib/jvm/java-21-openjdk-amd64
+    logging: loading modules: [java.se, jdk.accessibility, jdk.attach, jdk.compiler, jdk.dynalink, jdk.httpserver, jdk.incubator.vector, jdk.jartool, jdk.javadoc, jdk.jconsole, jdk.jdi, jdk.jfr, jdk.jshell, jdk.jsobject, jdk.management, jdk.management.jfr, jdk.net, jdk.nio.mapmode, jdk.sctp, jdk.security.auth, jdk.security.jgss, jdk.unsupported, jdk.unsupported.desktop, jdk.xml.dom, java.base, java.compiler, java.datatransfer, java.desktop, java.xml, java.instrument, java.logging, java.management, java.management.rmi, java.rmi, java.naming, java.net.http, java.prefs, java.scripting, java.security.jgss, java.security.sasl, java.sql, java.transaction.xa, java.sql.rowset, java.xml.crypto, jdk.internal.jvmstat, jdk.internal.opt, jdk.zipfs, jdk.management.agent, jdk.jdwp.agent, jdk.internal.ed, jdk.internal.le]
+
+
+
+
+<===========--> 87% EXECUTING [37m 21s]> IDLE> :rewrite-gradle:test > Executing test org...trait.SpringDependencyManagementP> :rewrite-gradle:test > 1098 tests completed, 38 failed, 3 skipped> IDLE<===========--> 87% EXECUTING [37m 22s]> :rewrite-gradle:test > 1099 tests completed, 38 failed, 3 skipped
+SpringDependencyManagementPluginEntryTest > changeVersionOnly() STANDARD_OUT
+    doesntmatter: 11: [Static type checking] - Cannot find matching method doesntmatter#dependencyManagement(groovy.lang.Closure). Please check if the declared type is correct and if the method exists.
+
+     @ line 11, column 1.
+
+       dependencyManagement {
+
+       ^
+
+
+    doesntmatter: 13: [Static type checking] - Cannot find matching method doesntmatter#dependency(java.lang.String). Please check if the declared type is correct and if the method exists.
+
+     @ line 13, column 9.
+
+               dependency 'javax.validation:validation-api:2.0.1.Final'
+
+               ^
+
+
+    doesntmatter: 14: [Static type checking] - Cannot find matching method doesntmatter#dependency(java.util.LinkedHashMap<java.lang.String, java.lang.String>). Please check if the declared type is correct and if the method exists.
+
+     @ line 14, column 9.
+
+               dependency group: 'javax.validation', name: 'validation-api', version: '2.0.1.Final'
+
+               ^
+
+
+    doesntmatter: 15: [Static type checking] - Cannot find matching method doesntmatter#dependencySet(java.lang.String, groovy.lang.Closure). Please check if the declared type is correct and if the method exists.
+
+     @ line 15, column 9.
+
+               dependencySet('javax.validation:2.0.1.Final') {
+
+               ^
+
+
+    doesntmatter: 16: [Static type checking] - Cannot find matching method doesntmatter#entry(java.lang.String). Please check if the declared type is correct and if the method exists.
+
+     @ line 16, column 13.
+
+                   entry 'validation-api'
+
+                   ^
+
+
+    doesntmatter: 18: [Static type checking] - Cannot find matching method doesntmatter#dependencySet(java.util.LinkedHashMap<java.lang.String, java.lang.String>, groovy.lang.Closure). Please check if the declared type is correct and if the method exists.
+
+     @ line 18, column 9.
+
+               dependencySet(group:'javax.validation', version: '2.0.1.Final') {
+
+               ^
+
+
+    doesntmatter: 19: [Static type checking] - Cannot find matching method doesntmatter#entry(java.lang.String). Please check if the declared type is correct and if the method exists.
+
+     @ line 19, column 13.
+
+                   entry 'validation-api'
+
+                   ^
+
+
+    7 errors
+
+
+
+
+
+
+
+<===========--> 87% EXECUTING [37m 22s]> IDLE> :rewrite-gradle:test > Executing test org...trait.SpringDependencyManagementP> :rewrite-gradle:test > 1099 tests completed, 38 failed, 3 skipped> IDLE<===========--> 87% EXECUTING [37m 23s]> :rewrite-gradle:test > Executing test org.openrewrite.gradle.tree.ExtTest> :rewrite-gradle:test > 1100 tests completed, 38 failed, 3 skipped> :rewrite-gradle:test > 1101 tests completed, 38 failed, 3 skipped> :rewrite-gradle:test > Executing test org.openrewrite.gradle.tree.RepositoryT> :rewrite-gradle:test > 1102 tests completed, 38 failed, 3 skipped> :rewrite-gradle:test > 1103 tests completed, 38 failed, 3 skipped> :rewrite-gradle:test > Executing test org.openrewrite.gradle.tree.TestTest> :rewrite-gradle:test > 1104 tests completed, 38 failed, 3 skipped
+TestTest > dsl() STANDARD_OUT
+    doesntmatter: 12: [Static type checking] - The variable [testLogging] is undeclared.
+
+
+
+
+
+<===========--> 87% EXECUTING [37m 23s]> IDLE> :rewrite-gradle:test > Executing test org.openrewrite.gradle.tree.TestTest> :rewrite-gradle:test > 1104 tests completed, 38 failed, 3 skipped> IDLE     @ line 12, column 4.
+
+          testLogging.showStandardStreams = true
+
+          ^
+
+
+    1 error
+
+
+
+Gradle Test Executor 11 finished executing tests.
+
+
+
+
+
+<===========--> 87% EXECUTING [37m 23s]> IDLE> IDLE> :rewrite-gradle:test > 1105 tests completed, 38 failed, 3 skipped> IDLE<===========--> 87% EXECUTING [37m 24s]> :rewrite-gradle:test
+> Task :rewrite-gradle:test FAILED
+
+1105 tests completed, 38 failed, 3 skipped
+Generating HTML test report...
+Finished generating test html results (0.269 secs) into: /testbed/rewrite-gradle/build/reports/tests/test
+Finished generating test XML results (0.022 secs) into: /testbed/rewrite-gradle/build/test-results/test
+
+
+
+
+
+<===========--> 87% EXECUTING [37m 25s]> IDLE> IDLE> IDLE> IDLEBuild d94caf45-7db7-44e9-a82e-13d9b2590027 is closed
+
+FAILURE: Build completed with 4 failures.
+
+1: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':rewrite-csharp:test'.
+> There were failing tests. See the report at: file:///testbed/rewrite-csharp/build/reports/tests/test/index.html
+==============================================================================
+
+2: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':rewrite-maven:test'.
+> There were failing tests. See the report at: file:///testbed/rewrite-maven/build/reports/tests/test/index.html
+==============================================================================
+
+3: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':rewrite-java-test:test'.
+> There were failing tests. See the report at: file:///testbed/rewrite-java-test/build/reports/tests/test/index.html
+==============================================================================
+
+4: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':rewrite-gradle:test'.
+> There were failing tests. See the report at: file:///testbed/rewrite-gradle/build/reports/tests/test/index.html
+==============================================================================
+
+BUILD FAILED in 37m 26s
+148 actionable tasks: 18 executed, 130 up-to-date
+Some of the file system contents retained in the virtual file system are on file systems that Gradle doesn't support watching. The relevant state was discarded to ensure changes to these locations are properly detected. You can override this by explicitly enabling file system watching.
+
+
+
+
+
+<===========--> 87% EXECUTING [37m 25s]> IDLE> IDLE> IDLE> IDLE<-------------> 0% WAITING
+
+root@22404d6ace1d:/testbed $
+
+exit code: 1
+
+2026-05-10 21:28:34,787 - 
+================================== Ai Message ==================================
+
+<command>cat **/build/test-results/test/*.xml</command>
+2026-05-10 21:40:49,900 - 
+================================ Human Message =================================
+
+Observation:
+cat **/build/test-results/test/*.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.openrewrite.AddToGitignoreTest" tests="24" skipped="0" failures="0" errors="0" timestamp="2026-05-10T20:25:34.026Z" hostname="22404d6ace1d" time="7.513">
+  <properties/>
+  <testcase name="emptyLinesInInput()" classname="org.openrewrite.AddToGitignoreTest" time="5.485"/>
+  <testcase name="targetSpecificSubdirectory()" classname="org.openrewrite.AddToGitignoreTest" time="0.102"/>
+  <testcase name="addNonSuperfluousEntries()" classname="org.openrewrite.AddToGitignoreTest" time="0.113"/>
+  <testcase name="addEntryToFileEndingWithWindowsNewline()" classname="org.openrewrite.AddToGitignoreTest" time="0.188"/>
+  <testcase name="doNotChangeWhenEntriesExistInDifferentOrder()" classname="org.openrewrite.AddToGitignoreTest" time="0.103"/>
+  <testcase name="handleNestedGitignore()" classname="org.openrewrite.AddToGitignoreTest" time="0.113"/>
+  <testcase name="createGitignoreWhenNoneExists()" classname="org.openrewrite.AddToGitignoreTest" time="0.094"/>
+  <testcase name="createGitignoreInSpecificLocation()" classname="org.openrewrite.AddToGitignoreTest" time="0.013"/>
+  <testcase name="doNotDuplicateExistingEntries()" classname="org.openrewrite.AddToGitignoreTest" time="0.084"/>
+  <testcase name="createRootGitignoreWhenPatternIsWildcard()" classname="org.openrewrite.AddToGitignoreTest" time="0.091"/>
+  <testcase name="handleNegationPatterns()" classname="org.openrewrite.AddToGitignoreTest" time="0.015"/>
+  <testcase name="doNotAddSuperfluousEntries()" classname="org.openrewrite.AddToGitignoreTest" time="0.095"/>
+  <testcase name="handleMultilineInput()" classname="org.openrewrite.AddToGitignoreTest" time="0.097"/>
+  <testcase name="addEntryToFileEndingWithNewline()" classname="org.openrewrite.AddToGitignoreTest" time="0.089"/>
+  <testcase name="preserveCommentsAndAddNewEntries()" classname="org.openrewrite.AddToGitignoreTest" time="0.019"/>
+  <testcase name="rootOnlyTargetingByDefault()" classname="org.openrewrite.AddToGitignoreTest" time="0.089"/>
+  <testcase name="addEntriesToExistingGitignore()" classname="org.openrewrite.AddToGitignoreTest" time="0.09"/>
+  <testcase name="normalizeAndDeduplicateEntries()" classname="org.openrewrite.AddToGitignoreTest" time="0.094"/>
+  <testcase name="handleWindowsLineEndings()" classname="org.openrewrite.AddToGitignoreTest" time="0.017"/>
+  <testcase name="handleNestedGitignoreWithExplicitPath()" classname="org.openrewrite.AddToGitignoreTest" time="0.095"/>
+  <testcase name="handleEntriesWithDifferentFormats()" classname="org.openrewrite.AddToGitignoreTest" time="0.087"/>
+  <testcase name="doNotAddDuplicateNegations()" classname="org.openrewrite.AddToGitignoreTest" time="0.016"/>
+  <testcase name="doNotAddSuperfluousEntriesWithMultiplePatterns()" classname="org.openrewrite.AddToGitignoreTest" time="0.088"/>
+  <testcase name="targetAllGitignoreFiles()" classname="org.openrewrite.AddToGitignoreTest" time="0.017"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.openrewrite.ChecksumTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-05-10T20:25:41.617Z" hostname="22404d6ace1d" time="0.114">
+  <properties/>
+  <testcase name="fromUriRejectsNonSuccessfulResponse()" classname="org.openrewrite.ChecksumTest" time="0.113"/>
+  <testcase name="fromHexWithValidInput()" classname="org.openrewrite.ChecksumTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.openrewrite.config.CategoryTreeTest" tests="13" skipped="0" failures="0" errors="0" timestamp="2026-05-10T20:25:34.018Z" hostname="22404d6ace1d" time="34.609">
+  <properties/>
+  <testcase name="removeCategory()" classname="org.openrewrite.config.CategoryTreeTest" time="7.226"/>
+  <testcase name="categoryDescriptorPrecedence()" classname="org.openrewrite.config.CategoryTreeTest" time="0.002"/>
+  <testcase name="putRecipe()" classname="org.openrewrite.config.CategoryTreeTest" time="0.0"/>
+  <testcase name="removingGroupRemovesIntermediateCategory()" classname="org.openrewrite.config.CategoryTreeTest" time="0.002"/>
+  <testcase name="print()" classname="org.openrewrite.config.CategoryTreeTest" time="3.913"/>
+  <testcase name="getRecipesInArtificialCorePackage()" classname="org.openrewrite.config.CategoryTreeTest" time="3.385"/>
+  <testcase name="categoryRoots()" classname="org.openrewrite.config.CategoryTreeTest" time="4.503"/>
+  <testcase name="getRecipe()" classname="org.openrewrite.config.CategoryTreeTest" time="2.706"/>
+  <testcase name="getRecipeCount()" classname="org.openrewrite.config.CategoryTreeTest" time="2.994"/>
+  <testcase name="getRecipeGroup()" classname="org.openrewrite.config.CategoryTreeTest" time="3.399"/>
+  <testcase name="getCategoryThatIsTransitivelyEmpty()" classname="org.openrewrite.config.CategoryTreeTest" time="0.001"/>
+  <testcase name="getRecipes()" classname="org.openrewrite.config.CategoryTreeTest" time="3.001"/>
+  <testcase name="getCategory()" classname="org.openrewrite.config.CategoryTreeTest" time="3.292"/>
+  <system-out><![CDATA[√ε
+|-√org
+│  |-]]>&#x1f4c1;<![CDATA[OpenRewrite
+│     |-]]>&#x1f4c1;<![CDATA[Rpc
+│     │  |-]]>&#x1f916;<![CDATA[Throwing RPC recipe
+│     |-]]>&#x1f4c1;<![CDATA[Search
+│     │  |-]]>&#x1f916;<![CDATA[Find build metadata
+│     │  |-]]>&#x1f916;<![CDATA[Find committers on repositories
+│     │  |-]]>&#x1f916;<![CDATA[Find parse to print inequality
+│     │  |-]]>&#x1f916;<![CDATA[Repository contains file
+│     |-]]>&#x1f4c1;<![CDATA[Test
+│     │  |-]]>&#x1f916;<![CDATA[Ad hoc recipe
+│     │  |-]]>&#x1f916;<![CDATA[Ad hoc recipe
+│     |-]]>&#x1f4c1;<![CDATA[Text
+│     │  |-]]>&#x1f916;<![CDATA[Append to text file
+│     │  |-]]>&#x1f916;<![CDATA[Change text
+│     │  |-]]>&#x1f916;<![CDATA[Create text file
+│     │  |-]]>&#x1f916;<![CDATA[End of Line @ End of File (EOL @ EOF)
+│     │  |-]]>&#x1f916;<![CDATA[Find text
+│     │  |-]]>&#x1f916;<![CDATA[Find and replace
+│     │  |-]]>&#x1f916;<![CDATA[Experimental find text with multiselect
+│     │  |-]]>&#x1f916;<![CDATA[Remove byte order mark (BOM)
+│     |-]]>&#x1f4c1;<![CDATA[Core
+│        |-]]>&#x1f916;<![CDATA[Add entries to `.gitignore`
+│        |-]]>&#x1f916;<![CDATA[Delete files
+│        |-]]>&#x1f916;<![CDATA[Remove ignoral of files or directories from .gitignore
+│        |-]]>&#x1f916;<![CDATA[Find colliding source files
+│        |-]]>&#x1f916;<![CDATA[Find deserialization errors
+│        |-]]>&#x1f916;<![CDATA[Show Git source control metadata
+│        |-]]>&#x1f916;<![CDATA[Find LST provenance
+│        |-]]>&#x1f916;<![CDATA[Find source files with `ParseExceptionResult` markers
+│        |-]]>&#x1f916;<![CDATA[Find instances of type `Quark`
+│        |-]]>&#x1f916;<![CDATA[Find files
+│        |-]]>&#x1f916;<![CDATA[Is in repository
+│        |-]]>&#x1f916;<![CDATA[List runtime classpath
+│        |-]]>&#x1f916;<![CDATA[Move a file
+│        |-]]>&#x1f916;<![CDATA[Test delegate recipe
+│        |-]]>&#x1f916;<![CDATA[Validate nullable JSpecify annotations
+│        |-]]>&#x1f916;<![CDATA[Rename a file
+│        |-]]>&#x1f916;<![CDATA[Set file permission attributes
+│        |-]]>&#x1f916;<![CDATA[Singleton
+|-]]>&#x1f4c1;<![CDATA[Test
+│  |-]]>&#x1f4c1;<![CDATA[Declarative
+│     |-]]>&#x1f4c1;<![CDATA[Sample
+│        |-]]>&#x1f916;<![CDATA[Test Recipe
+│        |-]]>&#x1f916;<![CDATA[Test Recipe
+|-√io
+│  |-√Moderne
+│     |-]]>&#x1f4c1;<![CDATA[Moderne Rewrite Team
+│     │  |-]]>&#x1f916;<![CDATA[Moderne change text
+│     |-]]>&#x1f4c1;<![CDATA[Moderne Cloud Team
+│        |-]]>&#x1f916;<![CDATA[Moderne Cloud change text
+|-√com
+|-√ai
+|-√tech
+|-√software
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.openrewrite.config.ClasspathScanningLoaderTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-05-10T20:25:56.534Z" hostname="22404d6ace1d" time="0.787">
+  <properties/>
+  <testcase name="scanJarWithSeparateClassesAndResourcesDirs(Path)" classname="org.openr....stripped due to length....
+writeTest.rewriteRun(RewriteTest.java:135)
+	at org.openrewrite.test.RewriteTest.rewriteRun(RewriteTest.java:130)
+	at org.openrewrite.yaml.UnfoldPropertiesTest.mergeDuplicatedSectionsWithComments(UnfoldPropertiesTest.java:381)
+	at java.base/java.lang.invoke.LambdaForm$DMH/0x00007833fc17c400.invokeVirtual(LambdaForm$DMH)
+	at java.base/java.lang.invoke.LambdaForm$MH/0x00007833fc0e0800.invoke(LambdaForm$MH)
+	at java.base/java.lang.invoke.Invokers$Holder.invokeExact_MT(Invokers$Holder)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
+	at org.junitpioneer.jupiter.ExpectedToFailExtension.invokeAndInvertResult(ExpectedToFailExtension.java:35)
+	... 3 more
+</skipped>
+  </testcase>
+  <testcase name="unfoldSpringPropertiesTwoSpace()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.098"/>
+  <testcase name="applyToWithExclusion()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.1"/>
+  <testcase name="mergeDuplicatedSectionsCommentsAreIgnored()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.106"/>
+  <testcase name="exclusionWithSingleLineAndMatchAll()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.1"/>
+  <testcase name="exclusionWithSubSetOfKey()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.104"/>
+  <testcase name="unfoldFromRootWithNewLine()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.097"/>
+  <testcase name="unfold()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.097"/>
+  <testcase name="applyTo()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.093"/>
+  <testcase name="multipleLayersWithComments()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.023"/>
+  <testcase name="exclusionWithParentAndRegex()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.022"/>
+  <testcase name="unfoldFromRoot()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.091"/>
+  <testcase name="mergeDuplicatedSections()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.102"/>
+  <testcase name="exclusions()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.094"/>
+  <testcase name="exclusionWithRegex()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.013"/>
+  <testcase name="unfoldSpringPropertiesFourSpace()" classname="org.openrewrite.yaml.UnfoldPropertiesTest" time="0.087"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="org.openrewrite.yaml.YamlParserTest" tests="49" skipped="0" failures="0" errors="0" timestamp="2026-05-08T03:42:52.230Z" hostname="d50e9a18de2a" time="1.596">
+  <properties/>
+  <testcase name="anchorInSequencePreservesDash()" classname="org.openrewrite.yaml.YamlParserTest" time="0.085"/>
+  <testcase name="withMultipleUnicodeCharacters()" classname="org.openrewrite.yaml.YamlParserTest" time="0.005"/>
+  <testcase name="asteriskPlaceholdersWithAnchors()" classname="org.openrewrite.yaml.YamlParserTest" time="0.004"/>
+  <testcase name="spaceBeforeColon()" classname="org.openrewrite.yaml.YamlParserTest" time="0.004"/>
+  <testcase name="anchorInSequenceAtRootLevel()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="withUnicodeCharacters()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="withAnchorSequence()" classname="org.openrewrite.yaml.YamlParserTest" time="0.002"/>
+  <testcase name="withAnchorScalar()" classname="org.openrewrite.yaml.YamlParserTest" time="0.002"/>
+  <testcase name="withMultipleUnicodeCharactersPerLine()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="pipeLiteralInASequenceWithDoubleQuotes()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="globalTags()" classname="org.openrewrite.yaml.YamlParserTest" time="0.088"/>
+  <testcase name="fourBytesUnicode()" classname="org.openrewrite.yaml.YamlParserTest" time="0.004"/>
+  <testcase name="tagsAsInCloudFormation()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="asteriskPlaceholders()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="parseTagsCorrectlyOnFirstLineOfMappingEntry()" classname="org.openrewrite.yaml.YamlParserTest" time="0.087"/>
+  <testcase name="yamlWithDocumentEndMarker()" classname="org.openrewrite.yaml.YamlParserTest" time="0.005"/>
+  <testcase name="flowStyleJsonLikeSequence()" classname="org.openrewrite.yaml.YamlParserTest" time="0.088"/>
+  <testcase name="withoutUnicodeCharacters()" classname="org.openrewrite.yaml.YamlParserTest" time="0.005"/>
+  <testcase name="anchorOnMappingInSequenceEntry()" classname="org.openrewrite.yaml.YamlParserTest" time="0.004"/>
+  <testcase name="ascii()" classname="org.openrewrite.yaml.YamlParserTest" time="0.098"/>
+  <testcase name="emptyYamlFileWithMultipleNewlines()" classname="org.openrewrite.yaml.YamlParserTest" time="0.005"/>
+  <testcase name="newlinesCombinedWithUnniCode()" classname="org.openrewrite.yaml.YamlParserTest" time="0.087"/>
+  <testcase name="parseTagInMapping()" classname="org.openrewrite.yaml.YamlParserTest" time="0.002"/>
+  <testcase name="parseFlowSequenceAtBufferBoundary()" classname="org.openrewrite.yaml.YamlParserTest" time="0.207"/>
+  <testcase name="troublesomeYaml()" classname="org.openrewrite.yaml.YamlParserTest" time="0.095"/>
+  <testcase name="withUnicodeCharactersInSingleLine()" classname="org.openrewrite.yaml.YamlParserTest" time="0.005"/>
+  <testcase name="[1] input=b" classname="org.openrewrite.yaml.YamlParserTest" time="0.082"/>
+  <testcase name="[2] input= &#x1f6e0;" classname="org.openrewrite.yaml.YamlParserTest" time="0.002"/>
+  <testcase name="[3] input= &#x1f6e0;&#x1f6e0;" classname="org.openrewrite.yaml.YamlParserTest" time="0.001"/>
+  <testcase name="[4] input=&#x1f6e0; &#x1f6e0;" classname="org.openrewrite.yaml.YamlParserTest" time="0.001"/>
+  <testcase name="[5] input=hello&#x1f6e0;world" classname="org.openrewrite.yaml.YamlParserTest" time="0.002"/>
+  <testcase name="[6] input=你好世界" classname="org.openrewrite.yaml.YamlParserTest" time="0.001"/>
+  <testcase name="[7] input=你好&#x1f6e0;世界" classname="org.openrewrite.yaml.YamlParserTest" time="0.002"/>
+  <testcase name="singleBraceTemplateSyntaxQuoted()" classname="org.openrewrite.yaml.YamlParserTest" time="0.083"/>
+  <testcase name="singleBraceTemplateSyntaxUnquoted()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="foldedScalarTrailingNewlineInValue()" classname="org.openrewrite.yaml.YamlParserTest" time="0.006"/>
+  <testcase name="withAnchorMap()" classname="org.openrewrite.yaml.YamlParserTest" time="0.004"/>
+  <testcase name="[1] input=&#x1f6e0; :  &#x1f6e0;" classname="org.openrewrite.yaml.YamlParserTest" time="0.005"/>
+  <testcase name="[2] input=你a好b&#x1f6e0;世c界d :  你a&#x1f6e0;好b&#x1f6e0;世c&#x1f6e0;界d" classname="org.openrewrite.yaml.YamlParserTest" time="0.004"/>
+  <testcase name="atSymbols()" classname="org.openrewrite.yaml.YamlParserTest" time="0.004"/>
+  <testcase name="listsAndListsOfLists()" classname="org.openrewrite.yaml.YamlParserTest" time="0.085"/>
+  <testcase name="tagsAsInScalar()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="flowStyleMappingsInSequences()" classname="org.openrewrite.yaml.YamlParserTest" time="0.01"/>
+  <testcase name="unicodeEscapes()" classname="org.openrewrite.yaml.YamlParserTest" time="0.086"/>
+  <testcase name="tagsInSequences()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="withAnchorSequenceOnRootLevel()" classname="org.openrewrite.yaml.YamlParserTest" time="0.003"/>
+  <testcase name="helmTemplateMatchingDocumentEndParsesCorrectly()" classname="org.openrewrite.yaml.YamlParserTest" time="0.092"/>
+  <testcase name="emptyYamlFileWithNewline()" classname="org.openrewrite.yaml.YamlParserTest" time="0.004"/>
+  <testcase name="literalScalarTrailingNewlineInValue()" classname="org.openrewrite.yaml.YamlParserTest" time="0.005"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
+
+root@22404d6ace1d:/testbed $
+
+exit code: 0
+
+2026-05-10 21:40:58,184 - 
+================================== Ai Message ==================================
+
+<python>def parser(log: str) -> dict[str, str]:
+    import xml.etree.ElementTree as ET
+    result: dict[str, str] = {}
+    parts = []
+    for chunk in log.split("<?xml"):
+        if not chunk.strip():
+            continue
+        parts.append("<?xml" + chunk)
+    for xml_text in parts:
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError:
+            continue
+        for tc in root.iter("testcase"):
+            name = tc.get("name") or ""
+            classname = tc.get("classname") or ""
+            key = f"{classname}#{name}" if classname else name
+            status = "pass"
+            if tc.find("failure") is not None or tc.find("error") is not None:
+                status = "fail"
+            elif tc.find("skipped") is not None:
+                status = "skip"
+            result[key] = status
+    return result</python>
+2026-05-10 21:41:01,956 - 
+================================ Human Message =================================
+
+Observation:
+
+Below is the execution result of your Python script:
+{
+ "org.openrewrite.AddToGitignoreTest#emptyLinesInInput()": "pass",
+ "org.openrewrite.AddToGitignoreTest#targetSpecificSubdirectory()": "pass",
+ "org.openrewrite.AddToGitignoreTest#addNonSuperfluousEntries()": "pass",
+ "org.openrewrite.AddToGitignoreTest#addEntryToFileEndingWithWindowsNewline()": "pass",
+ "org.openrewrite.AddToGitignoreTest#doNotChangeWhenEntriesExistInDifferentOrder()": "pass",
+ "org.openrewrite.AddToGitignoreTest#handleNestedGitignore()": "pass",
+ "org.openrewrite.AddToGitignoreTest#createGitignoreWhenNoneExists()": "pass",
+ "org.openrewrite.AddToGitignoreTest#createGitignoreInSpecificLocation()": "pass",
+ "org.openrewrite.AddToGitignoreTest#doNotDuplicateExistingEntries()": "pass",
+ "org.openrewrite.AddToGitignoreTest#createRootGitignoreWhenPatternIsWildcard()": "pass",
+ "org.openrewrite.AddToGitignoreTest#handleNegationPatterns()": "pass",
+ "org.openrewrite.AddToGitignoreTest#doNotAddSuperfluousEntries()": "pass",
+ "org.openrewrite.AddToGitignoreTest#handleMultilineInput()": "pass",
+ "org.openrewrite.AddToGitignoreTest#addEntryToFileEndingWithNewline()": "pass",
+ "org.openrewrite.AddToGitignoreTest#preserveCommentsAndAddNewEntries()": "pass",
+ "org.openrewrite.AddToGitignoreTest#rootOnlyTargetingByDefault()": "pass",
+ "org.openrewrite.AddToGitignoreTest#addEntriesToExistingGitignore()": "pass",
+ "org.openrewrite.AddToGitignoreTest#normalizeAndDeduplicateEntries()": "pass",
+ "org.openrewrite.AddToGitignoreTest#handleWindowsLineEndings()": "pass",
+ "org.openrewrite.AddToGitignoreTest#handleNestedGitignoreWithExplicitPath()": "pass",
+ "org.openrewrite.AddToGitignoreTest#handleEntriesWithDifferentFormats()": "pass",
+ "org.openrewrite.AddToGitignoreTest#doNotAddDuplicateNegations()": "pass",
+ "org.openrewrite.AddToGitignoreTest#doNotAddSuperfluousEntriesWithMultiplePatterns()": "pass",
+ "org.openrewrite.AddToGitignoreTest#targetAllGitignoreFiles()": "pass",
+ "org.openrewrite.ChecksumTest#fromUriRejectsNonSuccessfulResponse()": "pass",
+ "org.openrewrite.ChecksumTest#fromHexWithValidInput()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#removeCategory()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#categoryDescriptorPrecedence()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#putRecipe()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#removingGroupRemovesIntermediateCategory()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#print()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#getRecipesInArtificialCorePackage()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#categoryRoots()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#getRecipe()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#getRecipeCount()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#getRecipeGroup()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#getCategoryThatIsTransitivelyEmpty()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#getRecipes()": "pass",
+ "org.openrewrite.config.CategoryTreeTest#getCategory()": "pass",
+ "org.openrewrite.config.ClasspathScanningLoaderTest#scanJarWithSeparateClassesAndResourcesDirs(Path)": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#preconditionOnNestedDeclarative()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#scanningPreconditionMet()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#concurrentInitializeDoesNotDuplicateRecipes()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#addingPreconditionsWithOptions()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#scanningRecipeAccumulatorSurvivesAcrossRecipeRunCycles()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#multipleNestedOrPreconditionsWithSameScanningRecipe()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#nestedScanningRecipeInOrPrecondition()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#maxCycles()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#yamlPreconditionWithScanningRecipe()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#preconditionDescriptorsIncludedInDescriptor()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#selfReferencingRecipeDetectedAsCycle()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#precondition()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#deeplyNestedOrPreconditionsWithScanningRecipe()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#scanningPreconditionNotMet()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#orPreconditions()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#nestedScanningRecipeInOrPreconditionNotMet()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#sameScanningRecipeWithDifferentParametersInOrPrecondition()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#mutuallyRecursiveRecipesDetectedAsCycle()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#getDataTableDescriptorsThreadSafe()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#deeperCyclicReferencesDetectedAsCycle()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#yamlPrecondition()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#maxCyclesNested()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#yamlDeclarativeRecipeAsPrecondition()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#uninitializedFailsValidation()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#uninitializedWithInitializedRecipesPassesValidation()": "pass",
+ "org.openrewrite.config.DeclarativeRecipeTest#exposesUnderlyingDataTables()": "pass",
+ "org.openrewrite.config.YamlResourceLoaderTest#recipeExamples()": "pass",
+ "org.openrewrite.config.YamlResourceLoaderTest#loadRecipeWithRecipeDataStringThatThrowsNoClassDefFoundError()": "pass",
+ "org.openrewrite.config.YamlResourceLoaderTest#maintainers()": "pass",
+ "org.openrewrite.config.YamlResourceLoaderTest#dataTables()": "pass",
+ "org.openrewrite.config.YamlResourceLoaderTest#caseInsensitiveEnums()": "pass",
+ "org.openrewrite.config.YamlResourceLoaderTest#nullPropertiesSkipsPlaceholderResolution()": "pass",
+ "org.openrewrite.config.YamlResourceLoaderTest#loadRecipeWithRecipeDataMapThatThrowsNoClassDefFoundError()": "pass",
+ "org.openrewrite.CursorTest#pathAsStreamPredicates()": "pass",
+ "org.openrewrite.CursorTest#pathPredicates()": "pass",
+ "org.openrewrite.CursorTest#peekMessages()": "pass",
+ "org.openrewrite.CursorTest#pollMessages()": "pass",
+ "org.openrewrite.DataTableStoreTest#sanitizeDifferentInputsProduceDifferentHashes()": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreGetRowsAfterClose(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreWritesMetadataComments(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#noopStoreIsSingleton()": "pass",
+ "org.openrewrite.DataTableStoreTest#getRowsReturnsEmptyForMissingTable()": "pass",
+ "org.openrewrite.DataTableStoreTest#noopStoreDropsInserts()": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreGetRowsMultipleColumns(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#setDataTableStoreOverridesDefault()": "pass",
+ "org.openrewrite.DataTableStoreTest#fileKeySuffixWhenInstanceNameCustomized()": "pass",
+ "org.openrewrite.DataTableStoreTest#viewSharesStoreAcrossCalls()": "pass",
+ "org.openrewrite.DataTableStoreTest#groupIsNullByDefault()": "pass",
+ "org.openrewrite.DataTableStoreTest#getDataTablesReturnsInsertedTables()": "pass",
+ "org.openrewrite.DataTableStoreTest#viewSharesStoreThroughDelegation()": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreWriteInCycle1ReadBackInCycle2(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#sanitizeProducesDeterministicOutput()": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreReadDescriptor(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreGetRowsHandlesSpecialCharacters(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreGetRowsMatchesByGroup(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreGetRowsReadsBackWrittenData(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreWritesFiles(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreGetRowsStripsPrefixAndSuffixColumns(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreIntermixedWritesAndReads(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#groupSetByWithGroup()": "pass",
+ "org.openrewrite.DataTableStoreTest#fileKeyNoSuffixWhenInstanceNameNotCustomized()": "pass",
+ "org.openrewrite.DataTableStoreTest#insertAndRetrieveRows()": "pass",
+ "org.openrewrite.DataTableStoreTest#instanceNameDefaultsToDisplayName()": "pass",
+ "org.openrewrite.DataTableStoreTest#sanitizeSimpleString()": "pass",
+ "org.openrewrite.DataTableStoreTest#ungroupedTablesGetSeparateBuckets()": "pass",
+ "org.openrewrite.DataTableStoreTest#fileKeySuffixFromGroup()": "pass",
+ "org.openrewrite.DataTableStoreTest#groupedTablesShareBucket()": "pass",
+ "org.openrewrite.DataTableStoreTest#viewLazyInitializesStore()": "pass",
+ "org.openrewrite.DataTableStoreTest#csvStoreGetRowsReturnsEmptyForMissingTable(Path)": "pass",
+ "org.openrewrite.DataTableStoreTest#sanitizeComplexString()": "pass",
+ "org.openrewrite.DataTableStoreTest#instanceNameFromSupplier()": "pass",
+ "org.openrewrite.DataTableTest#descriptor()": "pass",
+ "org.openrewrite.DataTableTest#multipleRecipesWriteToSameDataTable()": "pass",
+ "org.openrewrite.DataTableTest#dataTable()": "pass",
+ "org.openrewrite.DataTableTest#recipeUsedInPreconditionDoesNotEmitDataTableRows()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#addNegationIfFolderNameMatch()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#multiWildcardNoDirectoryEntries()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#negateFileFromIgnoredDirectory()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#newRulesGetAddedBesidesExistingRules()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#commentsAndEmptyLinesUntouched()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#ignoreWildcardedDirectoryAtEnd()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#ignoredDirectories()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#wrongNonExactNegationPositionedBeforeIgnoreDoesNotGetChanged()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#looksInNestedGitignoreFiles()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#whenMultipleFilesInTheSameDirectoryTheyDoNotGetOverwritten()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#multiplePaths()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#nothingToRemoveIfPathNotInGitignore()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#addNegationIfFileNameMatch()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#removesEntryIfExactPathMatch()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#ignoreWildcardedDirectoryAtStart()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#ignoreDeeplyNestedFile()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#noActionOnWrappedWildcardPath()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#removesInNestedGitignoreFiles()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#addNegationIfNestedFolderNameMatch()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#addNegationIfNestedFileNameMatch()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#excludedPathsOnlyGetAddedOnce()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#ignoredExactDirectories()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#ignoreWildcardedFile()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#recursivelyLooksInNestedGitignoreFiles()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#ignoreNestedDirectory()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#wrongExactNegationPositionedBeforeIgnoreMovesToCorrectPosition()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#noActionOnMultiWildcardEntriesOnly()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#ignoreDeeplyNestedDirectory()": "pass",
+ "org.openrewrite.ExcludeFileFromGitignoreTest#ignoreNestedDirectoryWithMultipleGitignoreFiles()": "pass",
+ "org.openrewrite.ExecutionContextTest#anotherCycleIfNewMessagesInExecutionContext()": "pass",
+ "org.openrewrite.FindCollidingSourceFilesTest#findsCollision()": "pass",
+ "org.openrewrite.FindGitProvenanceTest#showGitProvenance()": "pass",
+ "org.openrewrite.FindParseFailuresTest#findParseFailures()": "pass",
+ "org.openrewrite.FindParseFailuresTest#findParseFailuresAfter()": "pass",
+ "org.openrewrite.GitRemoteTest#[1] name=GitHub, service=GitHub": "pass",
+ "org.openrewrite.GitRemoteTest#[2] name=GITLAB, service=GitLab": "pass",
+ "org.openrewrite.GitRemoteTest#[3] name=bitbucket, service=Bitbucket": "pass",
+ "org.openrewrite.GitRemoteTest#[4] name=BitbucketCloud, service=BitbucketCloud": "pass",
+ "org.openrewrite.GitRemoteTest#[5] name=Bitbucket Cloud, service=BitbucketCloud": "pass",
+ "org.openrewrite.GitRemoteTest#[6] name=BITBUCKET_CLOUD, service=BitbucketCloud": "pass",
+ "org.openrewrite.GitRemoteTest#[7] name=AzureDevOps, service=AzureDevOps": "pass",
+ "org.openrewrite.GitRemoteTest#[8] name=AZURE_DEVOPS, service=AzureDevOps": "pass",
+ "org.openrewrite.GitRemoteTest#[9] name=Azure DevOps, service=AzureDevOps": "pass",
+ "org.openrewrite.GitRemoteTest#[10] name=idontknow, service=Unknown": "pass",
+ "org.openrewrite.GitRemoteTest#normalizePortWithoutSchemaNotSupported()": "pass",
+ "org.openrewrite.GitRemoteTest#[1] service=GitHub, origin=github.com, path=org/repo, protocol=https, expectedUri=https://github.com/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[2] service=GitHub, origin=github.com, path=org/repo, protocol=ssh, expectedUri=ssh://git@github.com/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[3] service=GitHub, origin=https://github.com, path=org/repo, protocol=https, expectedUri=https://github.com/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[4] service=GitHub, origin=https://github.com, path=org/repo, protocol=ssh, expectedUri=ssh://git@github.com/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[5] service=GitLab, origin=gitlab.com, path=group/subgroup/repo, protocol=https, expectedUri=https://gitlab.com/group/subgroup/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[6] service=GitLab, origin=gitlab.com, path=group/subgroup/repo, protocol=ssh, expectedUri=ssh://git@gitlab.com/group/subgroup/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[7] service=AzureDevOps, origin=dev.azure.com, path=org/project/repo, protocol=https, expectedUri=https://dev.azure.com/org/project/_git/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[8] service=AzureDevOps, origin=dev.azure.com, path=org/project/repo, protocol=ssh, expectedUri=ssh://git@ssh.dev.azure.com/v3/org/project/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[9] service=BitbucketCloud, origin=bitbucket.org, path=org/repo, protocol=https, expectedUri=https://bitbucket.org/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[10] service=BitbucketCloud, origin=bitbucket.org, path=org/repo, protocol=ssh, expectedUri=ssh://git@bitbucket.org/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[11] service=Bitbucket, origin=scm.company.com/context/bitbucket, path=org/repo, protocol=https, expectedUri=https://scm.company.com/context/bitbucket/scm/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[12] service=Bitbucket, origin=scm.company.com/context/bitbucket, path=org/repo, protocol=http, expectedUri=http://scm.company.com/context/bitbucket/scm/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[13] service=Bitbucket, origin=scm.company.com/context/bitbucket, path=org/repo, protocol=ssh, expectedUri=ssh://git@scm.company.com:7999/context/bitbucket/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[14] service=GitHub, origin=scm.company.com/context/github, path=org/repo, protocol=https, expectedUri=https://scm.company.com/context/github/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[15] service=GitHub, origin=scm.company.com/context/github, path=org/repo, protocol=ssh, expectedUri=ssh://git@scm.company.com/context/github/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[16] service=GitLab, origin=scm.company.com/context/gitlab, path=group/subgroup/repo, protocol=https, expectedUri=https://scm.company.com/context/gitlab/group/subgroup/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[17] service=GitLab, origin=scm.company.com:8443/context/gitlab, path=group/subgroup/repo, protocol=https, expectedUri=https://scm.company.com:8443/context/gitlab/group/subgroup/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[18] service=GitLab, origin=scm.company.com/context/gitlab, path=group/subgroup/repo, protocol=ssh, expectedUri=ssh://git@scm.company.com:8022/context/gitlab/group/subgroup/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[19] service=Bitbucket, origin=scm.company.com:12345/context/bitbucket, path=org/repo, protocol=https, expectedUri=https://scm.company.com:12345/context/bitbucket/scm/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[20] service=Bitbucket, origin=scm.company.com:12346/context/bitbucket, path=org/repo, protocol=https, expectedUri=https://scm.company.com:12345/context/bitbucket/scm/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[21] service=Unknown, origin=scm.unregistered.com/context/path/, path=org/repo, protocol=https, expectedUri=https://scm.unregistered.com/context/path/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[22] service=Unknown, origin=scm.unregistered.com/context/path/, path=org/repo, protocol=ssh, expectedUri=ssh://scm.unregistered.com/context/path/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[1] cloneUrl=https://github.com/org/repo, expectedOrigin=github.com, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[2] cloneUrl=https://github.com/1org/repo, expectedOrigin=github.com, expectedPath=1org/repo, expectedOrganization=1org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[3] cloneUrl=https://github.com/1234/repo, expectedOrigin=github.com, expectedPath=1234/repo, expectedOrganization=1234, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[4] cloneUrl=git@github.com:org/repo.git, expectedOrigin=github.com, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[5] cloneUrl=git@github.com:1org/1repo.git, expectedOrigin=github.com, expectedPath=1org/1repo, expectedOrganization=1org, expectedRepositoryName=1repo": "pass",
+ "org.openrewrite.GitRemoteTest#[6] cloneUrl=git@github.com:1234/1repo.git, expectedOrigin=github.com, expectedPath=1234/1repo, expectedOrganization=1234, expectedRepositoryName=1repo": "pass",
+ "org.openrewrite.GitRemoteTest#[7] cloneUrl=ssh://github.com/org/repo.git, expectedOrigin=github.com, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[8] cloneUrl=https://gitlab.com/group/repo.git, expectedOrigin=gitlab.com, expectedPath=group/repo, expectedOrganization=group, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[9] cloneUrl=https://gitlab.com/group/subgroup/subergroup/subestgroup/repo.git, expectedOrigin=gitlab.com, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[10] cloneUrl=git@gitlab.com:group/subgroup/subergroup/subestgroup/repo.git, expectedOrigin=gitlab.com, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[11] cloneUrl=ssh://git@gitlab.com:22/group/subgroup/subergroup/subestgroup/repo.git, expectedOrigin=gitlab.com, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[12] cloneUrl=https://bitbucket.org/PRJ/repo, expectedOrigin=bitbucket.org, expectedPath=PRJ/repo, expectedOrganization=PRJ, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[13] cloneUrl=git@bitbucket.org:PRJ/repo.git, expectedOrigin=bitbucket.org, expectedPath=PRJ/repo, expectedOrganization=PRJ, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[14] cloneUrl=git@bitbucket.org:1PRJ/repo.git, expectedOrigin=bitbucket.org, expectedPath=1PRJ/repo, expectedOrganization=1PRJ, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[15] cloneUrl=ssh://bitbucket.org/PRJ/repo.git, expectedOrigin=bitbucket.org, expectedPath=PRJ/repo, expectedOrganization=PRJ, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[16] cloneUrl=https://org@dev.azure.com/org/project/_git/repo, expectedOrigin=dev.azure.com, expectedPath=org/project/repo, expectedOrganization=org/project, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[17] cloneUrl=https://dev.azure.com/org/project/_git/repo, expectedOrigin=dev.azure.com, expectedPath=org/project/repo, expectedOrganization=org/project, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[18] cloneUrl=git@ssh.dev.azure.com:v3/org/project/repo, expectedOrigin=dev.azure.com, expectedPath=org/project/repo, expectedOrganization=org/project, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[19] cloneUrl=https://github.com/group/repo with spaces, expectedOrigin=github.com, expectedPath=group/repo with spaces, expectedOrganization=group, expectedRepositoryName=repo with spaces": "pass",
+ "org.openrewrite.GitRemoteTest#[2] cloneUrl=https://GITHUB.COM/ORG/REPO, expectedOrigin=github.com, expectedPath=ORG/REPO, expectedOrganization=ORG, expectedRepositoryName=REPO": "pass",
+ "org.openrewrite.GitRemoteTest#[3] cloneUrl=ssh://GITHUB.COM/ORG/REPO.GIT, expectedOrigin=github.com, expectedPath=ORG/REPO, expectedOrganization=ORG, expectedRepositoryName=REPO": "pass",
+ "org.openrewrite.GitRemoteTest#[4] cloneUrl=https://DEV.AZURE.COM/ORG/PROJECT/_GIT/REPO, expectedOrigin=dev.azure.com, expectedPath=ORG/PROJECT/REPO, expectedOrganization=ORG/PROJECT, expectedRepositoryName=REPO": "pass",
+ "org.openrewrite.GitRemoteTest#[5] cloneUrl=GIT@SSH.DEV.AZURE.COM:V3/ORG/PROJECT/REPO, expectedOrigin=dev.azure.com, expectedPath=ORG/PROJECT/REPO, expectedOrganization=ORG/PROJECT, expectedRepositoryName=REPO": "pass",
+ "org.openrewrite.GitRemoteTest#equalsIgnoresCase()": "pass",
+ "org.openrewrite.GitRemoteTest#[1] cloneUrl=https://scm.company.com/very/long/context/path/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[2] cloneUrl=https://scm.company.com:8443/very/long/context/path/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[3] cloneUrl=http://scm.company.com/very/long/context/path/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[4] cloneUrl=ssh://scm.company.com:7999/very/long/context/path/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[5] cloneUrl=ssh://scm.company.com:222/very/long/context/path/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[6] cloneUrl=ssh://scm.company.com/very/long/context/path/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[7] cloneUrl=scm.company.com:very/long/context/path/org/repo.git": "pass",
+ "org.openrewrite.GitRemoteTest#[1] cloneUrl=https://scm.company.com/stash/scm/org/repo.git, originToRegister=scm.company.com/stash, service=Bitbucket, expectedOrigin=scm.company.com/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[2] cloneUrl=http://scm.company.com:80/stash/scm/org/repo.git, originToRegister=http://scm.company.com/stash, service=Bitbucket, expectedOrigin=scm.company.com/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[3] cloneUrl=http://scm.company.com:8080/stash/scm/org/repo.git, originToRegister=http://scm.company.com:8080/stash, service=Bitbucket, expectedOrigin=scm.company.com:8080/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[4] cloneUrl=https://scm.company.com:443/stash/scm/org/repo.git, originToRegister=scm.company.com/stash, service=Bitbucket, expectedOrigin=scm.company.com/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[5] cloneUrl=https://scm.company.com:1234/stash/scm/org/repo.git, originToRegister=https://scm.company.com:1234/stash, service=Bitbucket, expectedOrigin=scm.company.com:1234/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[6] cloneUrl=git@scm.company.com:stash/org/repo.git, originToRegister=scm.company.com/stash, service=Bitbucket, expectedOrigin=scm.company.com/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[7] cloneUrl=ssh://scm.company.com/stash/org/repo, originToRegister=scm.company.com/stash, service=Bitbucket, expectedOrigin=scm.company.com/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[8] cloneUrl=ssh://scm.company.com:22/stash/org/repo, originToRegister=scm.company.com/stash, service=Bitbucket, expectedOrigin=scm.company.com/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[9] cloneUrl=ssh://scm.company.com:7999/stash/org/repo, originToRegister=ssh://scm.company.com:7999/stash, service=Bitbucket, expectedOrigin=scm.company.com:7999/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[10] cloneUrl=https://scm.company.com/very/long/context/path/org/repo.git, originToRegister=scm.company.com/very/long/context/path, service=Bitbucket, expectedOrigin=scm.company.com/very/long/context/path, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[11] cloneUrl=https://scm.company.com:1234/very/long/context/path/org/repo.git, originToRegister=https://scm.company.com:1234/very/long/context/path, service=Bitbucket, expectedOrigin=scm.company.com:1234/very/long/context/path, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[12] cloneUrl=git@scm.company.com:very/long/context/path/org/repo.git, originToRegister=scm.company.com/very/long/context/path, service=Bitbucket, expectedOrigin=scm.company.com/very/long/context/path, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[13] cloneUrl=https://scm.company.com/group/subgroup/subergroup/subestgroup/repo, originToRegister=scm.company.com, service=GitLab, expectedOrigin=scm.company.com, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[14] cloneUrl=https://scm.company.com:1234/group/subgroup/subergroup/subestgroup/repo, originToRegister=https://scm.company.com:1234, service=GitLab, expectedOrigin=scm.company.com:1234, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[15] cloneUrl=git@scm.company.com/group/subgroup/subergroup/subestgroup/repo.git, originToRegister=scm.company.com, service=GitLab, expectedOrigin=scm.company.com, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[16] cloneUrl=git@scm.company.com:group/subgroup/subergroup/subestgroup/repo.git, originToRegister=ssh://scm.company.com, service=GitLab, expectedOrigin=scm.company.com, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[17] cloneUrl=https://scm.company.com:443/group/subgroup/subergroup/subestgroup/repo.git, originToRegister=scm.company.com, service=GitLab, expectedOrigin=scm.company.com, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[18] cloneUrl=ssh://scm.company.com:22/group/subgroup/subergroup/subestgroup/repo.git, originToRegister=ssh://scm.company.com, service=GitLab, expectedOrigin=scm.company.com, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[19] cloneUrl=ssh://scm.company.com:222/group/subgroup/subergroup/subestgroup/repo.git, originToRegister=ssh://scm.company.com:222, service=GitLab, expectedOrigin=scm.company.com:222, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[20] cloneUrl=https://scm.company.com/very/long/context/path/group/subgroup/subergroup/subestgroup/repo, originToRegister=scm.company.com/very/long/context/path, service=GitLab, expectedOrigin=scm.company.com/very/long/context/path, expectedPath=group/subgroup/subergroup/subestgroup/repo, expectedOrganization=group/subgroup/subergroup/subestgroup, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#findRemote()": "pass",
+ "org.openrewrite.GitRemoteTest#[1] cloneUrl=https://scm.company.com/stash/scm/org/repo.git, expectedOrigin=scm.company.com/stash/scm, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[2] cloneUrl=https://scm.company.com:1234/stash/scm/org/repo.git, expectedOrigin=scm.company.com:1234/stash/scm, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[3] cloneUrl=git@scm.company.com:stash/org/repo.git, expectedOrigin=scm.company.com/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[4] cloneUrl=ssh://scm.company.com/stash/org/repo, expectedOrigin=scm.company.com/stash, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[5] cloneUrl=https://scm.company.com:1234/very/long/context/path/org/repo.git, expectedOrigin=scm.company.com:1234/very/long/context/path, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[6] cloneUrl=git@scm.company.com:very/long/context/path/org/repo.git, expectedOrigin=scm.company.com/very/long/context/path, expectedPath=org/repo, expectedOrganization=org, expectedRepositoryName=repo": "pass",
+ "org.openrewrite.GitRemoteTest#[1] input=https://github.com/org/repo.git, expected=https://github.com/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[2] input=ssh://github.com/org/repo.git, expected=ssh://github.com/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[3] input=github.com:org/repo.git, expected=ssh://github.com/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[4] input=github.com/org/repo.git, expected=https://github.com/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[5] input=https://github.com/org/repo/, expected=https://github.com/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[6] input=ssh://github.com/org/repo/, expected=ssh://github.com/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[7] input=https://github.com:443/org/repo.git, expected=https://github.com/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[8] input=ssh://github.com:22/org/repo.git, expected=ssh://github.com/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[9] input=github.com:org/repo.git, expected=ssh://github.com/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[10] input=https://github.com:8443/org/repo, expected=https://github.com:8443/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[11] input=ssh://github.com:8022/org/repo, expected=ssh://github.com:8022/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[12] input=https://scm.company.com/very/long/context/path/org/repo.git, expected=https://scm.company.com/very/long/context/path/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[13] input=ssh://scm.company.com/very/long/context/path/org/repo.git, expected=ssh://scm.company.com/very/long/context/path/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#[14] input=scm.company.com:very/long/context/path/org/repo.git, expected=ssh://scm.company.com/very/long/context/path/org/repo": "pass",
+ "org.openrewrite.GitRemoteTest#hashCodeIgnoresCase()": "pass",
+ "org.openrewrite.GitRemoteTest#shouldNotReplaceExistingWellKnownServer()": "pass",
+ "org.openrewrite.GitRemoteTest#shouldNotStripJgit()": "pass",
+ "org.openrewrite.GitRemoteTest#buildUriUnregisteredOriginWithPortNotSupported()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_SimilarKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_OverlappingKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_SingleCharacterKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#Search_NonExistentKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_CommonPrefixes()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_MultipleKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_MixedLanguageKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_NumericKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#fullInternaNode()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_CaseSensitivity()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_NullValue()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_SpecialCharacters()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_ControlCharacters()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_EmptyString()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#copy()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_EmojiKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_MixedCharacterKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_LongKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_PrefixKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_NullKey()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_SingleKey()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_SpecialCaseKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_EmptyTree()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_UnicodeKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_SpacesInKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insert_DuplicateKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_CyrillicKeys()": "pass",
+ "org.openrewrite.internal.AdaptiveRadixTreeTest#insertAndSearch_SpecialUnicodeCharacters()": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[1] hex=48 65 6C 6C 6F C3 BC, description=valid 2-byte sequence (Hello\u00fc)": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[2] hex=E4 B8 96, description=valid 3-byte sequence (\u4e16)": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[3] hex=F0 9F 98 80, description=valid 4-byte sequence (\ud83d\ude00)": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[4] hex=63 61 66 C3 A9 20 E4 B8 96 20 F0 9F 8C 9F, description=mixed 2/3/4-byte sequences": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#detectUTF8Bom()": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#windows1252SpecialCharacters()": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#emptyUtf8()": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#utf8Characters()": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[1] text=Caf\u00e9, sourceCharset=UTF-8, expectedCharset=UTF-8": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[2] text=Ly\u00f0r\u00e6\u00f0isr\u00edki, sourceCharset=UTF-8, expectedCharset=UTF-8": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[3] text=\u0800, sourceCharset=UTF-8, expectedCharset=UTF-8": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[4] text=\u4e16, sourceCharset=UTF-8, expectedCharset=UTF-8": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[5] text=\uac00, sourceCharset=UTF-8, expectedCharset=UTF-8": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[6] text=Hello \u4e16\u754c, sourceCharset=UTF-8, expectedCharset=UTF-8": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[7] text=caf\u00e9 \u4e16\u754c \ud83c\udf1f, sourceCharset=UTF-8, expectedCharset=UTF-8": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[8] text=Caf\u00e9, sourceCharset=Windows-1252, expectedCharset=Windows-1252": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[9] text=Ly\u00f0r\u00e6\u00f0isr\u00edki, sourceCharset=Windows-1252, expectedCharset=Windows-1252": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#readFullyDecodesIso8859Correctly()": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#iso88591()": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[1] hex=48 65 6C 6C 6F FC, description=byte above 0xF7 (\u00fc in ISO-8859-1)": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[2] hex=74 65 73 74 FC 20 E4 20 F6, description=multiple high bytes": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[3] hex=C0 80, description=overlong 0xC0 lead byte": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[4] hex=43 61 66 C0, description=overlong 0xC0 at end": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[5] hex=53 61 6F 20 50 61 75 6C 6F C1, description=overlong 0xC1 at end": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[6] hex=74 65 73 74 C0 A3, description=overlong 0xC0 + continuation byte": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[7] hex=48 65 6C 6C 6F 80, description=bare continuation byte": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[8] hex=C3 BC 20 61 6E 64 20 FC, description=valid UTF-8 then invalid byte": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[9] hex=E4 B8 96 20 FE, description=invalid byte after valid 3-byte": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[10] hex=61 62 E4 B8, description=truncated 3-byte sequence": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[11] hex=61 F0 9F 98, description=truncated 4-byte sequence": "pass",
+ "org.openrewrite.internal.EncodingDetectingInputStreamTest#[12] hex=78 E4 B8 7A, description=
+...result truncated due to length...
+
+Please judge whether:
+(1) Your Python script extracts the statuses of all testcases and 
+(2) Your script and test command have made best effort to reveal the status of each unit testcase under a test suite / set if there's test suite / set. The testcase names in your output should be split to the finest granularity.
+If not successful, please adjust your test command, run your new test command in container, and adjust your Python script to extract test status.
+If successful, please submit.
+
+2026-05-10 21:41:07,302 - 
+================================== Ai Message ==================================
+
+<submit>
+    <test_command>./gradlew test --info</test_command>
+    <print_command>cat **/build/test-results/test/*.xml</print_command>
+    <parser>parsing success</parser>
+</submit>
+2026-05-10 21:41:07,401 - ----------End verify conversation----------
+2026-05-10 21:41:12,341 - Rerunning test command: ./gradlew test --info
+2026-05-10 22:21:00,662 - Running print command: cat **/build/test-results/test/*.xml
+2026-05-10 22:39:08,991 - ----------Start parse log conversation----------
+2026-05-10 22:39:29,863 - 
+================================== Ai Message ==================================
+
+Thought: I need to analyze parser issues and output patterns first.
+Action: <analyze>Draft parser only handles XML by splitting on '<?xml', may miss concatenated/malformed XML, ignores non-XML frameworks, doesn't handle nested testsuites or attributes like skipped, may overwrite duplicate test names. Also test output truncated, so ensure robust parsing using regex fallback and handle multiple frameworks. Need improved parser to parse JUnit XML, multiple testsuites in one log, partial XML, and also parse common text formats (pytest, unittest, go test, jest). Should avoid missing cases due to XML entities/invalid chars; consider cleaning invalid control chars and splitting on <testsuite> blocks.</analyze>
+2026-05-10 22:39:29,863 - 
+================================ Human Message =================================
+
+Observation:
+Analysis completed: Draft parser only handles XML by splitting on '<?xml', may miss concatenated/malformed XML, ignores non-XML frameworks, doesn't handle nested testsuites or attributes like skipped, may overwrite duplicate test names. Also test output truncated, so ensure robust parsing using regex fallback and handle multiple frameworks. Need improved parser to parse JUnit XML, multiple testsuites in one log, partial XML, and also parse common text formats (pytest, unittest, go test, jest). Should avoid missing cases due to XML entities/invalid chars; consider cleaning invalid control chars and splitting on <testsuite> blocks.
+
+Now try to write the parser.
+2026-05-10 22:40:04,012 - 
+================================== Ai Message ==================================
+
+Thought: I will generate an improved parser handling XML and common text formats, with robustness for multiple concatenated suites and duplicate names.
+Action: <python>def parser(log: str) -> dict[str, str]:
+    import re
+    import xml.etree.ElementTree as ET
+
+    results: dict[str, str] = {}
+
+    def add_result(name: str, status: str):
+        if not name:
+            return
+        key = name
+        if key in results:
+            i = 2
+            while f"{key}#{i}" in results:
+                i += 1
+            key = f"{key}#{i}"
+        results[key] = status
+
+    def normalize_status(raw: str) -> str:
+        raw = raw.lower()
+        if raw in ("pass", "passed", "ok", "success"):
+            return "pass"
+        if raw in ("skip", "skipped", "xfail", "xfailed", "ignored"):
+            return "skip"
+        return "fail"
+
+    # Clean invalid XML control chars
+    cleaned = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", log)
+
+    def parse_testsuite(ts):
+        for tc in ts.iter("testcase"):
+            name = tc.get("name") or ""
+            classname = tc.get("classname") or ""
+            key = f"{classname}#{name}" if classname else name
+            status = "pass"
+            if tc.find("failure") is not None or tc.find("error") is not None:
+                status = "fail"
+            elif tc.find("skipped") is not None:
+                status = "skip"
+            add_result(key, status)
+
+    # Parse XML blocks
+    xml_blocks = []
+    # Prefer full testsuites blocks
+    xml_blocks += re.findall(r"(<testsuites[\s\S]*?</testsuites>)", cleaned)
+    xml_blocks += re.findall(r"(<testsuite[\s\S]*?</testsuite>)", cleaned)
+    if not xml_blocks and "<testsuite" in cleaned:
+        xml_blocks = [cleaned]
+
+    for block in xml_blocks:
+        try:
+            root = ET.fromstring(block)
+        except ET.ParseError:
+            try:
+                # Try wrapping in a root
+                root = ET.fromstring(f"<root>{block}</root>")
+            except ET.ParseError:
+                continue
+        if root.tag == "testsuites":
+            for ts in root.iter("testsuite"):
+                parse_testsuite(ts)
+        elif root.tag == "testsuite":
+            parse_testsuite(root)
+        else:
+            for ts in root.iter("testsuite"):
+                parse_testsuite(ts)
+
+    # Parse pytest style: file.py::test_name STATUS
+    for m in re.finditer(r"^(\S+::\S+)\s+(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS)\b", cleaned, re.MULTILINE):
+        name = m.group(1)
+        status = normalize_status(m.group(2))
+        if m.group(2) == "XPASS":
+            status = "fail"
+        add_result(name, status)
+
+    # Parse unittest style: test_method (Class) ... ok/FAIL/ERROR/skipped
+    for m in re.finditer(r"^(\S+)\s+\(([^)]+)\)\s+\.\.\.\s+(ok|FAIL|ERROR|skipped)\b", cleaned, re.MULTILINE):
+        name = f"{m.group(2)}#{m.group(1)}"
+        status = normalize_status(m.group(3))
+        add_result(name, status)
+
+    # Parse go test style
+    for m in re.finditer(r"^---\s+(PASS|FAIL|SKIP):\s+(\S+)", cleaned, re.MULTILINE):
+        name = m.group(2)
+        status = normalize_status(m.group(1))
+        add_result(name, status)
+
+    # Parse Jest-like symbols
+    for m in re.finditer(r"^[\s]*[✓✔]\s+(.*)$", cleaned, re.MULTILINE):
+        add_result(m.group(1).strip(), "pass")
+    for m in re.finditer(r"^[\s]*[✕✖×]\s+(.*)$", cleaned, re.MULTILINE):
+        add_result(m.group(1).strip(), "fail")
+    for m in re.finditer(r"^[\s]*[○]\s+(.*)$", cleaned, re.MULTILINE):
+        add_result(m.group(1).strip(), "skip")
+
+    # Generic lines: TestName ... ok/FAIL/ERROR/SKIPPED
+    for m in re.finditer(r"^(\S+)\s+\.\.\.\s+(ok|FAIL|ERROR|SKIPPED)\b", cleaned, re.MULTILINE):
+        name = m.group(1)
+        status = normalize_status(m.group(2))
+        add_result(name, status)
+
+    return results</python>
+2026-05-10 22:40:21,932 - 
+================================ Human Message =================================
+
+Observation:
+Test results for improved parser:
+{
+  "org.openrewrite.AddToGitignoreTest#emptyLinesInInput()": "pass",
+  "org.openrewrite.AddToGitignoreTest#targetSpecificSubdirectory()": "pass",
+  "org.openrewrite.AddToGitignoreTest#addNonSuperfluousEntries()": "pass",
+  "org.openrewrite.AddToGitignoreTest#addEntryToFileEndingWithWindowsNewline()": "pass",
+  "org.openrewrite.AddToGitignoreTest#doNotChangeWhenEntriesExistInDifferentOrder()": "pass",
+  "org.openrewrite.AddToGitignoreTest#handleNestedGitignore()": "pass",
+  "org.openrewrite.AddToGitignoreTest#createGitignoreWhenNoneExists()": "pass",
+  "org.openrewrite.AddToGitignoreTest#createGitignoreInSpecificLocation()": "pass",
+  "org.openrewrite.AddToGitignoreTest#doNotDuplicateExistingEntries()": "pass",
+  "org.openrewrite.AddToGitignoreTest#createRootGitignoreWhenPatternIsWildcard()": "pass",
+  "org.openrewrite.AddToGitignoreTest#handleNegationPatterns()": "pass",
+  "org.openrewrite.AddToGitignoreTest#doNotAddSuperfluousEntries()": "pass",
+  "org.openrewrite.AddToGitignoreTest#handleMultilineInput()": "pass",
+  "org.openrewrite.AddToGitignoreTest#addEntryToFileEndingWithNewline()": "pass",
+  "org.openrewrite.AddToGitignoreTest#preserveCommentsAndAddNewEntries()": "pass",
+  "org.openrewrite.AddToGitignoreTest#rootOnlyTargetingByDefault()": "pass",
+  "org.openrewrite.AddToGitignoreTest#addEntriesToExistingGitignore()": "pass",
+  "org.openrewrite.AddToGitignoreTest#normalizeAndDeduplicateEntries()": "pass",
+  "org.openrewrite.AddToGitignoreTest#handleWindowsLineEndings()": "pass",
+  "org.openrewrite.AddToGitignoreTest#handleNestedGitignoreWithExplicitPath()": "pass",
+  "org.openrewrite.AddToGitignoreTest#handleEntriesWithDifferentFormats()": "pass",
+  "org.openrewrite.AddToGitignoreTest#doNotAddDuplicateNegations()": "pass",
+  "org.openrewrite.AddToGitignoreTest#doNotAddSuperfluousEntriesWithMultiplePatterns()": "pass",
+  "org.openrewrite.AddToGitignoreTest#targetAllGitignoreFiles()": "pass",
+  "org.openrewrite.ChecksumTest#fromUriRejectsNonSuccessfulResponse()": "pass",
+  "org.openrewrite.ChecksumTest#fromHexWithValidInput()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#removeCategory()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#categoryDescriptorPrecedence()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#putRecipe()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#removingGroupRemovesIntermediateCategory()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#print()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#getRecipesInArtificialCorePackage()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#categoryRoots()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#getRecipe()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#getRecipeCount()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#getRecipeGroup()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#getCategoryThatIsTransitivelyEmpty()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#getRecipes()": "pass",
+  "org.openrewrite.config.CategoryTreeTest#getCategory()": "pass",
+  "org.openrewrite.config.ClasspathScanningLoaderTest#scanJarWithSeparateClassesAndResourcesDirs(Path)": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#preconditionOnNestedDeclarative()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#scanningPreconditionMet()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#concurrentInitializeDoesNotDuplicateRecipes()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#addingPreconditionsWithOptions()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#scanningRecipeAccumulatorSurvivesAcrossRecipeRunCycles()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#multipleNestedOrPreconditionsWithSameScanningRecipe()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#nestedScanningRecipeInOrPrecondition()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#maxCycles()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#yamlPreconditionWithScanningRecipe()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#preconditionDescriptorsIncludedInDescriptor()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#selfReferencingRecipeDetectedAsCycle()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#precondition()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#deeplyNestedOrPreconditionsWithScanningRecipe()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#scanningPreconditionNotMet()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#orPreconditions()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#nestedScanningRecipeInOrPreconditionNotMet()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#sameScanningRecipeWithDifferentParametersInOrPrecondition()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#mutuallyRecursiveRecipesDetectedAsCycle()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#getDataTableDescriptorsThreadSafe()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#deeperCyclicReferencesDetectedAsCycle()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#yamlPrecondition()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#maxCyclesNested()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#yamlDeclarativeRecipeAsPrecondition()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#uninitializedFailsValidation()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#uninitializedWithInitializedRecipesPassesValidation()": "pass",
+  "org.openrewrite.config.DeclarativeRecipeTest#exposesUnderlyingDataTables()": "pass",
+  "org.openrewrite.config.YamlResourceLoaderTest#recipeExamples()": "pass",
+  "org.openrewrite.config.YamlResourceLoaderTest#loadRecipeWithRecipeDataStringThatThrowsNoClassDefFoundError()": "pass",
+  "org.openrewrite.config.YamlResourceLoaderTest#maintainers()": "pass",
+  "org.openrewrite.config.YamlResourceLoaderTest#dataTables()": "pass",
+  "org.openrewrite.config.YamlResourceLoaderTest#caseInsensitiveEnums()": "pass",
+  "org.openrewrite.config.YamlResourceLoaderTest#nullPropertiesSkipsPlaceholderResolution()": "pass",
+  "org.openrewrite.config.YamlResourceLoaderTest#loadRecipeWithRecipeDataMapThatThrowsNoClassDefFoundError()": "pass",
+  "org.openrewrite.CursorTest#pathAsStreamPredicates()": "pass",
+  "org.openrewrite.CursorTest#pathPredicates()": "pass",
+  "org.openrewrite.CursorTest#peekMessages()": "pass",
+  "org.openrewrite.CursorTest#pollMessages()": "pass",
+  "org.openrewrite.DataTableStoreTest#sanitizeDifferentInputsProduceDifferentHashes()": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreGetRowsAfterClose(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreWritesMetadataComments(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#noopStoreIsSingleton()": "pass",
+  "org.openrewrite.DataTableStoreTest#getRowsReturnsEmptyForMissingTable()": "pass",
+  "org.openrewrite.DataTableStoreTest#noopStoreDropsInserts()": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreGetRowsMultipleColumns(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#setDataTableStoreOverridesDefault()": "pass",
+  "org.openrewrite.DataTableStoreTest#fileKeySuffixWhenInstanceNameCustomized()": "pass",
+  "org.openrewrite.DataTableStoreTest#viewSharesStoreAcrossCalls()": "pass",
+  "org.openrewrite.DataTableStoreTest#groupIsNullByDefault()": "pass",
+  "org.openrewrite.DataTableStoreTest#getDataTablesReturnsInsertedTables()": "pass",
+  "org.openrewrite.DataTableStoreTest#viewSharesStoreThroughDelegation()": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreWriteInCycle1ReadBackInCycle2(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#sanitizeProducesDeterministicOutput()": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreReadDescriptor(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreGetRowsHandlesSpecialCharacters(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreGetRowsMatchesByGroup(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreGetRowsReadsBackWrittenData(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreWritesFiles(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreGetRowsStripsPrefixAndSuffixColumns(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreIntermixedWritesAndReads(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#groupSetByWithGroup()": "pass",
+  "org.openrewrite.DataTableStoreTest#fileKeyNoSuffixWhenInstanceNameNotCustomized()": "pass",
+  "org.openrewrite.DataTableStoreTest#insertAndRetrieveRows()": "pass",
+  "org.openrewrite.DataTableStoreTest#instanceNameDefaultsToDisplayName()": "pass",
+  "org.openrewrite.DataTableStoreTest#sanitizeSimpleString()": "pass",
+  "org.openrewrite.DataTableStoreTest#ungroupedTablesGetSeparateBuckets()": "pass",
+  "org.openrewrite.DataTableStoreTest#fileKeySuffixFromGroup()": "pass",
+  "org.openrewrite.DataTableStoreTest#groupedTablesShareBucket()": "pass",
+  "org.openrewrite.DataTableStoreTest#viewLazyInitializesStore()": "pass",
+  "org.openrewrite.DataTableStoreTest#csvStoreGetRowsReturnsEmptyForMissingTable(Path)": "pass",
+  "org.openrewrite.DataTableStoreTest#sanitizeComplexString()": "pass",
+  "org.openrewrite.DataTableStoreTest#instanceNameFromSupplier()": "pass",
+  "org.openrewrite.DataTableTest#descriptor()": "pass",
+  "org.openrewrite.DataTableTest#multipleRecipesWriteToSameDataTable()": "pass",
+  "org.openrewrite.DataTableTest#dataTable()": "pass",
+  "org.openrewrite.DataTableTest#recipeUsedInPreconditionDoesNotEmitDataTableRows()": "pass",
+  "org.openrewrite.ExcludeFileFromGitignoreTest#addNegationIfFolderNameMatch()": "pass",
+  "org.openrewrite.ExcludeFileFromGitignoreTest#multiWildcardNoDirectoryEntries()": "pass",
+  "org.openrewrite.ExcludeFileFromGitignoreTest#negateFileFromIgnoredDirectory()": "pass",
+  "org.openrewrite.ExcludeFileFromGitignoreTest#newRulesGetAddedBesidesExistingRules()": "pass",
+  "org.openrewrite.ExcludeFileFromGitignoreTest#commentsAndEmptyLinesUnt
+...result truncated due to length...
+
+Comparison with original parser:
+- Original parser found: 10581 test cases
+- Improved parser found: 10741 test cases
+- Difference: 160 test cases
+
+Please analyze if this is an improvement and submit if satisfied.
+2026-05-10 22:40:35,051 - 
+================================== Ai Message ==================================
+
+Thought: The improved parser increases coverage and handles more formats; submit it.
+Action: <submit>final parser is ready and tested</submit>
+2026-05-10 22:40:35,051 - ----------End parse log conversation----------
+2026-05-10 22:42:52,753 - setup state: True, 0, None ... 
+2026-05-10 22:42:54,059 - ----------Start unit test conversation----------
+2026-05-10 22:43:19,768 - 
+================================== Ai Message ==================================
+
+Action: <command>./gradlew :rewrite-core:test --tests "org.openrewrite.AddToGitignoreTest.emptyLinesInInput"</command>
+2026-05-10 22:43:38,647 - 
+================================ Human Message =================================
+
+Observation:
+./gradlew :rewrite-core:test --tests "org.openrewrite.AddToGitignoreTest.emptyLinesInInput"
+
+
+<-------------> 0% CONFIGURING [88ms]> Loading projects<-------------> 0% CONFIGURING [188ms]> root project > Resolve dependencies of classpath<-------------> 0% CONFIGURING [288ms]> root project > Resolve files of configuration 'classpath'<-------------> 0% CONFIGURING [388ms]> root project<-------------> 0% CONFIGURING [488ms]<-------------> 0% CONFIGURING [588ms]
+> Configure project :
+Inferred project: rewrite, version: 0.1.0-SNAPSHOT
+
+
+<-------------> 5% CONFIGURING [688ms]> :rewrite-bom<=------------> 11% CONFIGURING [788ms]> :rewrite-csharp<==-----------> 17% CONFIGURING [888ms]> :rewrite-go<===----------> 26% CONFIGURING [988ms]> :rewrite-groovy<====---------> 32% CONFIGURING [1s]> :rewrite-java<====---------> 35% CONFIGURING [1s]> :rewrite-java-11<=====--------> 41% CONFIGURING [1s]> :rewrite-java-21<======-------> 47% CONFIGURING [1s]> :rewrite-java-8<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<=======------> 58% CONFIGURING [1s]> :rewrite-javascript > Resolve files of configuration 'classpath'<========-----> 61% CONFIGURING [1s]> :rewrite-json<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin<=========----> 70% CONFIGURING [1s]> :rewrite-properties<=========----> 76% CONFIGURING [1s]> :rewrite-python<==========---> 79% CONFIGURING [2s]> :rewrite-scala<===========--> 85% CONFIGURING [2s]> :rewrite-toml<===========--> 91% CONFIGURING [2s]> :rewrite-yaml<=============> 100% CONFIGURING [2s]> IDLE<=============> 100% CONFIGURING [3s]<==-----------> 18% EXECUTING [3s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]<==-----------> 18% EXECUTING [7s]<==-----------> 18% EXECUTING [8s]<==-----------> 18% EXECUTING [9s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<========-----> 62% EXECUTING [9s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [10s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<========-----> 62% EXECUTING [11s]<==========---> 81% EXECUTING [11s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<==========---> 81% EXECUTING [12s]<============-> 93% EXECUTING [12s]> :rewrite-core:test> :rewrite-core:test > Requesting from remote build cache> :rewrite-core:test > 0 tests completed<============-> 93% EXECUTING [13s]<============-> 93% EXECUTING [14s]
+> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest<============-> 93% EXECUTING [15s]> :rewrite-core:test > 1 test completed> IDLE
+BUILD SUCCESSFUL in 16s
+13 actionable tasks: 1 executed, 12 up-to-date
+
+
+
+<=============> 100% EXECUTING [15s]> IDLE> IDLEConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html
+
+<-------------> 0% WAITING> IDLE> IDLE
+
+root@22404d6ace1d:/testbed $
+
+exit code: 0
+
+2026-05-10 22:43:56,291 - 
+================================== Ai Message ==================================
+
+Action: <python>def get_pertest_cmd(testcase_list:list[str])->dict[str,str]:
+    result: dict[str, str] = {}
+    for testcase in testcase_list:
+        if "#" in testcase:
+            classname, method = testcase.split("#", 1)
+            method = method.replace("()", "")
+            result[testcase] = f'./gradlew :rewrite-core:test --tests "{classname}.{method}"'
+        else:
+            result[testcase] = f'./gradlew :rewrite-core:test --tests "{testcase}"'
+    return result</python>
+2026-05-10 22:46:21,369 - 
+================================ Human Message =================================
+
+Observation:
+
+This is part of the "testcase name :: per-testcase excution command" mapping returned from your python script: 
+{
+ "org.openrewrite.AddToGitignoreTest#emptyLinesInInput()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.emptyLinesInInput\"",
+ "org.openrewrite.AddToGitignoreTest#targetSpecificSubdirectory()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.targetSpecificSubdirectory\"",
+ "org.openrewrite.AddToGitignoreTest#addNonSuperfluousEntries()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.addNonSuperfluousEntries\"",
+ "org.openrewrite.AddToGitignoreTest#addEntryToFileEndingWithWindowsNewline()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.addEntryToFileEndingWithWindowsNewline\"",
+ "org.openrewrite.AddToGitignoreTest#doNotChangeWhenEntriesExistInDifferentOrder()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.doNotChangeWhenEntriesExistInDifferentOrder\"",
+ "org.openrewrite.AddToGitignoreTest#handleNestedGitignore()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.handleNestedGitignore\"",
+ "org.openrewrite.AddToGitignoreTest#createGitignoreWhenNoneExists()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.createGitignoreWhenNoneExists\"",
+ "org.openrewrite.AddToGitignoreTest#createGitignoreInSpecificLocation()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.createGitignoreInSpecificLocation\"",
+ "org.openrewrite.AddToGitignoreTest#doNotDuplicateExistingEntries()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.doNotDuplicateExistingEntries\"",
+ "org.openrewrite.AddToGitignoreTest#createRootGitignoreWhenPatternIsWildcard()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.createRootGitignoreWhenPatternIsWildcard\""
+}
+==========================
+This is the shell execution result of some of the pertest execution commands returned from your python script:
+{
+ "org.openrewrite.AddToGitignoreTest#emptyLinesInInput()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.emptyLinesInInput\"\n\n\n<-------------> 0% INITIALIZING [22ms]> Evaluating settings<-------------> 0% CONFIGURING [121ms]> root project<-------------> 0% CONFIGURING [221ms]<-------------> 0% CONFIGURING [321ms]<-------------> 0% CONFIGURING [421ms]<-------------> 0% CONFIGURING [521ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<-------------> 5% CONFIGURING [621ms]> :rewrite-bom<=------------> 11% CONFIGURING [721ms]> :rewrite-csharp<==-----------> 17% CONFIGURING [821ms]> :rewrite-go<===----------> 26% CONFIGURING [921ms]> :rewrite-groovy<====---------> 35% CONFIGURING [1s]> :rewrite-java-11<=====--------> 41% CONFIGURING [1s]> :rewrite-java-21<======-------> 47% CONFIGURING [1s]> :rewrite-java-8<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<=======------> 58% CONFIGURING [1s]> :rewrite-javascript<========-----> 61% CONFIGURING [1s]> :rewrite-json<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin<=========----> 70% CONFIGURING [1s]> :rewrite-properties<=========----> 73% CONFIGURING [1s]> :rewrite-protobuf<=========----> 76% CONFIGURING [2s]> :rewrite-python<==========---> 82% CONFIGURING [2s]> :rewrite-test<===========--> 85% CONFIGURING [2s]> :rewrite-toml<===========--> 91% CONFIGURING [2s]> :rewrite-yaml<============-> 97% CONFIGURING [2s]> :rewrite-gradle-tooling-model:plugin<=============> 100% CONFIGURING [2s]> IDLE<=============> 100% CONFIGURING [3s]<==-----------> 18% EXECUTING [3s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]<==-----------> 18% EXECUTING [7s]<==-----------> 18% EXECUTING [8s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<========-----> 62% EXECUTING [8s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [9s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<==========---> 81% EXECUTING [9s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<==========---> 81% EXECUTING [10s]<============-> 93% EXECUTING [10s]> :rewrite-core:test\nBUILD SUCCESSFUL in 11s\n13 actionable tasks: 13 up-to-date\nConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n\n<-------------> 0% WAITING> IDLE\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n",
+ "org.openrewrite.AddToGitignoreTest#targetSpecificSubdirectory()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.targetSpecificSubdirectory\"\n\n\n<-------------> 0% INITIALIZING [54ms]> Evaluating settings<-------------> 0% CONFIGURING [154ms]> root project > Resolve dependencies of classpath<-------------> 0% CONFIGURING [254ms]> root project<-------------> 0% CONFIGURING [354ms]<-------------> 0% CONFIGURING [454ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<-------------> 2% CONFIGURING [554ms]> :rewrite-benchmarks<=------------> 8% CONFIGURING [654ms]> :rewrite-core<=------------> 14% CONFIGURING [756ms]> :rewrite-docker<=------------> 14% CONFIGURING [854ms]<==-----------> 20% CONFIGURING [954ms]> :rewrite-gradle<===----------> 29% CONFIGURING [1s]> :rewrite-hcl<====---------> 35% CONFIGURING [1s]> :rewrite-java-11<=====--------> 41% CONFIGURING [1s]> :rewrite-java-21<======-------> 47% CONFIGURING [1s]> :rewrite-java-8<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<=======------> 58% CONFIGURING [1s]> :rewrite-javascript<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin > Resolve files of configuration 'classpath'> :rewrite-kotlin<=========----> 70% CONFIGURING [1s]> :rewrite-properties<==========---> 79% CONFIGURING [1s]> :rewrite-scala<==========---> 82% CONFIGURING [2s]> :rewrite-test<===========--> 88% CONFIGURING [2s]> :rewrite-xml<============-> 94% CONFIGURING [2s]> :rewrite-gradle-tooling-model:model<=============> 100% CONFIGURING [2s]> IDLE<==-----------> 18% EXECUTING [3s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]<==-----------> 18% EXECUTING [7s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<========-----> 62% EXECUTING [7s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [8s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<==========---> 81% EXECUTING [8s]> :rewrite-core:compileTestJava<==========---> 81% EXECUTING [9s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<============-> 93% EXECUTING [9s]> :rewrite-core:test<============-> 93% EXECUTING [10s]> :rewrite-core:test > Requesting from remote build cache> :rewrite-core:test> :rewrite-core:test > 0 tests completed<============-> 93% EXECUTING [11s]\n> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest<============-> 93% EXECUTING [12s]> :rewrite-core:test > 1 test completed> IDLE\nBUILD SUCCESSFUL in 13s\n13 actionable tasks: 1 executed, 12 up-to-date\nConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n\n\n<-------------> 0% WAITING> IDLE> IDLE\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n",
+ "org.openrewrite.AddToGitignoreTest#addNonSuperfluousEntries()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.addNonSuperfluousEntries\"\n\n\n<-------------> 0% INITIALIZING [58ms]> Evaluating settings<-------------> 0% CONFIGURING [158ms]> root project > Resolve dependencies of classpath<-------------> 0% CONFIGURING [258ms]> root project<-------------> 0% CONFIGURING [358ms]<-------------> 0% CONFIGURING [458ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<-------------> 2% CONFIGURING [558ms]> :rewrite-benchmarks<=------------> 8% CONFIGURING [658ms]> :rewrite-core<=------------> 14% CONFIGURING [758ms]> :rewrite-docker<==-----------> 20% CONFIGURING [858ms]> :rewrite-gradle<===----------> 29% CONFIGURING [958ms]> :rewrite-hcl<====---------> 38% CONFIGURING [1s]> :rewrite-java-17<=====--------> 44% CONFIGURING [1s]> :rewrite-java-25<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<=======------> 55% CONFIGURING [1s]> :rewrite-java-test<========-----> 61% CONFIGURING [1s]> :rewrite-json<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin<========-----> 67% CONFIGURING [1s]> :rewrite-maven<=========----> 73% CONFIGURING [1s]> IDLE<=========----> 76% CONFIGURING [1s]> :rewrite-python<==========---> 79% CONFIGURING [1s]> :rewrite-scala<==========---> 82% CONFIGURING [2s]> :rewrite-test<===========--> 88% CONFIGURING [2s]> :rewrite-xml<===========--> 91% CONFIGURING [2s]> :rewrite-yaml<============-> 97% CONFIGURING [2s]> :rewrite-gradle-tooling-model:plugin<=============> 100% CONFIGURING [2s]> IDLE<=============> 100% CONFIGURING [3s]<==-----------> 18% EXECUTING [3s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]<==-----------> 18% EXECUTING [7s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com\n<=====--------> 43% EXECUTING [7s]> :rewrite-test:compileJava> :rewrite-core:writeManifestProperties<========-----> 62% EXECUTING [7s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas> IDLE<========-----> 62% EXECUTING [8s]<========-----> 62% EXECUTING [9s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<==========---> 81% EXECUTING [9s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<==========---> 81% EXECUTING [10s]<============-> 93% EXECUTING [10s]> :rewrite-core:test> :rewrite-core:test > Requesting from remote build cache> :rewrite-core:test > 0 tests completed<============-> 93% EXECUTING [11s]<============-> 93% EXECUTING [12s]> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest> :rewrite-core:test > 1 test completed> IDLE\nBUILD SUCCESSFUL in 13s\n13 actionable tasks: 1 executed, 12 up-to-date\n\n\n\n<=============> 100% EXECUTING [12s]> IDLE> IDLEConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n<-------------> 0% WAITING> IDLE> IDLE\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n",
+ "org.openrewrite.AddToGitignoreTest#addEntryToFileEndingWithWindowsNewline()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.addEntryToFileEndingWithWindowsNewline\"\n\n\n<-------------> 0% INITIALIZING [34ms]> Evaluating settings > Resolve dependencies of detachedConfiguration1<-------------> 0% CONFIGURING [134ms]> root project > Resolve dependencies of classpath<-------------> 0% CONFIGURING [234ms]> root project > Resolve files of configuration 'classpath'<-------------> 0% CONFIGURING [334ms]> root project<-------------> 0% CONFIGURING [434ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<-------------> 5% CONFIGURING [534ms]> :rewrite-bom<=------------> 8% CONFIGURING [634ms]> :rewrite-core<=------------> 14% CONFIGURING [734ms]> :rewrite-docker<==-----------> 20% CONFIGURING [834ms]> :rewrite-gradle<===----------> 29% CONFIGURING [934ms]> :rewrite-hcl<====---------> 35% CONFIGURING [1s]> :rewrite-java-11<=====--------> 41% CONFIGURING [1s]> :rewrite-java-21<======-------> 47% CONFIGURING [1s]> :rewrite-java-8<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<=======------> 58% CONFIGURING [1s]> :rewrite-javascript<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin > Resolve dependencies of classpath> :rewrite-kotlin<=========----> 73% CONFIGURING [1s]> :rewrite-protobuf<=========----> 73% CONFIGURING [2s]<==========---> 79% CONFIGURING [2s]> :rewrite-scala<===========--> 85% CONFIGURING [2s]> :rewrite-toml<===========--> 91% CONFIGURING [2s]> :rewrite-yaml<=============> 100% CONFIGURING [2s]> IDLE<=============> 100% CONFIGURING [3s]<-------------> 0% EXECUTING [3s]<==-----------> 18% EXECUTING [3s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]<==-----------> 18% EXECUTING [7s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<=======------> 56% EXECUTING [7s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [7s]<========-----> 62% EXECUTING [8s]<========-----> 62% EXECUTING [9s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<==========---> 81% EXECUTING [9s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<==========---> 81% EXECUTING [10s]<============-> 93% EXECUTING [10s]> :rewrite-core:test > Requesting from remote build cache<============-> 93% EXECUTING [11s]> :rewrite-core:test > 0 tests completed<============-> 93% EXECUTING [12s]\n> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest> :rewrite-core:test > 1 test completed> IDLE\nBUILD SUCCESSFUL in 13s\n13 actionable tasks: 1 executed, 12 up-to-date\n\n\n\n<=============> 100% EXECUTING [12s]> IDLE> IDLEConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n<-------------> 0% WAITING> IDLE> IDLE\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n",
+ "org.openrewrite.AddToGitignoreTest#doNotChangeWhenEntriesExistInDifferentOrder()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.doNotChangeWhenEntriesExistInDifferentOrder\"\n\n\n> Connecting to Daemon<-------------> 0% INITIALIZING [83ms]> Evaluating settings<-------------> 0% CONFIGURING [183ms]> root project > Resolve files of configuration 'classpath'<-------------> 0% CONFIGURING [282ms]> root project<-------------> 0% CONFIGURING [382ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<-------------> 2% CONFIGURING [482ms]> :rewrite-benchmarks<=------------> 8% CONFIGURING [583ms]> :rewrite-core<==-----------> 17% CONFIGURING [682ms]> :rewrite-go<===----------> 26% CONFIGURING [782ms]> :rewrite-groovy<====---------> 32% CONFIGURING [883ms]> :rewrite-java<====---------> 38% CONFIGURING [983ms]> :rewrite-java-17<=====--------> 44% CONFIGURING [1s]> :rewrite-java-25<======-------> 50% CONFIGURING [1s]> :rewrite-java-lombok<=======------> 55% CONFIGURING [1s]> :rewrite-java-test<=======------> 58% CONFIGURING [1s]> :rewrite-javascript<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin<=========----> 70% CONFIGURING [1s]> :rewrite-properties<=========----> 76% CONFIGURING [1s]> :rewrite-python<==========---> 79% CONFIGURING [1s]> :rewrite-scala<===========--> 88% CONFIGURING [1s]> :rewrite-xml<============-> 94% CONFIGURING [1s]> :rewrite-gradle-tooling-model:model<=============> 100% CONFIGURING [2s]> IDLE\n<=------------> 12% EXECUTING [2s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas> :rewrite-test:writeManifestProperties<==-----------> 18% EXECUTING [2s]> IDLE<==-----------> 18% EXECUTING [3s]<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]<==-----------> 18% EXECUTING [7s]<==-----------> 18% EXECUTING [8s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<========-----> 62% EXECUTING [8s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [9s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<==========---> 81% EXECUTING [9s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<==========---> 81% EXECUTING [10s]<============-> 93% EXECUTING [10s]> :rewrite-core:test > Requesting from remote build cache<============-> 93% EXECUTING [11s]> :rewrite-core:test > 0 tests completed<============-> 93% EXECUTING [12s]> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest<============-> 93% EXECUTING [13s]> :rewrite-core:test > Packing build cache entry> IDLE\nBUILD SUCCESSFUL in 14s\n13 actionable tasks: 1 executed, 12 up-to-date\nConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n\n\n<-------------> 0% WAITING> IDLE> IDLE\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n",
+ "org.openrewrite.AddToGitignoreTest#handleNestedGitignore()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.handleNestedGitignore\"\n\n\n<-------------> 0% INITIALIZING [54ms]> Evaluating settings<-------------> 0% INITIALIZING [155ms]<-------------> 0% CONFIGURING [255ms]> root project > Resolve dependencies of classpath<-------------> 0% CONFIGURING [354ms]> root project > Resolve files of configuration 'classpath' > Resolve files of <-------------> 0% CONFIGURING [454ms]> root project<-------------> 0% CONFIGURING [554ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<-------------> 2% CONFIGURING [654ms]> :rewrite-benchmarks > Resolve dependencies of classpath<-------------> 5% CONFIGURING [754ms]> :rewrite-bom<=------------> 8% CONFIGURING [854ms]> :rewrite-core<=------------> 14% CONFIGURING [954ms]> :rewrite-docker<===----------> 26% CONFIGURING [1s]> :rewrite-groovy<====---------> 32% CONFIGURING [1s]> :rewrite-java<====---------> 38% CONFIGURING [1s]> :rewrite-java-17<=====--------> 44% CONFIGURING [1s]> :rewrite-java-25<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<=======------> 58% CONFIGURING [1s]> :rewrite-javascript<========-----> 61% CONFIGURING [1s]> :rewrite-json<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin<=========----> 70% CONFIGURING [1s]> :rewrite-properties<=========----> 76% CONFIGURING [1s]> :rewrite-python<==========---> 82% CONFIGURING [2s]> :rewrite-test<===========--> 91% CONFIGURING [2s]> :rewrite-yaml<============-> 97% CONFIGURING [2s]> :rewrite-gradle-tooling-model:plugin<=============> 100% CONFIGURING [2s]> IDLE\n<=------------> 12% EXECUTING [2s]> :rewrite-core:compileJava> :rewrite-test:writeManifestProperties<==-----------> 18% EXECUTING [3s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas> IDLE<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]<==-----------> 18% EXECUTING [7s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<========-----> 62% EXECUTING [7s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [8s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<========-----> 62% EXECUTING [9s]<==========---> 81% EXECUTING [9s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<============-> 93% EXECUTING [10s]> :rewrite-core:test > Resolve dependencies of :rewrite-core:testRuntimeClasspa> :rewrite-core:test > Requesting from remote build cache> :rewrite-core:test > 0 tests completed<============-> 93% EXECUTING [11s]> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest<============-> 93% EXECUTING [12s]> :rewrite-core:test> IDLE\nBUILD SUCCESSFUL in 13s\n13 actionable tasks: 1 executed, 12 up-to-date\nConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n\n\n<-------------> 0% WAITING> IDLE> IDLE\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n",
+ "org.openrewrite.AddToGitignoreTest#createGitignoreWhenNoneExists()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.createGitignoreWhenNoneExists\"\n\n\n<-------------> 0% INITIALIZING [99ms]> Evaluating settings<-------------> 0% CONFIGURING [200ms]> root project > Resolve files of configuration 'classpath'<-------------> 0% CONFIGURING [300ms]> root project<-------------> 0% CONFIGURING [399ms]<-------------> 0% CONFIGURING [499ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<-------------> 5% CONFIGURING [599ms]> :rewrite-bom<=------------> 14% CONFIGURING [699ms]> :rewrite-docker<==-----------> 20% CONFIGURING [799ms]> :rewrite-gradle<===----------> 29% CONFIGURING [899ms]> :rewrite-hcl<====---------> 35% CONFIGURING [999ms]> :rewrite-java-11<=====--------> 41% CONFIGURING [1s]> :rewrite-java-21<======-------> 47% CONFIGURING [1s]> :rewrite-java-8<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<=======------> 58% CONFIGURING [1s]> :rewrite-javascript<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin > Resolve dependencies of detachedConfiguration1> :rewrite-kotlin > Resolve files of configuration 'classpath'> :rewrite-kotlin<=========----> 70% CONFIGURING [1s]> :rewrite-properties<=========----> 76% CONFIGURING [1s]> :rewrite-python<===========--> 85% CONFIGURING [1s]> :rewrite-toml<============-> 94% CONFIGURING [2s]> :rewrite-gradle-tooling-model:model<=============> 100% CONFIGURING [2s]> IDLE<==-----------> 18% EXECUTING [2s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas<==-----------> 18% EXECUTING [3s]<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]<==-----------> 18% EXECUTING [7s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<========-----> 62% EXECUTING [7s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [8s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<==========---> 81% EXECUTING [8s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<==========---> 81% EXECUTING [9s]<============-> 93% EXECUTING [9s]> :rewrite-core:test> :rewrite-core:test > Requesting from remote build cache<============-> 93% EXECUTING [10s]> :rewrite-core:test > 0 tests completed<============-> 93% EXECUTING [11s]\n> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest> :rewrite-core:test > 1 test completed> IDLE\nBUILD SUCCESSFUL in 13s\n13 actionable tasks: 1 executed, 12 up-to-date\nConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n\n\n<=============> 100% EXECUTING [12s]> IDLE> IDLE<-------------> 0% WAITING\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n",
+ "org.openrewrite.AddToGitignoreTest#createGitignoreInSpecificLocation()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.createGitignoreInSpecificLocation\"\n\n\n<-------------> 0% INITIALIZING [56ms]> Evaluating settings<-------------> 0% CONFIGURING [156ms]> root project > Resolve dependencies of classpath<-------------> 0% CONFIGURING [256ms]> root project<-------------> 0% CONFIGURING [356ms]<-------------> 0% CONFIGURING [456ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<=------------> 8% CONFIGURING [556ms]> :rewrite-core<==-----------> 17% CONFIGURING [656ms]> :rewrite-go<===----------> 26% CONFIGURING [756ms]> :rewrite-groovy<====---------> 35% CONFIGURING [856ms]> :rewrite-java-11<=====--------> 44% CONFIGURING [956ms]> :rewrite-java-25<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<=======------> 58% CONFIGURING [1s]> :rewrite-javascript<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin<=========----> 73% CONFIGURING [1s]> :rewrite-protobuf<==========---> 82% CONFIGURING [1s]> :rewrite-test<===========--> 91% CONFIGURING [1s]> :rewrite-yaml<=============> 100% CONFIGURING [1s]> IDLE<=============> 100% CONFIGURING [2s]<==-----------> 18% EXECUTING [2s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas<==-----------> 18% EXECUTING [3s]<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<==-----------> 18% EXECUTING [7s]<========-----> 62% EXECUTING [7s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [8s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<==========---> 81% EXECUTING [8s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<==========---> 81% EXECUTING [9s]<============-> 93% EXECUTING [9s]> :rewrite-core:test > Requesting from remote build cache<============-> 93% EXECUTING [10s]> :rewrite-core:test > 0 tests completed\n<============-> 93% EXECUTING [11s]> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest> :rewrite-core:test> IDLE\nBUILD SUCCESSFUL in 12s\n13 actionable tasks: 1 executed, 12 up-to-date\nConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n\n\n<-------------> 0% WAITING> IDLE> IDLE\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n",
+ "org.openrewrite.AddToGitignoreTest#doNotDuplicateExistingEntries()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.doNotDuplicateExistingEntries\"\n\n\n<-------------> 0% INITIALIZING [48ms]> Evaluating settings<-------------> 0% CONFIGURING [149ms]> root project > Resolve dependencies of classpath<-------------> 0% CONFIGURING [249ms]> root project<-------------> 0% CONFIGURING [349ms]<-------------> 0% CONFIGURING [448ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<=------------> 8% CONFIGURING [548ms]> :rewrite-core<==-----------> 17% CONFIGURING [648ms]> :rewrite-go<===----------> 29% CONFIGURING [748ms]> :rewrite-hcl<====---------> 38% CONFIGURING [848ms]> :rewrite-java-17<=====--------> 41% CONFIGURING [948ms]> :rewrite-java-21<======-------> 47% CONFIGURING [1s]> :rewrite-java-8<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<=======------> 58% CONFIGURING [1s]> :rewrite-javascript<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin<=========----> 70% CONFIGURING [1s]> :rewrite-properties<==========---> 79% CONFIGURING [1s]> :rewrite-scala<===========--> 85% CONFIGURING [1s]> :rewrite-toml<============-> 94% CONFIGURING [1s]> :rewrite-gradle-tooling-model:model<=============> 100% CONFIGURING [1s]> IDLE<=============> 100% CONFIGURING [2s]\n<=------------> 12% EXECUTING [2s]> :rewrite-core:compileJava> :rewrite-test:writeManifestProperties<==-----------> 18% EXECUTING [2s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas> IDLE<==-----------> 18% EXECUTING [3s]<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<========-----> 62% EXECUTING [7s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [8s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<==========---> 81% EXECUTING [8s]> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<==========---> 81% EXECUTING [9s]<============-> 93% EXECUTING [9s]> :rewrite-core:test > Resolve files of configuration ':rewrite-core:testRuntim> :rewrite-core:test > Requesting from remote build cache<============-> 93% EXECUTING [10s]> :rewrite-core:test > 0 tests completed<============-> 93% EXECUTING [11s]> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest<============-> 93% EXECUTING [12s]> :rewrite-core:test > 1 test completed\nBUILD SUCCESSFUL in 13s\n13 actionable tasks: 1 executed, 12 up-to-date\n\n\n\n<=============> 100% EXECUTING [12s]> IDLE> IDLEConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n<-------------> 0% WAITING> IDLE> IDLE\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n",
+ "org.openrewrite.AddToGitignoreTest#createRootGitignoreWhenPatternIsWildcard()": "./gradlew :rewrite-core:test --tests \"org.openrewrite.AddToGitignoreTest.createRootGitignoreWhenPatternIsWildcard\"\n\n\n<-------------> 0% INITIALIZING [58ms]> Evaluating settings<-------------> 0% CONFIGURING [158ms]> root project > Resolve files of configuration 'classpath'<-------------> 0% CONFIGURING [259ms]> root project<-------------> 0% CONFIGURING [358ms]\n> Configure project :\nInferred project: rewrite, version: 0.1.0-SNAPSHOT\n\n\n<-------------> 2% CONFIGURING [458ms]> :rewrite-benchmarks<=------------> 8% CONFIGURING [558ms]> :rewrite-core<=------------> 14% CONFIGURING [658ms]> :rewrite-docker<===----------> 26% CONFIGURING [758ms]> :rewrite-groovy<====---------> 32% CONFIGURING [858ms]> :rewrite-java<====---------> 38% CONFIGURING [958ms]> :rewrite-java-17<======-------> 47% CONFIGURING [1s]> :rewrite-java-8<======-------> 52% CONFIGURING [1s]> :rewrite-java-tck<========-----> 61% CONFIGURING [1s]> :rewrite-json<========-----> 64% CONFIGURING [1s]> :rewrite-kotlin<=========----> 73% CONFIGURING [1s]> :rewrite-protobuf<==========---> 79% CONFIGURING [1s]> :rewrite-scala<===========--> 88% CONFIGURING [1s]> :rewrite-xml<============-> 97% CONFIGURING [1s]> :rewrite-gradle-tooling-model:plugin<=============> 100% CONFIGURING [1s]> IDLE<=============> 100% CONFIGURING [2s]\n<=------------> 12% EXECUTING [2s]> :rewrite-core:compileJava > Resolve dependencies of :rewrite-core:compileClas> :rewrite-test:writeManifestProperties<==-----------> 18% EXECUTING [2s]> IDLE<==-----------> 18% EXECUTING [3s]<==-----------> 18% EXECUTING [4s]<==-----------> 18% EXECUTING [5s]<==-----------> 18% EXECUTING [6s]> :rewrite-core:compileJava > Resolve files of configuration ':rewrite-core:com<========-----> 62% EXECUTING [6s]> :rewrite-test:compileJava > Resolve dependencies of :rewrite-test:compileClas<========-----> 62% EXECUTING [7s]> :rewrite-test:compileJava > Resolve files of configuration ':rewrite-test:com<========-----> 62% EXECUTING [8s]<==========---> 81% EXECUTING [8s]> :rewrite-core:compileTestJava> :rewrite-core:compileTestJava > Resolve dependencies of :rewrite-core:testCom<==========---> 81% EXECUTING [9s]<============-> 93% EXECUTING [9s]> :rewrite-core:test > Requesting from remote build cache> :rewrite-core:test > 0 tests completed<============-> 93% EXECUTING [10s]> :rewrite-core:test > Executing test org.openrewrite.AddToGitignoreTest<============-> 93% EXECUTING [11s]\nBUILD SUCCESSFUL in 12s\n13 actionable tasks: 1 executed, 12 up-to-date\n\n\n\n<=============> 100% EXECUTING [11s]> IDLE> IDLEConsider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.1/userguide/configuration_cache_enabling.html\n\n<-------------> 0% WAITING> IDLE> IDLE\n\nroot@22404d6ace1d:/testbed $\n\nexit code: 0\n"
+}
+==========================
+Please judge the correctness of your per-testcase execution commands (the commands should run ONLY one specified testcase per command, and run the specified testcase successfully with pass/fail/skip result).
+If correct, submit with <submit>success</submit>;
+If not correct (some of your commands trigger more than one tests, OR many of your commands fail to execute successfully), please explore the correct command to run a specific testcase again and write the python script to generate all per-testcase commands again;
+If you think it is impossible to run each testcase separately, give up by outputting <submit>failure</submit>.
+
+2026-05-10 22:46:38,044 - 
+================================== Ai Message ==================================
+
+<submit>success</submit>
+2026-05-10 22:46:38,525 - ----------End verify conversation----------
+2026-05-10 22:49:03,428 - Duration: 207 minutes
+2026-05-10 22:49:04,070 - Setup completed successfully, now commit into swebench image.
+2026-05-10 22:50:21,721 - Image repolaunch/dev:openrewrite__rewrite-7310_linux committed successfully.
+2026-05-10 22:50:44,666 - Test output saved to: data/java1/playground/openrewrite__rewrite-7310/test_status.log
+2026-05-10 22:50:55,424 - Result saved to: data/java1/playground/openrewrite__rewrite-7310/result.json

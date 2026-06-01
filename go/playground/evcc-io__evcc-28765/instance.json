@@ -1,0 +1,38 @@
+{
+  "repo": "evcc-io/evcc",
+  "pull_number": 28765,
+  "instance_id": "evcc-io__evcc-28765",
+  "issue_numbers": [
+    28750
+  ],
+  "base_commit": "b93061bc8655ec0789e6504aee67f91198599b1b",
+  "patch": "diff --git a/plugin/aa55udp.go b/plugin/aa55udp.go\nindex fed3063b658..84c95258da1 100644\n--- a/plugin/aa55udp.go\n+++ b/plugin/aa55udp.go\n@@ -6,6 +6,7 @@ import (\n \t\"encoding/hex\"\n \t\"errors\"\n \t\"fmt\"\n+\t\"math\"\n \t\"net\"\n \t\"strings\"\n \t\"time\"\n@@ -68,9 +69,9 @@ func NewAA55UDPFromConfig(_ context.Context, other map[string]interface{}) (Plug\n \t}\n \n \tswitch cc.Decode {\n-\tcase \"int32be\", \"uint32be\", \"int16be\", \"uint16be\":\n+\tcase \"int32be\", \"uint32be\", \"int16be\", \"uint16be\", \"float32be\":\n \tdefault:\n-\t\treturn nil, fmt.Errorf(\"aa55udp: unsupported decode %q (want int32be|uint32be|int16be|uint16be)\", cc.Decode)\n+\t\treturn nil, fmt.Errorf(\"aa55udp: unsupported decode %q (want int32be|uint32be|int16be|uint16be|float32be)\", cc.Decode)\n \t}\n \n \tpdu := buildPDU(cc.Register, cc.Count)\n@@ -183,6 +184,12 @@ func stripAA55Header(buf []byte) ([]byte, error) {\n // interprets it according to decode.\n func decodeAt(payload []byte, offset int, decode string) (float64, error) {\n \tswitch decode {\n+\tcase \"float32be\":\n+\t\tif len(payload) < offset+4 {\n+\t\t\treturn 0, fmt.Errorf(\"payload too short for float32be at offset %d (len=%d)\", offset, len(payload))\n+\t\t}\n+\t\tbits := binary.BigEndian.Uint32(payload[offset:])\n+\t\treturn float64(math.Float32frombits(bits)), nil\n \tcase \"int32be\":\n \t\tif len(payload) < offset+4 {\n \t\t\treturn 0, fmt.Errorf(\"payload too short for int32be at offset %d (len=%d)\", offset, len(payload))\ndiff --git a/templates/definition/meter/goodwe-wifi-et.yaml b/templates/definition/meter/goodwe-wifi-et.yaml\nindex f1ffe241958..46e8a5dbdb4 100644\n--- a/templates/definition/meter/goodwe-wifi-et.yaml\n+++ b/templates/definition/meter/goodwe-wifi-et.yaml\n@@ -23,7 +23,7 @@ render: |\n     host: {{ .host }}\n     register: 36017\n     count: 2\n-    decode: float32\n+    decode: float32be\n     scale: 0.001\n   {{- end }}\n   {{- if eq .usage \"pv\" }}\n",
+  "test_patch": "diff --git a/plugin/aa55udp_test.go b/plugin/aa55udp_test.go\nindex a617a6ffc23..22e8759e4a1 100644\n--- a/plugin/aa55udp_test.go\n+++ b/plugin/aa55udp_test.go\n@@ -3,6 +3,7 @@ package plugin\n import (\n \t\"encoding/binary\"\n \t\"encoding/hex\"\n+\t\"math\"\n \t\"net\"\n \t\"testing\"\n \n@@ -153,6 +154,15 @@ func TestDecodeAt_Int16BE_Negative(t *testing.T) {\n \tassert.InDelta(t, -300.0, v, 0)\n }\n \n+func TestDecodeAt_Float32BE(t *testing.T) {\n+\tpayload := make([]byte, 4)\n+\tbits := math.Float32bits(123.456)\n+\tbinary.BigEndian.PutUint32(payload, bits)\n+\tv, err := decodeAt(payload, 0, \"float32be\")\n+\trequire.NoError(t, err)\n+\tassert.InDelta(t, 123.456, v, 0.001)\n+}\n+\n func TestDecodeAt_TooShort(t *testing.T) {\n \t_, err := decodeAt([]byte{0x00}, 0, \"int32be\")\n \trequire.Error(t, err)\n",
+  "problem_statement": "Goodwe goodwe-wifi-et: unsupported decode \"float32\"\n### Describe the bug\n\nAfter updating EVCC to the newly released version `v0.304.0`, the Goodwe integration fails to initialize during startup. The system throws a fatal error specifically related to the `goodwe-wifi-et` template, stating that `aa55udp` has an unsupported decode for `\"float32\"`. This causes the site to fail booting due to a missing grid meter instance.\n\n### Steps to reproduce\n\n1. Update EVCC to version `v0.304.0`.\n2. Configure a grid meter using the `goodwe-wifi-et` template.\n3. Start the EVCC service.\n4. The system fails to start and displays the unsupported decode `\"float32\"` error in the UI and logs.\n\n### Configuration details\n\n```yaml\nsite:\n  meters:\n    grid: my_grid\n    pv: my_pv\n    battery: my_battery\n....\nmeters:\n  - name: my_grid\n    type: template\n    template: goodwe-wifi-et\n    usage: grid\n    host: 192.168.1.26 # IP address or hostname, IP address of the inverter (port 8899)\n  - name: my_pv\n    type: template\n    template: goodwe-wifi-et\n    usage: pv\n    host: 192.168.1.26 # IP address or hostname, IP address of the inverter (port 8899)\n  - name: my_battery\n    type: template\n    template: goodwe-wifi-et\n    usage: battery\n    host: 192.168.1.26 # IP address or hostname, IP address of the inverter (port 8899)\n...\n```\n\n### Log details\n\n```text\n[main  ] FATAL 2026/04/02 15:07:50 meter [my_grid] cannot create meter 'my_grid': cannot create meter type 'template:goodwe-wifi-et': cannot create meter type 'custom': energy: aa55udp: unsupported decode \"float32\" (want int32be|uint32be|int16be|uint16be)\nfailed booting site: missing grid meter instance\n```\n\n### What type of operating system or environment does evcc run on?\n\nHomeAssistant Add-on\n\n### External automation\n\n- [x] I have made sure that no external automation like HomeAssistant or Node-RED is active or accessing any of the mentioned devices when this issue occurs.\n\n### Nightly build\n\n- [x] I have verified that the issue is reproducible with the latest nightly build\n\n### Version\n\n0.304.0\n",
+  "hints_text": "/cc @toeklk are we missing a decoding here? Seems the `float32` comes from here:\n\n```yaml\n  energy:\n    source: aa55udp\n    host: {{ .host }}\n    register: 36017\n    count: 2\n    decode: float32\n    scale: 0.001\n```\n\n\n",
+  "all_hints_text": "/cc @toeklk are we missing a decoding here? Seems the `float32` comes from here:\n\n```yaml\n  energy:\n    source: aa55udp\n    host: {{ .host }}\n    register: 36017\n    count: 2\n    decode: float32\n    scale: 0.001\n```\n\nYes, it seems like the (at least) the decode function was not supporting float32(be).\nAny ETA on the fix?\nAdd PR #28765 for this one \n\nDoes it work without configuration evcc.yaml, just using evcc UI ?\n\n",
+  "commit_urls": [
+    "https://github.com/evcc-io/evcc/commit/ddccb44a61fc460d391ee56994e985c9abdda88f"
+  ],
+  "created_at": "2026-04-02T19:12:06Z",
+  "language": "Go",
+  "commit_url": "https://github.com/evcc-io/evcc/tree/b93061bc8655ec0789e6504aee67f91198599b1b",
+  "setup_cmds": [
+    "GOTOOLCHAIN=auto go mod download  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 1)",
+    "mkdir -p dist && touch dist/empty  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 0)",
+    "GOTOOLCHAIN=auto go mod download  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 1)",
+    "mkdir -p dist && touch dist/empty  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "GOTOOLCHAIN=auto go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:evcc-io__evcc-28765_linux"
+}

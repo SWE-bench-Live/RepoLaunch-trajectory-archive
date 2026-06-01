@@ -1,0 +1,56 @@
+{
+  "repo": "MudBlazor/MudBlazor",
+  "pull_number": 12958,
+  "instance_id": "MudBlazor__MudBlazor-12958",
+  "issue_numbers": [
+    7560
+  ],
+  "base_commit": "12d6f336d8ec33982a23b0c02c48e6d1b0af86d3",
+  "patch": "diff --git a/src/MudBlazor/Components/Autocomplete/MudAutocomplete.razor.cs b/src/MudBlazor/Components/Autocomplete/MudAutocomplete.razor.cs\nindex bfbf72172e8e..dee9569db622 100644\n--- a/src/MudBlazor/Components/Autocomplete/MudAutocomplete.razor.cs\n+++ b/src/MudBlazor/Components/Autocomplete/MudAutocomplete.razor.cs\n@@ -270,6 +270,15 @@ protected string GetListItemClassname(bool isSelected) =>\n         [Category(CategoryTypes.FormComponent.Behavior)]\n         public int DebounceInterval { get; set; } = 100;\n \n+        /// <summary>\n+        /// Occurs when the <see cref=\"DebounceInterval\"/> has elapsed.\n+        /// </summary>\n+        /// <remarks>\n+        /// The current value of <see cref=\"MudBaseInput{T}.Text\"/> is included in this event.\n+        /// </remarks>\n+        [Parameter]\n+        public EventCallback<string> OnDebounceIntervalElapsed { get; set; }\n+\n         /// <summary>\n         /// The custom template used to display unselected items.\n         /// </summary>\n@@ -643,7 +652,12 @@ protected override async Task UpdateValuePropertyAsync(bool updateText)\n                 _debounceTimer = TimeProvider.CreateTimer(OnDebounceComplete, null, TimeSpan.FromMilliseconds(DebounceInterval), Timeout.InfiniteTimeSpan);\n         }\n \n-        private void OnDebounceComplete(object? stateInfo) => InvokeAsync(OpenMenuAsync);\n+        private void OnDebounceComplete(object? stateInfo)\n+            => InvokeAsync(async () =>\n+            {\n+                await OnDebounceIntervalElapsed.InvokeAsync(ReadText);\n+                await OpenMenuAsync();\n+            });\n \n         private void CancelToken()\n         {\n",
+  "test_patch": "diff --git a/src/MudBlazor.UnitTests.Viewer/TestComponents/Autocomplete/AutocompleteStates.razor b/src/MudBlazor.UnitTests.Viewer/TestComponents/Autocomplete/AutocompleteStates.razor\nindex 1e54c4ca72a9..5e1363def665 100644\n--- a/src/MudBlazor.UnitTests.Viewer/TestComponents/Autocomplete/AutocompleteStates.razor\n+++ b/src/MudBlazor.UnitTests.Viewer/TestComponents/Autocomplete/AutocompleteStates.razor\n@@ -3,7 +3,8 @@\n <MudAutocomplete id=\"autocompleteLabelTest\" T=\"string?\" Label=\"US States\"\n                  @bind-Value:get=\"Value\" @bind-Value:set=\"ValueChanged\" ResetValueOnEmptyText=\"ResetValueOnEmptyText\"\n                  SearchFunc=\"@SearchStates\" DebounceInterval=\"DebounceInterval\"\n-                 CoerceText=\"CoerceText\" CoerceValue=\"CoerceValue\" Immediate=\"Immediate\"/>\n+                 CoerceText=\"CoerceText\" CoerceValue=\"CoerceValue\" Immediate=\"Immediate\"\n+                 OnDebounceIntervalElapsed=\"OnDebounceIntervalElapsed\" />\n \n @code {\n     public static string __description__ = \"Autocomplete to input a US state\";\n@@ -29,6 +30,9 @@\n     [Parameter]\n     public bool Immediate { get; set; }\n \n+    [Parameter]\n+    public EventCallback<string> OnDebounceIntervalElapsed { get; set; }\n+\n     public int SearchFuncCallCount { get; private set; }\n \n     private readonly string[] _states =\ndiff --git a/src/MudBlazor.UnitTests/Components/AutocompleteTests.cs b/src/MudBlazor.UnitTests/Components/AutocompleteTests.cs\nindex 8e86b35a5bbd..a0eb8f2bc117 100644\n--- a/src/MudBlazor.UnitTests/Components/AutocompleteTests.cs\n+++ b/src/MudBlazor.UnitTests/Components/AutocompleteTests.cs\n@@ -343,6 +343,42 @@ public async Task OnTextChanged_CoerceValueAndNotCoerceTextAndImmediateAndDeboun\n             valueChangedCount.Should().Be(1);\n         }\n \n+        [Test]\n+        public async Task OnTextChanged_WithDebounce_InvokesOnDebounceIntervalElapsed()\n+        {\n+            // Arrange\n+\n+            var debouncedText = string.Empty;\n+            var debounceElapsedCount = 0;\n+\n+            var comp = Context.Render<AutocompleteStates>(parameters =>\n+            {\n+                parameters.Add(p => p.DebounceInterval, 500);\n+                parameters.Add(p => p.CoerceText, false);\n+                parameters.Add(p => p.CoerceValue, true);\n+                parameters.Add(p => p.Immediate, true);\n+                parameters.Add(p => p.OnDebounceIntervalElapsed, value =>\n+                {\n+                    debouncedText = value;\n+                    debounceElapsedCount++;\n+                });\n+            });\n+\n+            var autocompleteComp = comp.FindComponent<MudAutocomplete<string>>();\n+\n+            // Act\n+\n+            await comp.Find(\"input\").InputAsync(\"Al\");\n+\n+            // Assert\n+\n+            debounceElapsedCount.Should().Be(0);\n+            await autocompleteComp.WaitForAssertionAsync(() => debounceElapsedCount.Should().Be(1), TimeSpan.FromSeconds(5));\n+            await autocompleteComp.WaitForAssertionAsync(() => autocompleteComp.Instance.Open.Should().BeTrue(), TimeSpan.FromSeconds(5));\n+            debounceElapsedCount.Should().Be(1);\n+            debouncedText.Should().Be(\"Al\");\n+        }\n+\n         [Test]\n         public async Task CoerceValueAndNotCoerceTextAndNotImmediate_ValueSetOnBlur()\n         {\n",
+  "problem_statement": "Add OnDebounceIntervalElapsed to remaining components that implement DebounceInterval\n### Feature request type\n\nEnhance component\n\n### Component name\n\nMudAutocomplete\n\n### Is your feature request related to a problem?\n\nThere is an inconsistency in the usage of OnDebounceIntervalElapsed across components. Specifically, if a component supports the DebounceInterval property, it should also support the OnDebounceIntervalElapsed event. For example, MudTextField provides access to both DebounceInterval and OnDebounceIntervalElapsed, whereas MudAutocomplete only exposes DebounceInterval.\n\n### Describe the solution you'd like\n\nAlign the behaviour of the components so that they are consistent in their support for both DebounceInterval and OnDebounceIntervalElapsed.\n\n### Have you seen this feature anywhere else?\n\n_No response_\n\n### Describe alternatives you've considered\n\n_No response_\n\n### Pull Request\n\n- [X] I would like to do a Pull Request\n\n### Code of Conduct\n\n- [X] I agree to follow this project's Code of Conduct\n",
+  "hints_text": "\ud83d\udc4b Thanks for wanting to do a PR @BieleckiLtd !\nWe suggest that you wait for an answer from @MudBlazor/contribution-team @MudBlazor/core-team . Otherwise we can not guarantee that your PR will be merged. As the library grows, we have to be very strict what PRs we can accept.\n\n",
+  "all_hints_text": "\ud83d\udc4b Thanks for wanting to do a PR @BieleckiLtd !\nWe suggest that you wait for an answer from @MudBlazor/contribution-team @MudBlazor/core-team . Otherwise we can not guarantee that your PR will be merged. As the library grows, we have to be very strict what PRs we can accept.\n\n",
+  "commit_urls": [
+    "https://github.com/MudBlazor/MudBlazor/commit/29c94eeacc7f9be99155c8e5c59cd49f1217e7b0",
+    "https://github.com/MudBlazor/MudBlazor/commit/cc0e195d57d64d47eb1f3c8b9d8859db6750668e",
+    "https://github.com/MudBlazor/MudBlazor/commit/dbbdb4889ec8ee62ff33e28ae6b889cd82365518"
+  ],
+  "created_at": "2026-04-02T11:32:00Z",
+  "language": "C#",
+  "commit_url": "https://github.com/MudBlazor/MudBlazor/tree/12d6f336d8ec33982a23b0c02c48e6d1b0af86d3",
+  "setup_cmds": [
+    "dotnet --version  (exit code: 0)",
+    "dotnet restore src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj  (exit code: 0)",
+    "dotnet build src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release /p:SkipBunCompile=true  (exit code: 0)",
+    "dotnet test src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release --no-build  (exit code: 0)",
+    "dotnet --version  (exit code: 0)",
+    "dotnet restore src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj  (exit code: 0)",
+    "dotnet build src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release /p:SkipBunCompile=true  (exit code: 0)",
+    "dotnet test src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release --no-build  (exit code: 0)",
+    "dotnet restore src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj  (exit code: 0)",
+    "dotnet build src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release /p:SkipBunCompile=true  (exit code: 0)",
+    "dotnet test src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release --no-build /p:SkipBunCompile=true  (exit code: 0)",
+    "dotnet --version  (exit code: 0)",
+    "dotnet restore src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj  (exit code: 0)",
+    "dotnet build src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release /p:SkipBunCompile=true  (exit code: 0)",
+    "dotnet test src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release --no-build  (exit code: 0)",
+    "dotnet --version  (exit code: 0)",
+    "dotnet restore src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj  (exit code: 0)",
+    "dotnet build src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release /p:SkipBunCompile=true  (exit code: 0)",
+    "dotnet test src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release --no-build  (exit code: 0)",
+    "dotnet restore src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj  (exit code: 0)",
+    "dotnet build src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release /p:SkipBunCompile=true  (exit code: 0)",
+    "dotnet test src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release --no-build /p:SkipBunCompile=true  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "dotnet test src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release --no-build /p:SkipBunCompile=true --logger \"console;verbosity=detailed\"",
+    "dotnet test src/MudBlazor.UnitTests/MudBlazor.UnitTests.csproj -c Release --no-build /p:SkipBunCompile=true --logger \"console;verbosity=detailed\" --logger \"trx;LogFileName=unit-tests.trx\"",
+    "cat /testbed/src/MudBlazor.UnitTests/TestResults/unit-tests.trx",
+    "grep -n 'outcome=\"Failed\"' /testbed/src/MudBlazor.UnitTests/TestResults/unit-tests.trx",
+    "sed -n '890,940p' /testbed/src/MudBlazor.UnitTests/TestResults/unit-tests.trx"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:MudBlazor__MudBlazor-12958_linux"
+}

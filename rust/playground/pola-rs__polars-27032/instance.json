@@ -1,0 +1,41 @@
+{
+  "repo": "pola-rs/polars",
+  "pull_number": 27032,
+  "instance_id": "pola-rs__polars-27032",
+  "issue_numbers": [
+    27031
+  ],
+  "base_commit": "4a25caca0ab675b1afe95e45d0d24ad6bd78a26f",
+  "patch": "diff --git a/crates/polars-expr/src/expressions/aggregation.rs b/crates/polars-expr/src/expressions/aggregation.rs\nindex d8e7c4748532..7df566e64380 100644\n--- a/crates/polars-expr/src/expressions/aggregation.rs\n+++ b/crates/polars-expr/src/expressions/aggregation.rs\n@@ -252,7 +252,18 @@ impl PhysicalExpr for AggregationExpr {\n                     AggregatedScalar(agg_c.with_name(keep_name))\n                 },\n                 GroupByMethod::Count { include_nulls } => {\n-                    if include_nulls || ac.get_values().null_count() == 0 {\n+                    let values_have_no_nulls = match ac.agg_state() {\n+                        AggState::AggregatedList(s) => {\n+                            let list = s.list()?;\n+                            list.null_count() == 0\n+                                && list\n+                                    .downcast_iter()\n+                                    .all(|arr| arr.values().null_count() == 0)\n+                        },\n+                        _ => ac.get_values().null_count() == 0,\n+                    };\n+\n+                    if include_nulls || values_have_no_nulls {\n                         // a few fast paths that prevent materializing new groups\n                         match ac.update_groups {\n                             UpdateGroups::WithSeriesLen => {\n",
+  "test_patch": "diff --git a/py-polars/tests/unit/operations/test_group_by.py b/py-polars/tests/unit/operations/test_group_by.py\nindex 15953bbbcada..92a7c7bce9b6 100644\n--- a/py-polars/tests/unit/operations/test_group_by.py\n+++ b/py-polars/tests/unit/operations/test_group_by.py\n@@ -68,6 +68,16 @@ def test_group_by() -> None:\n     assert result.columns == [\"b\", \"a\"]\n \n \n+def test_group_by_count_respects_inner_nulls_in_aggregated_list_27031() -> None:\n+    df = pl.DataFrame({\"g\": [1, 1, 1], \"x\": [1, 2, None]})\n+\n+    result = df.group_by(\"g\", maintain_order=True).agg(\n+        pl.col(\"x\").cum_sum().count().alias(\"x_count\")\n+    )\n+\n+    assert result.rows() == [(1, 2)]\n+\n+\n @pytest.mark.parametrize(\n     (\"input\", \"expected\", \"input_dtype\", \"output_dtype\"),\n     [\ndiff --git a/py-polars/tests/unit/operations/test_over.py b/py-polars/tests/unit/operations/test_over.py\nindex 230acc627745..052ed890ba6c 100644\n--- a/py-polars/tests/unit/operations/test_over.py\n+++ b/py-polars/tests/unit/operations/test_over.py\n@@ -187,3 +187,13 @@ def test_over_duplicate_partition_by_26921() -> None:\n     df = pl.DataFrame({\"x\": [1, 2, 3]})\n     with pytest.raises(pl.exceptions.DuplicateError):\n         df.with_columns(pl.len().over(\"x\", \"x\"))\n+\n+\n+def test_count_over_aggregated_list_respects_inner_nulls_27031() -> None:\n+    df = pl.DataFrame({\"g\": [1, 1, 1], \"x\": [1, 2, None]})\n+\n+    result = df.with_columns(\n+        pl.col(\"x\").cum_sum().count().over(\"g\").alias(\"x_count\"),\n+    )\n+\n+    assert result.get_column(\"x_count\").to_list() == [2, 2, 2]\n",
+  "problem_statement": "Null count check for fast-path Count aggregation incorrectly handles aggregated lists\n### Checks\n\n- [x] I have checked that this issue has not already been reported.\n- [x] I have confirmed this bug exists on the [latest version](https://pypi.org/project/polars/) of Polars.\n\n### Reproducible example\n\n```python\nimport polars as pl\n\ndf = pl.DataFrame({\"g\": [1, 1, 1], \"x\": [1, 2, None]})\nprint(\n    df\n    .with_columns(\n        pl.col(\"x\").cum_sum().over(\"g\").alias(\"x_cum_sum\"),\n        pl.col(\"x\").cum_sum().count().over(\"g\").alias(\"x_bad\")\n    )\n    .with_columns(\n        pl.col(\"x_cum_sum\").count().over(\"g\").alias(\"x_good\"),\n    )\n)\n```\n\n\n### Log output\n\n```shell\nasync thread count: 32\nblocking thread count: 512\nshape: (3, 5)\n\u250c\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n\u2502 g   \u2506 x    \u2506 x_cum_sum \u2506 x_bad \u2506 x_good \u2502\n\u2502 --- \u2506 ---  \u2506 ---       \u2506 ---   \u2506 ---    \u2502\n\u2502 i64 \u2506 i64  \u2506 i64       \u2506 u32   \u2506 u32    \u2502\n\u255e\u2550\u2550\u2550\u2550\u2550\u256a\u2550\u2550\u2550\u2550\u2550\u2550\u256a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u256a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u256a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2561\n\u2502 1   \u2506 1    \u2506 1         \u2506 3     \u2506 2      \u2502\n\u2502 1   \u2506 2    \u2506 3         \u2506 3     \u2506 2      \u2502\n\u2502 1   \u2506 null \u2506 null      \u2506 3     \u2506 2      \u2502\n\u2514\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n```\n\n### Issue description\n\nWhen using `over` or a `group_by`, `count` incorrectly includes null values if we already have an aggregated list, such as with `pl.col(\"x\").cum_sum().count().over(\"g\")`\n\n### Expected behavior\n\nWe should not include the nulls in count, so `x_bad` in the example above should equal to `x_good`\n\n### Installed versions\n\n<details>\n\n```\n--------Version info---------\nPolars:              1.39.3\nIndex type:          UInt32\nPlatform:            Linux-5.14.0-503.34.1.el9_5.x86_64-x86_64-with-glibc2.34\nPython:              3.12.9 (main, Jun 20 2025, 00:00:00) [GCC 11.5.0 20240719 (Red Hat 11.5.0-5)]\nRuntime:             rt32\n\n----Optional dependencies----\nAzure CLI            <not installed>\nadbc_driver_manager  <not installed>\naltair               <not installed>\nazure.identity       <not installed>\nboto3                1.35.88\ncloudpickle          3.1.2\nconnectorx           0.4.4\ndeltalake            1.3.1\nfastexcel            <not installed>\nfsspec               2025.12.0\ngevent               <not installed>\ngoogle.auth          2.45.0\ngreat_tables         0.20.0\nmatplotlib           3.10.8\nnumpy                2.3.5\nopenpyxl             3.1.5\npandas               2.2.3\npolars_cloud         <not installed>\npyarrow              22.0.0\npydantic             2.11.10\npyiceberg            <not installed>\nsqlalchemy           2.0.45\ntorch                <not installed>\nxlsx2csv             <not installed>\nxlsxwriter           <not installed>\n```\n\n</details>\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/pola-rs/polars/commit/e30adf761fac9aba7506f535fce749dbb923adb0"
+  ],
+  "created_at": "2026-03-24T19:29:34Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/pola-rs/polars/tree/4a25caca0ab675b1afe95e45d0d24ad6bd78a26f",
+  "setup_cmds": [
+    "cargo test -q  (exit code: 101)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y python3.13-dev  (exit code: 0)",
+    "cargo test -q  (exit code: 124)",
+    "cargo test -q -j 1  (exit code: 101)",
+    "cargo test -q --lib --tests --bins  (exit code: 0)",
+    "cargo test -q  (exit code: 101)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y python3.13-dev  (exit code: 0)",
+    "cargo test -q  (exit code: 124)",
+    "cargo test -q -j 1  (exit code: 101)",
+    "cargo test -q --lib --tests --bins  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo test --lib --tests --bins -- --format json",
+    "cargo test --lib --tests --bins -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:pola-rs__polars-27032_linux"
+}

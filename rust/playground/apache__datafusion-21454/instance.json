@@ -1,0 +1,47 @@
+{
+  "repo": "apache/datafusion",
+  "pull_number": 21454,
+  "instance_id": "apache__datafusion-21454",
+  "issue_numbers": [
+    21431
+  ],
+  "base_commit": "540d8ecd5fc5ad07cb7ca5d77df9eb45f5da290e",
+  "patch": "diff --git a/datafusion/sql/src/expr/mod.rs b/datafusion/sql/src/expr/mod.rs\nindex fefbf134bd11c..d599373f0a313 100644\n--- a/datafusion/sql/src/expr/mod.rs\n+++ b/datafusion/sql/src/expr/mod.rs\n@@ -306,10 +306,19 @@ impl<S: ContextProvider> SqlToRel<'_, S> {\n                 data_type,\n                 value,\n                 uses_odbc_syntax: _,\n-            }) => Ok(Expr::Cast(Cast::new_from_field(\n-                Box::new(lit(value.into_string().unwrap())),\n-                self.convert_data_type_to_field(&data_type)?,\n-            ))),\n+            }) => {\n+                let value = match value.into_string() {\n+                    Some(value) => value,\n+                    None => {\n+                        return plan_err!(\"Typed literal requires a string payload\");\n+                    }\n+                };\n+\n+                Ok(Expr::Cast(Cast::new_from_field(\n+                    Box::new(lit(value)),\n+                    self.convert_data_type_to_field(&data_type)?,\n+                )))\n+            }\n \n             SQLExpr::IsNull(expr) => Ok(Expr::IsNull(Box::new(\n                 self.sql_expr_to_logical_expr(*expr, schema, planner_context)?,\n",
+  "test_patch": "diff --git a/datafusion/sql/tests/sql_integration.rs b/datafusion/sql/tests/sql_integration.rs\nindex 2c2c7eac8bfc4..574468f4b111f 100644\n--- a/datafusion/sql/tests/sql_integration.rs\n+++ b/datafusion/sql/tests/sql_integration.rs\n@@ -26,7 +26,7 @@ use std::vec;\n \n use arrow::datatypes::{TimeUnit::Nanosecond, *};\n use common::MockContextProvider;\n-use datafusion_common::{DataFusionError, Result, assert_contains};\n+use datafusion_common::{DFSchema, DataFusionError, Result, assert_contains};\n use datafusion_expr::{\n     ColumnarValue, CreateIndex, DdlStatement, ScalarFunctionArgs, ScalarUDF,\n     ScalarUDFImpl, Signature, Volatility, col, logical_plan::LogicalPlan,\n@@ -35,7 +35,7 @@ use datafusion_expr::{\n use datafusion_functions::{string, unicode};\n use datafusion_sql::{\n     parser::DFParser,\n-    planner::{NullOrdering, ParserOptions, SqlToRel},\n+    planner::{NullOrdering, ParserOptions, PlannerContext, SqlToRel},\n };\n \n use crate::common::{CustomExprPlanner, CustomTypePlanner, MockSessionState};\n@@ -52,6 +52,7 @@ use datafusion_functions_window::{rank::rank_udwf, row_number::row_number_udwf};\n use insta::{allow_duplicates, assert_snapshot};\n use rstest::rstest;\n use sqlparser::dialect::{Dialect, GenericDialect, HiveDialect, MySqlDialect};\n+use sqlparser::parser::Parser;\n \n mod cases;\n mod common;\n@@ -254,6 +255,25 @@ fn within_group_rejected_for_non_ordered_set_udaf() {\n     );\n }\n \n+#[test]\n+fn typed_literal_without_string_payload_returns_error() {\n+    let sql_expr = Parser::new(&GenericDialect {})\n+        .try_with_sql(\"time 17542368000000000\")\n+        .unwrap()\n+        .parse_expr()\n+        .unwrap();\n+    let context = MockContextProvider {\n+        state: MockSessionState::default(),\n+    };\n+    let sql_to_rel = SqlToRel::new(&context);\n+\n+    let err = sql_to_rel\n+        .sql_to_expr(sql_expr, &DFSchema::empty(), &mut PlannerContext::new())\n+        .expect_err(\"planning invalid typed literals should return an error\");\n+\n+    assert_contains!(err.to_string(), \"Typed literal requires a string payload\");\n+}\n+\n #[test]\n fn parse_ident_normalization_5() {\n     let sql = \"SELECT AGE FROM PERSON\";\n",
+  "problem_statement": "invalid `TIME` typed literal causes planner panic\n## Summary\n\nPlanning an invalid SQL expression such as:\n\n```sql\ntime 17542368000000000\n```\n\ncauses `datafusion-sql` to panic instead of returning a planner error.\n\nThe panic happens in the `SQLExpr::TypedString` branch inside `SqlToRel::sql_expr_to_logical_expr_internal`, where DataFusion assumes the typed literal payload is always a string and calls:\n\n```rust\nvalue.into_string().unwrap()\n```\n\nFor this input, the parser produces a typed-string-like AST path with a non-string value, so `into_string()` returns `None` and the planner aborts with `Option::unwrap()`.\n\n## Impact\n\n- Invalid user SQL can crash the planning path.\n- Embedders of DataFusion may see process-level panics instead of a recoverable SQL/planner error.\n- This is especially confusing when the original SQL is just malformed and should be rejected normally.\n\n## Reproduction\n\n``` rust\n    #[test]\n    fn test_sql_to_expr_panics_on_time_typed_string_without_string_literal() {\n        let schema = DFSchema::empty();\n        let mut planner_context = PlannerContext::default();\n\n        let expr_str = \"time 17542368000000000\";\n        let dialect = GenericDialect {};\n        let mut parser = Parser::new(&dialect).try_with_sql(expr_str).unwrap();\n        let sql_expr = parser.parse_expr().unwrap();\n\n        let context_provider = TestContextProvider::new();\n        let sql_to_rel = SqlToRel::new(&context_provider);\n\n        let panic = catch_unwind(AssertUnwindSafe(|| {\n            sql_to_rel\n                .sql_expr_to_logical_expr(sql_expr, &schema, &mut planner_context)\n                .unwrap();\n        }))\n        .expect_err(\"planning invalid TIME typed string syntax should panic today\");\n\n        let panic_message = if let Some(message) = panic.downcast_ref::<String>() {\n            message.as_str()\n        } else if let Some(message) = panic.downcast_ref::<&str>() {\n            message\n        } else {\n            \"\"\n        };\n\n        assert!(\n            panic_message.contains(\"called `Option::unwrap()` on a `None` value\"),\n            \"unexpected panic payload: {panic_message}\"\n        );\n    }\n```\n\n## Expected behavior\n\nDataFusion should return a normal `Result::Err(...)` describing invalid SQL or an unsupported typed literal payload.\n\nExamples of acceptable outcomes:\n\n- parser error\n- planner error\n- `not_impl_err!` / `plan_err!`\n\nAny of these would be preferable to a panic.\n\n## Why this happens\n\nThe problematic code path is effectively:\n\n```rust\nSQLExpr::TypedString(TypedString {\n    data_type,\n    value,\n    uses_odbc_syntax: _,\n}) => Ok(Expr::Cast(Cast::new(\n    Box::new(lit(value.into_string().unwrap())),\n    self.convert_data_type_to_field(&data_type)?\n        .data_type()\n        .clone(),\n))),\n```\n\nThis assumes `value` is always string-backed. For malformed input such as `time 17542368000000000`, that assumption does not hold.\n\n## Suggested fix direction\n\nReplace the `unwrap()` with explicit validation and return a planner error when the typed literal payload is not a string.\n\nPseudo-shape:\n\n```rust\nlet value = value.into_string().ok_or_else(|| {\n    plan_datafusion_err!(\"TIME/typed string literal requires a string payload\")\n})?;\n```\n\nThe exact error text can be adjusted to match DataFusion conventions.\n\n",
+  "hints_text": "take\n\n",
+  "all_hints_text": "take\n\n",
+  "commit_urls": [
+    "https://github.com/apache/datafusion/commit/f416e7120379a364c37b1ae667cd4f1fbe5785b7",
+    "https://github.com/apache/datafusion/commit/ccae88ed918563c4f456f7d1e4d7cf6783c172e1"
+  ],
+  "created_at": "2026-04-08T08:13:18Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/apache/datafusion/tree/540d8ecd5fc5ad07cb7ca5d77df9eb45f5da290e",
+  "setup_cmds": [
+    "apt-get update && apt-get install -y protobuf-compiler  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "cargo build  (exit code: 0)",
+    "cargo test  (exit code: 101)",
+    "cargo insta accept --force --workspace  (exit code: 101)",
+    "cargo install cargo-insta --locked  (exit code: 0)",
+    "cargo insta accept --force --workspace  (exit code: 2)",
+    "cargo insta accept --workspace  (exit code: 0)",
+    "cargo test  (exit code: 0)",
+    "apt-get update && apt-get install -y protobuf-compiler  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "cargo build  (exit code: 0)",
+    "cargo test  (exit code: 101)",
+    "cargo insta accept --force --workspace  (exit code: 101)",
+    "cargo install cargo-insta --locked  (exit code: 0)",
+    "cargo insta accept --force --workspace  (exit code: 2)",
+    "cargo insta accept --workspace  (exit code: 0)",
+    "cargo test  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo test -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:apache__datafusion-21454_linux"
+}

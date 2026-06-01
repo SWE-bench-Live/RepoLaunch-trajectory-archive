@@ -1,0 +1,44 @@
+{
+  "repo": "kedacore/keda",
+  "pull_number": 7642,
+  "instance_id": "kedacore__keda-7642",
+  "issue_numbers": [
+    7641
+  ],
+  "base_commit": "b800e7df72187ae9192e914381c5e8ee32e1e05e",
+  "patch": "diff --git a/CHANGELOG.md b/CHANGELOG.md\nindex a0f60aef02e..3ae334cf4cd 100644\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -97,6 +97,7 @@ To learn more about active deprecations, we recommend checking [GitHub Discussio\n - **Github Runner Scaler**: Improve URL construction and error handling ([#7495](https://github.com/kedacore/keda/pull/7495))\n - **Github Runner Scaler**: Limit HTTP error response logging ([#7469](https://github.com/kedacore/keda/pull/7469))\n - **Loki Scaler**: Limit HTTP error response logging ([#7469](https://github.com/kedacore/keda/pull/7469))\n+- **Metrics API Scaler**: Fix `aggregateFromKubeServiceEndpoints` using empty label selector that matched all EndpointSlices in the namespace instead of only the target service's ([#7641](https://github.com/kedacore/keda/issues/7641))\n - **NATS JetStream Scaler**: URL-encode user input in monitoring URL construction ([#7483](https://github.com/kedacore/keda/pull/7483))\n - **Prometheus Scaler**: Handle NaN results in the same manner as Inf ([#7475](https://github.com/kedacore/keda/issues/7475))\n - **Prometheus Scaler**: Limit HTTP error response logging ([#7469](https://github.com/kedacore/keda/pull/7469))\ndiff --git a/pkg/scalers/metrics_api_scaler.go b/pkg/scalers/metrics_api_scaler.go\nindex cbb00feab95..56eb802520c 100644\n--- a/pkg/scalers/metrics_api_scaler.go\n+++ b/pkg/scalers/metrics_api_scaler.go\n@@ -325,10 +325,9 @@ func (s *metricsAPIScaler) getEndpointsUrlsFromServiceURL(ctx context.Context, s\n \t}\n \t// get service serviceEndpointsSlices\n \tserviceEndpointsSlices := &discoveryV1.EndpointSliceList{}\n-\tserviceNameSelector := labels.NewSelector()\n-\tserviceNameSelector.Matches(labels.Set(map[string]string{\n+\tserviceNameSelector := labels.SelectorFromSet(labels.Set{\n \t\tdiscoveryV1.LabelServiceName: serviceName,\n-\t}))\n+\t})\n \terr = s.kubeClient.List(ctx, serviceEndpointsSlices, &client.ListOptions{\n \t\tLabelSelector: serviceNameSelector,\n \t\tNamespace:     namespace,\n",
+  "test_patch": "diff --git a/pkg/scalers/metrics_api_scaler_test.go b/pkg/scalers/metrics_api_scaler_test.go\nindex 4dd2ba3208f..8a4141672e6 100644\n--- a/pkg/scalers/metrics_api_scaler_test.go\n+++ b/pkg/scalers/metrics_api_scaler_test.go\n@@ -8,8 +8,12 @@ import (\n \t\"testing\"\n \t\"time\"\n \n+\t\"github.com/go-logr/logr\"\n \t\"github.com/stretchr/testify/assert\"\n \t\"github.com/stretchr/testify/mock\"\n+\tdiscoveryV1 \"k8s.io/api/discovery/v1\"\n+\tmetav1 \"k8s.io/apimachinery/pkg/apis/meta/v1\"\n+\t\"sigs.k8s.io/controller-runtime/pkg/client/fake\"\n \n \t\"github.com/kedacore/keda/v2/pkg/scalers/scalersconfig\"\n )\n@@ -255,3 +259,52 @@ func TestGetMetricValueErrorMessage(t *testing.T) {\n \n \tassert.Equal(t, err.Error(), \"/api/v1/: api returned 418\")\n }\n+\n+func TestGetEndpointsUrlsFromServiceURL_SelectorFiltersCorrectly(t *testing.T) {\n+\tready := true\n+\tport8080 := int32(8080)\n+\n+\ttargetSlice := &discoveryV1.EndpointSlice{\n+\t\tObjectMeta: metav1.ObjectMeta{\n+\t\t\tName:      \"my-service-abc\",\n+\t\t\tNamespace: \"my-namespace\",\n+\t\t\tLabels: map[string]string{\n+\t\t\t\tdiscoveryV1.LabelServiceName: \"my-service\",\n+\t\t\t},\n+\t\t},\n+\t\tPorts: []discoveryV1.EndpointPort{{Port: &port8080}},\n+\t\tEndpoints: []discoveryV1.Endpoint{{\n+\t\t\tAddresses:  []string{\"10.0.0.1\"},\n+\t\t\tConditions: discoveryV1.EndpointConditions{Ready: &ready},\n+\t\t}},\n+\t}\n+\n+\tunrelatedSlice := &discoveryV1.EndpointSlice{\n+\t\tObjectMeta: metav1.ObjectMeta{\n+\t\t\tName:      \"other-service-xyz\",\n+\t\t\tNamespace: \"my-namespace\",\n+\t\t\tLabels: map[string]string{\n+\t\t\t\tdiscoveryV1.LabelServiceName: \"other-service\",\n+\t\t\t},\n+\t\t},\n+\t\tPorts: []discoveryV1.EndpointPort{{Port: &port8080}},\n+\t\tEndpoints: []discoveryV1.Endpoint{{\n+\t\t\tAddresses:  []string{\"10.0.0.99\"},\n+\t\t\tConditions: discoveryV1.EndpointConditions{Ready: &ready},\n+\t\t}},\n+\t}\n+\n+\tkubeClient := fake.NewClientBuilder().\n+\t\tWithLists(&discoveryV1.EndpointSliceList{Items: []discoveryV1.EndpointSlice{*targetSlice, *unrelatedSlice}}).\n+\t\tBuild()\n+\n+\ts := metricsAPIScaler{\n+\t\tkubeClient: kubeClient,\n+\t\tlogger:     logr.Discard(),\n+\t}\n+\n+\turls, err := s.getEndpointsUrlsFromServiceURL(t.Context(), \"http://my-service.my-namespace.svc:8080/metrics\")\n+\tassert.NoError(t, err)\n+\tassert.Equal(t, []string{\"http://10.0.0.1:8080/metrics\"}, urls,\n+\t\t\"should only return endpoints from my-service, not other-service\")\n+}\n",
+  "problem_statement": "Metrics API scaler with aggregateFromKubeServiceEndpoints spuriously probes all pods in namespace\n### Report\n\nAfter configuring a Metrics API scaler with `aggregateFromKubeServiceEndpoints: true` and the URL of a headless service, pods unrelated to the service started to receive requests from the scaler. \n\nIt manifested as 404 errors in the logs of the unrelated pods, with the source IP being that of the KEDA operator pod. Only pods in the same namespace as the service are affected (ie. not cluster wide).\n\n\n### Expected Behavior\n\nKEDA should only query pods (endpoints) belonging to the service specified in the url metadata field.\n\n\n### Actual Behavior\n\nAll pods from the namespace are receiving requests from the KEDA operator.\n\n\n### Steps to Reproduce the Problem\n\n1. Deploy two headless services (A and B) in the same namespace and each with ready pods \n2. Create a ScaledObject with type: metrics-api, `aggregateFromKubeServiceEndpoints: \"true\"`, targeting services A\n3. Observe logs of the service B and see requests from KEDA Operator targeting the URL configured in the ScaledObject\n\n\n### Logs from KEDA operator\n\nn/a\n\n\n### KEDA Version\n\n2.19.0\n\n### Kubernetes Version\n\n1.34\n\n### Platform\n\nGoogle Cloud\n\n### Scaler Details\n\nMetrics API\n\n### Would you be open to contributing a fix?\n\nYes\n\n### Anything else?\n\n_No response_\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/kedacore/keda/commit/100f5bc23299ec23e2080da4fb84a7e2ce38d76a"
+  ],
+  "created_at": "2026-04-10T20:46:40Z",
+  "language": "Go",
+  "commit_url": "https://github.com/kedacore/keda/tree/b800e7df72187ae9192e914381c5e8ee32e1e05e",
+  "setup_cmds": [
+    "go mod download  (exit code: 1)",
+    "go env -w GOTOOLCHAIN=auto  (exit code: 0)",
+    "env | grep GOTOOLCHAIN  (exit code: 0)",
+    "GOTOOLCHAIN=auto go mod download  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 1)",
+    "GOTOOLCHAIN=auto go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest  (exit code: 0)",
+    "KUBEBUILDER_ASSETS=\"$($(go env GOPATH)/bin/setup-envtest use 1.35 -p path)\" GOTOOLCHAIN=auto go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 1)",
+    "go env -w GOTOOLCHAIN=auto  (exit code: 0)",
+    "env | grep GOTOOLCHAIN  (exit code: 0)",
+    "GOTOOLCHAIN=auto go mod download  (exit code: 0)",
+    "GOTOOLCHAIN=auto go build ./...  (exit code: 0)",
+    "GOTOOLCHAIN=auto go test ./...  (exit code: 1)",
+    "GOTOOLCHAIN=auto go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest  (exit code: 0)",
+    "KUBEBUILDER_ASSETS=\"$($(go env GOPATH)/bin/setup-envtest use 1.35 -p path)\" GOTOOLCHAIN=auto go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "KUBEBUILDER_ASSETS=\"$($(go env GOPATH)/bin/setup-envtest use 1.35 -p path)\" GOTOOLCHAIN=auto go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:kedacore__keda-7642_linux"
+}

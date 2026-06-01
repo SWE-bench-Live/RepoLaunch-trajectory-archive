@@ -1,0 +1,59 @@
+{
+  "repo": "shader-slang/slang",
+  "pull_number": 10758,
+  "instance_id": "shader-slang__slang-10758",
+  "issue_numbers": [
+    10421
+  ],
+  "base_commit": "9c4d9a5a80808b2b5cb95164a73e54e46f007573",
+  "patch": "diff --git a/source/slang/slang-ir-lower-dynamic-dispatch-insts.cpp b/source/slang/slang-ir-lower-dynamic-dispatch-insts.cpp\nindex 5893cd7b2df..0fdc4b4981d 100644\n--- a/source/slang/slang-ir-lower-dynamic-dispatch-insts.cpp\n+++ b/source/slang/slang-ir-lower-dynamic-dispatch-insts.cpp\n@@ -628,6 +628,9 @@ struct UntaggedUnionLoweringContext : public InstPassBase\n     // in emitMarshallingCode or produce invalid output for the current target.\n     bool containsUnmarshalableType(IRType* type)\n     {\n+        if (getResolvedInstForDecorations(type)->findDecoration<IRNonCopyableTypeDecoration>())\n+            return true;\n+\n         switch (type->getOp())\n         {\n         case kIROp_AtomicType:\n",
+  "test_patch": "diff --git a/tests/language-feature/dynamic-dispatch/diagnose-noncopyable-in-impl.slang b/tests/language-feature/dynamic-dispatch/diagnose-noncopyable-in-impl.slang\nindex 28ce40eb222..62bbb0f940d 100644\n--- a/tests/language-feature/dynamic-dispatch/diagnose-noncopyable-in-impl.slang\n+++ b/tests/language-feature/dynamic-dispatch/diagnose-noncopyable-in-impl.slang\n@@ -1,16 +1,14 @@\n // Non-copyable types have their copy semantics disabled, but AnyValue\n // marshalling copies data at the byte level, bypassing the type system's\n-// copy restrictions. The dyn interface validation rejects non-copyable\n-// members (error 33081), but regular interfaces currently allow them.\n+// copy restrictions. Both dyn interface validation (error 33081) and\n+// regular interface validation (error 41014) reject non-copyable members.\n //\n-// This test documents the inconsistency (#10421): the compiler silently\n-// accepts non-copyable fields in regular interface implementations, even\n-// though AnyValue packing effectively copies the data. Whether this is\n-// intentional or a bug depends on whether non-copyable semantics should\n-// be enforced at the marshalling level.\n+// This test verifies that error 41014 is emitted when a struct implementing\n+// a regular interface contains non-copyable fields, either directly or\n+// nested inside another struct. See #10421.\n \n-//DISABLE_DIAGNOSTIC_TEST:SIMPLE(diag=CHECK): -target spirv -conformance \"Impl:IFoo=0\" -conformance \"GoodImpl:IFoo=1\"\n-//DISABLE_DIAGNOSTIC_TEST:SIMPLE(diag=CHECK): -target hlsl -stage compute -entry computeMain -conformance \"Impl:IFoo=0\" -conformance \"GoodImpl:IFoo=1\"\n+//DIAGNOSTIC_TEST:SIMPLE(diag=CHECK): -target spirv -conformance \"Impl:IFoo=0\" -conformance \"ImplNested:IFoo=1\" -conformance \"GoodImpl:IFoo=2\"\n+//DIAGNOSTIC_TEST:SIMPLE(diag=CHECK): -target hlsl -stage compute -entry computeMain -conformance \"Impl:IFoo=0\" -conformance \"ImplNested:IFoo=1\" -conformance \"GoodImpl:IFoo=2\"\n \n [__NonCopyableType]\n struct NonCopyData\n@@ -31,6 +29,20 @@ export struct Impl : IFoo\n     int get() { return 1; }\n }\n \n+struct WrapperStruct\n+{\n+    NonCopyData wrapped;\n+    int padding;\n+}\n+\n+export struct ImplNested : IFoo\n+//CHECK:      ^^^^^^^^^^ type cannot be packed for dynamic dispatch\n+//CHECK:      ^^^^^^^^^^ type 'ImplNested' contains fields that cannot be packed into ordinary bytes for dynamic dispatch.\n+{\n+    WrapperStruct container;\n+    int get() { return 2; }\n+}\n+\n export struct GoodImpl : IFoo\n {\n     int v;\n",
+  "problem_statement": "Non-copyable type accepted in regular interface impl but rejected in dyn interface\n## Issue Description\n\nA struct marked `[__NonCopyableType]` used as a field in a regular interface implementation compiles without error, even though `dyn` interfaces reject non-copyable members with error 33081. AnyValue marshalling copies data at the byte level, bypassing copy restrictions, which may violate the invariants that non-copyable semantics are meant to enforce.\n\n## Reproducer Code\n\n```hlsl\ninterface IFoo { int get(); }\n[__NonCopyableType]\nstruct NonCopyData { int val; }\nexport struct Impl : IFoo {\n    NonCopyData data;\n    int get() { return 1; }\n}\nexport struct GoodImpl : IFoo {\n    int v;\n    int get() { return v; }\n}\nRWStructuredBuffer<int> out;\n[numthreads(1,1,1)]\nvoid computeMain() {\n    IFoo f = createDynamicObject<IFoo>(0, 0);\n    out[0] = f.get();\n}\n```\n\n**Command:**\n```bash\nslangc -target spirv test.slang\n```\n\n## Expected Behavior\n\nError diagnostic rejecting non-copyable field, consistent with `dyn` interface validation (error 33081).\n\n## Actual Behavior\n\nCompiles successfully (exit 0) with no warnings or errors.\n\n## Test to Enable\n\nWhen fixed, enable the DISABLED test `tests/language-feature/dynamic-dispatch/diagnose-noncopyable-in-impl.slang`.\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/shader-slang/slang/commit/925787e9d92b65063dd9de9a30ad0fa8308f333b",
+    "https://github.com/shader-slang/slang/commit/a066d9068b6006e44c56dd16a988d17516e1b520",
+    "https://github.com/shader-slang/slang/commit/544ced2fd6f20133d84bf1e44d73dca20ba22588",
+    "https://github.com/shader-slang/slang/commit/81c914acb300c9ea2bf00142613e4714fb6d293e",
+    "https://github.com/shader-slang/slang/commit/43f5424f504ab30ff398e4444e3959b079c848d6",
+    "https://github.com/shader-slang/slang/commit/61d793c1c71e6cc4afa033efd101718d0b1f6d64"
+  ],
+  "created_at": "2026-04-07T12:07:01Z",
+  "language": "C++",
+  "commit_url": "https://github.com/shader-slang/slang/tree/9c4d9a5a80808b2b5cb95164a73e54e46f007573",
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 1)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 2  (exit code: 1)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y libx11-dev  (exit code: 0)",
+    "cmake --build build --parallel 2  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "cat tools/slang-test/README.md  (exit code: 0)",
+    "./build/Release/bin/slang-test -use-test-server -server-count 2  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 1)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 2  (exit code: 1)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y libx11-dev  (exit code: 0)",
+    "cmake --build build --parallel 2  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "cat tools/slang-test/README.md  (exit code: 0)",
+    "./build/Release/bin/slang-test -use-test-server -server-count 2  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "ctest --test-dir build --output-on-failure -V",
+    "./build/Release/bin/slang-test --help",
+    "./build/Release/bin/slang-test -use-test-server -server-count 2 -v info"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:shader-slang__slang-10758_linux"
+}

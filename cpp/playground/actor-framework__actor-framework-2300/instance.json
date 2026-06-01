@@ -1,0 +1,36 @@
+{
+  "repo": "actor-framework/actor-framework",
+  "pull_number": 2300,
+  "instance_id": "actor-framework__actor-framework-2300",
+  "issue_numbers": [
+    2299
+  ],
+  "base_commit": "263d8d465ff54be37e3658d387cd8a048d9be811",
+  "patch": "diff --git a/libcaf_net/caf/net/abstract_actor_shell.cpp b/libcaf_net/caf/net/abstract_actor_shell.cpp\nindex 22cbf81bec..44cfeea3fe 100644\n--- a/libcaf_net/caf/net/abstract_actor_shell.cpp\n+++ b/libcaf_net/caf/net/abstract_actor_shell.cpp\n@@ -27,8 +27,13 @@ abstract_actor_shell::abstract_actor_shell(actor_config& cfg,\n   mailbox_.try_block();\n   resume_ = make_action([this] {\n     for (;;) {\n-      if (!consume_message() && try_block_mailbox())\n+      auto consumed = consume_message();\n+      if (terminated()) { // Stop unconditionally if the actor called `quit()`.\n         return;\n+      }\n+      if (!consumed && try_block_mailbox()) {\n+        return;\n+      }\n     }\n   });\n }\n@@ -52,9 +57,9 @@ void abstract_actor_shell::quit(error reason) {\n // -- mailbox access -----------------------------------------------------------\n \n mailbox_element_ptr abstract_actor_shell::next_message() {\n-  if (!mailbox_.blocked())\n-    return mailbox_.pop_front();\n-  return nullptr;\n+  if (mailbox_.closed() || mailbox_.blocked())\n+    return nullptr;\n+  return mailbox_.pop_front();\n }\n \n bool abstract_actor_shell::try_block_mailbox() {\n",
+  "test_patch": "diff --git a/libcaf_net/caf/net/actor_shell.test.cpp b/libcaf_net/caf/net/actor_shell.test.cpp\nindex 6270752cfc..1d4c8368ac 100644\n--- a/libcaf_net/caf/net/actor_shell.test.cpp\n+++ b/libcaf_net/caf/net/actor_shell.test.cpp\n@@ -104,6 +104,44 @@ class app_t : public net::octet_stream::upper_layer {\n   net::actor_shell_ptr self;\n };\n \n+/// Sends a message to itself on startup and then calls `quit()` from the\n+/// message handler.\n+struct quit_from_handler_app final : net::octet_stream::upper_layer {\n+  explicit quit_from_handler_app(actor observer) : observer_(observer) {\n+    // nop\n+  }\n+\n+  error start(net::octet_stream::lower_layer* down) override {\n+    self_ = net::make_actor_shell(down->manager());\n+    self_->set_behavior([this](const std::string&) {\n+      self_->quit(make_error(exit_reason::user_shutdown));\n+    });\n+    down->configure_read(net::receive_policy::up_to(2048));\n+    self_->mail(actor_cast<actor>(self_->ctrl())).send(observer_);\n+    return none;\n+  }\n+\n+  void prepare_send() override {\n+  }\n+\n+  bool done_sending() override {\n+    return true;\n+  }\n+\n+  void abort(const error&) override {\n+    // nop\n+  }\n+\n+  ptrdiff_t consume(byte_span buf, byte_span) override {\n+    return static_cast<ptrdiff_t>(buf.size());\n+  }\n+\n+private:\n+  actor observer_;\n+\n+  net::actor_shell_ptr self_;\n+};\n+\n actor_system_config& init(actor_system_config& cfg) {\n   cfg.set(\"caf.scheduler.max-threads\", 2);\n   cfg.load<net::middleman>();\n@@ -235,4 +273,26 @@ TEST(\"actor shells can use flows\") {\n   check_eq(to_string_view(buf), msg);\n }\n \n+TEST(\"GH-2299 regression\") {\n+  scoped_actor self{sys};\n+  auto& mpx = sys.network_manager().mpx();\n+  auto app = std::make_unique<quit_from_handler_app>(actor{self});\n+  auto transport = net::octet_stream::transport::make(fd1, std::move(app));\n+  auto mgr = net::socket_manager::make(&mpx, std::move(transport));\n+  require(mpx.start(mgr));\n+  fd1.id = net::invalid_socket_id;\n+  actor uut;\n+  self->receive([&uut](actor& x) { uut = x; },\n+                after(1s) >> [this] { fail(\"shell did not send its handle\"); });\n+  self->monitor(uut);\n+  self->mail(\"bye 1\"s).send(uut);\n+  self->mail(\"bye 2\"s).send(uut);\n+  self->receive(\n+    [this, uut](const down_msg& msg) {\n+      check_eq(msg.source, uut);\n+      check_eq(msg.reason, exit_reason::user_shutdown);\n+    },\n+    after(1s) >> [this] { fail(\"shell did not exit\"); });\n+}\n+\n } // WITH_FIXTURE(fixture)\n",
+  "problem_statement": "Calling `quit` in an actor shell trigges an assertion\nWe found a nasty bug in our actor shell implementation. The original setup involved sending requests from an actor shell and the program would die in a CAF assertion if that timed out. However, the root cause was simply that the error handler for the timeout calls `quit` and the actor shell then continues to try read more messages from the closed mailbox.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/actor-framework/actor-framework/commit/fa5707a79fcdf4881b3a52c7df47985271d54c17"
+  ],
+  "created_at": "2026-03-21T09:22:42Z",
+  "language": "C++",
+  "commit_url": "https://github.com/actor-framework/actor-framework/tree/263d8d465ff54be37e3658d387cd8a048d9be811",
+  "setup_cmds": [
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 1  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "ctest --test-dir build -VV"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:actor-framework__actor-framework-2300_linux"
+}

@@ -1,0 +1,46 @@
+{
+  "repo": "gui-cs/Terminal.Gui",
+  "pull_number": 4982,
+  "instance_id": "gui-cs__Terminal.Gui-4982",
+  "issue_numbers": [
+    4958
+  ],
+  "base_commit": "b35f1caa4009245404154b8579650e14de6e46c6",
+  "patch": "diff --git a/Terminal.Gui/Views/Selectors/OptionSelectorTEnum.cs b/Terminal.Gui/Views/Selectors/OptionSelectorTEnum.cs\nindex 56bcb96432..773b6121bf 100644\n--- a/Terminal.Gui/Views/Selectors/OptionSelectorTEnum.cs\n+++ b/Terminal.Gui/Views/Selectors/OptionSelectorTEnum.cs\n@@ -10,7 +10,18 @@ public sealed class OptionSelector<TEnum> : OptionSelector, IValue where TEnum :\n     /// <summary>\n     ///     Initializes a new instance of the <see cref=\"OptionSelector{TEnum}\"/> class.\n     /// </summary>\n-    public OptionSelector () => Labels = Enum.GetValues<TEnum> ().Select (f => f.ToString ()).ToArray ();\n+    public OptionSelector ()\n+    {\n+        // Reset Value so that the Values setter can auto-set it to the first actual enum value.\n+        // The base OptionSelector constructor sets Value = 0, which may not be a valid enum member.\n+        base.Value = null;\n+\n+        // Set actual enum int values (bypass the throwing override via base).\n+        base.Values = Enum.GetValues<TEnum> ().Select (f => Convert.ToInt32 (f)).ToList ().AsReadOnly ();\n+\n+        // Set labels, which triggers CreateSubViews + UpdateChecked.\n+        Labels = Enum.GetNames<TEnum> ();\n+    }\n \n     /// <summary>\n     ///     Gets or sets the value of the selected option.\ndiff --git a/Terminal.Gui/Views/Selectors/SelectorBase.cs b/Terminal.Gui/Views/Selectors/SelectorBase.cs\nindex 04f4315245..49ce2e74c6 100644\n--- a/Terminal.Gui/Views/Selectors/SelectorBase.cs\n+++ b/Terminal.Gui/Views/Selectors/SelectorBase.cs\n@@ -535,7 +535,7 @@ protected void SetLayout ()\n         // total width via PosAlign.CalculateMinDimension, which reads Frame.Width.\n         // Without this, newly-created subviews have Frame.Width == 0 on the first\n         // layout pass, causing the selector to be sized too narrow.\n-        if (Orientation != Orientation.Horizontal || SubViews.Count <= 0)\n+        if (Orientation != Orientation.Horizontal || SubViews.Count == 0)\n         {\n             return;\n         }\n",
+  "test_patch": "diff --git a/Tests/UnitTestsParallelizable/Views/OptionSelectorTests.cs b/Tests/UnitTestsParallelizable/Views/OptionSelectorTests.cs\nindex d22b41fc0e..915fb274b0 100644\n--- a/Tests/UnitTestsParallelizable/Views/OptionSelectorTests.cs\n+++ b/Tests/UnitTestsParallelizable/Views/OptionSelectorTests.cs\n@@ -1071,4 +1071,103 @@ public void Activated_Event_Ancestor_Receives_OptionSelector_Value_Via_BubbleAct\n     }\n \n     #endregion\n+\n+    #region OptionSelector<TEnum> Tests\n+\n+    private enum TestEnumZero\n+    {\n+        Alpha,\n+        Beta,\n+        Gamma\n+    }\n+\n+    private enum TestEnumNonZero\n+    {\n+        Alpha = 1,\n+        Beta = 2,\n+        Gamma = 3\n+    }\n+\n+    private enum TestEnumSparse\n+    {\n+        Low = 5,\n+        Mid = 10,\n+        High = 20\n+    }\n+\n+    [Fact]\n+    // Copilot\n+    public void Generic_Initialization_ZeroBased_FirstCheckBoxIsChecked ()\n+    {\n+        OptionSelector<TestEnumZero> selector = new ();\n+\n+        Assert.Equal (TestEnumZero.Alpha, selector.Value);\n+        Assert.Equal (0, ((OptionSelector)selector).Value);\n+\n+        List<int> expectedValues = [0, 1, 2];\n+        Assert.Equal (expectedValues, selector.Values);\n+\n+        CheckBox first = selector.SubViews.OfType<CheckBox> ().First (cb => selector.GetCheckBoxValue (cb) == 0);\n+        Assert.Equal (CheckState.Checked, first.Value);\n+    }\n+\n+    [Fact]\n+    // Copilot\n+    public void Generic_Initialization_NonZeroBased_FirstCheckBoxIsChecked ()\n+    {\n+        OptionSelector<TestEnumNonZero> selector = new ();\n+\n+        Assert.Equal (TestEnumNonZero.Alpha, selector.Value);\n+        Assert.Equal (1, ((OptionSelector)selector).Value);\n+\n+        List<int> expectedValues = [1, 2, 3];\n+        Assert.Equal (expectedValues, selector.Values);\n+\n+        CheckBox first = selector.SubViews.OfType<CheckBox> ().First (cb => selector.GetCheckBoxValue (cb) == 1);\n+        Assert.Equal (CheckState.Checked, first.Value);\n+\n+        // Other checkboxes should be unchecked\n+        foreach (CheckBox cb in selector.SubViews.OfType<CheckBox> ().Where (cb => selector.GetCheckBoxValue (cb) != 1))\n+        {\n+            Assert.Equal (CheckState.UnChecked, cb.Value);\n+        }\n+    }\n+\n+    [Fact]\n+    // Copilot\n+    public void Generic_Initialization_SparseEnum_FirstCheckBoxIsChecked ()\n+    {\n+        OptionSelector<TestEnumSparse> selector = new ();\n+\n+        Assert.Equal (TestEnumSparse.Low, selector.Value);\n+        Assert.Equal (5, ((OptionSelector)selector).Value);\n+\n+        List<int> expectedValues = [5, 10, 20];\n+        Assert.Equal (expectedValues, selector.Values);\n+\n+        CheckBox first = selector.SubViews.OfType<CheckBox> ().First (cb => selector.GetCheckBoxValue (cb) == 5);\n+        Assert.Equal (CheckState.Checked, first.Value);\n+    }\n+\n+    [Fact]\n+    // Copilot\n+    public void Generic_Initialization_HasCorrectLabels ()\n+    {\n+        OptionSelector<TestEnumZero> selector = new ();\n+\n+        List<string> expectedLabels = [\"Alpha\", \"Beta\", \"Gamma\"];\n+        Assert.Equal (expectedLabels, selector.Labels);\n+        Assert.Equal (3, selector.SubViews.OfType<CheckBox> ().Count ());\n+    }\n+\n+    [Fact]\n+    // Copilot\n+    public void Generic_Values_Set_Throws ()\n+    {\n+        OptionSelector<TestEnumZero> selector = new ();\n+\n+        Assert.Throws<InvalidOperationException> (() => selector.Values = [1, 2]);\n+    }\n+\n+    #endregion\n }\n",
+  "problem_statement": "`OptionSelector<TEnum>` needs  `UpdateChecked()` called explicitly.\nA fresh `OptionSelector<TEnum>` has `Value = 0` but none of the CheckBoxes show as `Checked` until `UpdateChecked()` gets called explicitly.\r\n\r\nSubViews.Count <= 0` works but `Count` can't be negative, so `== 0` reads a bit more naturally.\r\n\r\n_Originally posted by @rcdailey in https://github.com/gui-cs/Terminal.Gui/pull/4911#issuecomment-4240126247_\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/gui-cs/Terminal.Gui/commit/82f1fc2c896e163f3eb4ec92f138e3af2ec6b521",
+    "https://github.com/gui-cs/Terminal.Gui/commit/556cf5ae0cda4d17fc5741de08bff123d0768682",
+    "https://github.com/gui-cs/Terminal.Gui/commit/59224ace8e3efa66641b89c6345f6f69138fff5f",
+    "https://github.com/gui-cs/Terminal.Gui/commit/1a959c8cc3d22d1195908eb0f0040d1c416fcdfe"
+  ],
+  "created_at": "2026-04-17T01:59:41Z",
+  "language": "C#",
+  "commit_url": "https://github.com/gui-cs/Terminal.Gui/tree/b35f1caa4009245404154b8579650e14de6e46c6",
+  "setup_cmds": [
+    "dotnet restore  (exit code: 0)",
+    "dotnet build --configuration Debug --no-restore  (exit code: 0)",
+    "dotnet test --no-build  (exit code: 8)",
+    "dotnet test --project Tests/UnitTests.NonParallelizable --no-build --verbosity normal  (exit code: 0)",
+    "dotnet test --project Tests/UnitTestsParallelizable --no-build --verbosity normal  (exit code: 0)",
+    "dotnet test --project Tests/IntegrationTests --no-build --verbosity normal  (exit code: 0)",
+    "dotnet restore  (exit code: 0)",
+    "dotnet build --configuration Debug --no-restore  (exit code: 0)",
+    "dotnet test --no-build  (exit code: 8)",
+    "dotnet test --project Tests/UnitTests.NonParallelizable --no-build --verbosity normal  (exit code: 0)",
+    "dotnet test --project Tests/UnitTestsParallelizable --no-build --verbosity normal  (exit code: 0)",
+    "dotnet test --project Tests/IntegrationTests --no-build --verbosity normal  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "dotnet test --project Tests/UnitTests.NonParallelizable --no-build --verbosity normal --logger \"console;verbosity=detailed\"",
+    "dotnet test --project Tests/UnitTests.NonParallelizable --no-build --verbosity normal --output Detailed",
+    "dotnet test --project Tests/UnitTestsParallelizable --no-build --verbosity normal --output Detailed",
+    "dotnet test --project Tests/IntegrationTests --no-build --verbosity normal --output Detailed"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:gui-cs__Terminal.Gui-4982_linux"
+}

@@ -1,0 +1,48 @@
+{
+  "repo": "linq2db/linq2db",
+  "pull_number": 5464,
+  "instance_id": "linq2db__linq2db-5464",
+  "issue_numbers": [
+    5445
+  ],
+  "base_commit": "8032726a6142ab531c9fa7e068aa7468348788e3",
+  "patch": "diff --git a/Source/LinqToDB/Internal/SqlQuery/SimilarityMerger.cs b/Source/LinqToDB/Internal/SqlQuery/SimilarityMerger.cs\nindex 2d6f464334..f073a50293 100644\n--- a/Source/LinqToDB/Internal/SqlQuery/SimilarityMerger.cs\n+++ b/Source/LinqToDB/Internal/SqlQuery/SimilarityMerger.cs\n@@ -55,7 +55,8 @@ public bool TryMerge(NullabilityContext nullabilityContext, bool isNestedPredica\n \t\t\t\telse if (predicate2 is SqlPredicate.ExprExpr { Operator: SqlPredicate.Operator.Equal } exprExpr2\n \t\t\t\t\t&& (exprExpr2.UnknownAsValue == true || !isNestedPredicate))\n \t\t\t\t{\n-\t\t\t\t\tif (!isLogicalOr && isNull1.IsNot && !nullabilityContext.IsEmpty)\n+\t\t\t\t\tif (!isLogicalOr && isNull1.IsNot && !nullabilityContext.IsEmpty\n+\t\t\t\t\t\t&& !isNull1.Expr1.HasQueryParameter())\n \t\t\t\t\t{\n \t\t\t\t\t\tif (exprExpr2.Expr1.Equals(isNull1.Expr1, SqlExtensions.DefaultComparer))\n \t\t\t\t\t\t{\n",
+  "test_patch": "diff --git a/Tests/Linq/UserTests/Issue5445Tests.cs b/Tests/Linq/UserTests/Issue5445Tests.cs\nnew file mode 100644\nindex 0000000000..89aa85125c\n--- /dev/null\n+++ b/Tests/Linq/UserTests/Issue5445Tests.cs\n@@ -0,0 +1,75 @@\n+\ufeffusing System;\n+using System.Linq;\n+using System.Linq.Expressions;\n+\n+using LinqToDB;\n+using LinqToDB.Mapping;\n+\n+using NUnit.Framework;\n+\n+using Shouldly;\n+\n+namespace Tests.UserTests\n+{\n+\t[TestFixture]\n+\tpublic class Issue5445Tests : TestBase\n+\t{\n+\t\t[Table]\n+\t\tsealed class TestTable\n+\t\t{\n+\t\t\t[PrimaryKey]           public int  Id        { get; set; }\n+\t\t\t[Column, Nullable]     public int? NullField { get; set; }\n+\t\t}\n+\n+\t\tstatic readonly TestTable[] _testData =\n+\t\t[\n+\t\t\tnew() { Id = 1, NullField = 1 },\n+\t\t\tnew() { Id = 2, NullField = null },\n+\t\t];\n+\n+\t\t[Test]\n+\t\tpublic void NullableHasValueWithNonNullParam([IncludeDataSources(TestProvName.AllSQLite)] string context)\n+\t\t{\n+\t\t\tusing var db    = GetDataContext(context);\n+\t\t\tusing var table = db.CreateLocalTable(_testData);\n+\n+\t\t\tint? nullable = 1;\n+\t\t\tExpression<Func<TestTable, bool>> filter = t => nullable.HasValue && t.NullField == nullable;\n+\n+\t\t\tvar result = table.Where(filter).ToList();\n+\n+\t\t\tresult.Count.ShouldBe(1);\n+\t\t\tresult[0].Id.ShouldBe(1);\n+\t\t}\n+\n+\t\t[Test]\n+\t\tpublic void NullableHasValueWithNullParam([IncludeDataSources(TestProvName.AllSQLite)] string context)\n+\t\t{\n+\t\t\tusing var db    = GetDataContext(context);\n+\t\t\tusing var table = db.CreateLocalTable(_testData);\n+\n+\t\t\tint? nullable = null;\n+\t\t\tExpression<Func<TestTable, bool>> filter = t => nullable.HasValue && t.NullField == nullable;\n+\n+\t\t\t// HasValue is false, so the entire predicate is false \u2014 no rows should be returned\n+\t\t\tvar result = table.Where(filter).ToList();\n+\n+\t\t\tresult.ShouldBeEmpty();\n+\t\t}\n+\n+\t\t[Test]\n+\t\tpublic void NullableHasValueExtractedWithNullParam([IncludeDataSources(TestProvName.AllSQLite)] string context)\n+\t\t{\n+\t\t\tusing var db    = GetDataContext(context);\n+\t\t\tusing var table = db.CreateLocalTable(_testData);\n+\n+\t\t\tint? nullable = null;\n+\t\t\tbool hasValue = nullable.HasValue;\n+\n+\t\t\t// Control case: extracting HasValue before expression works correctly\n+\t\t\tvar result = table.Where(t => hasValue && t.NullField == nullable).ToList();\n+\n+\t\t\tresult.ShouldBeEmpty();\n+\t\t}\n+\t}\n+}\n",
+  "problem_statement": "Null checks optimization results in wrong query\n### Description\n\nPredicate `param.HasValue && row.Column == param` is reduced to `row.Column == param` during optimization, leading to wrong query being generated when parameter is null.\n\nI think I've located the source of the problem in `SimilarityMerger.TryMerge` method, but I am not sure how to correctly handle it.\n\n### Reproduction Steps\n\nOnly dependencies are Microsoft.Data.SqlClient 6.1.4 and linq2db 6.0.0 or later\nRun the following and capture queries sent to database\n\n```c#\npublic class TestTable\n{\n    [PrimaryKey]\n    public int Id { get; set; }\n\n    [Column, Nullable]\n    public int? NullField { get; set; }\n}\n\nstatic void Main()\n{\n    using DataConnection db = new(\"SqlServer2022\", ConnectionString);\n    var table = db.CreateTable<TestTable>(tableOptions: TableOptions.CreateIfNotExists);\n    int? nullable = 1;\n    Expression<Func<TestTable, bool>> filter = t => nullable.HasValue && t.NullField == nullable;\n\n    // 1. Equivalent to t => t.NullField == 1\n    _ = table.Where(filter).ToArray();\n\n    // 2. Equivalent to t => false\n    nullable = null;\n    _ = table.Where(filter).ToArray();\n\n    // 3. Same as 2 but HasValue moved out\n    bool hasValue = nullable.HasValue;\n    _ = table.Where(t => hasValue && t.NullField == nullable).ToArray();\n}\n```\n\nGenerated queries are:\n1. As expected:\n```sql\nSELECT [t].[Id], [t].[NullField]\nFROM [TestTable] [t]\nWHERE [t].[NullField] = @nullable\n```\n2. The issue: expected empty-by-definition query, result is not:\n```sql\nSELECT [t].[Id], [t].[NullField]\nFROM [TestTable] [t]\nWHERE [t].[NullField] IS NULL\n```\n3. With `HasValue` moved out from expression, resulting query is generated correctly:\n```sql\nSELECT [t].[Id], [t].[NullField]\nFROM [TestTable] [t]\nWHERE 1 = 0\n```\n\n### Exception details\n\n_No response_\n\n### Regression?\n\nSeems to be working fine in 5.4.1.9 and 4.4.1\nQueries 2 and 3 there are equal, both having `1 = 0` filtering condition\n\n### Linq To DB version\n\n6.0.0 and onwards\n\n### .NET version\n\n.NET 10.0\n\n### Database\n\nSQL Server 2022\n\n### Database provider\n\nMicrosoft.Data.SqlClient 6.1.4\n\n### Operating system\n\nWindows\n\n### Configuration\n\n_No response_\n",
+  "hints_text": "hit this today\n```cs\nint? A = null; int? B = 2;\ncontext.Table.Where(c => (A.HasValue && c.ColA == A) || (B.HasValue && c.ColB == B))\n```\nproduces this incorrect SQL:\n```sql\n... WHERE ColA IS NULL OR ColB = @B\n```\n\n",
+  "all_hints_text": "hit this today\n```cs\nint? A = null; int? B = 2;\ncontext.Table.Where(c => (A.HasValue && c.ColA == A) || (B.HasValue && c.ColB == B))\n```\nproduces this incorrect SQL:\n```sql\n... WHERE ColA IS NULL OR ColB = @B\n```\n\n",
+  "commit_urls": [
+    "https://github.com/linq2db/linq2db/commit/dc5e4a7c03bb712c0d261cde2de3b0b63b319379",
+    "https://github.com/linq2db/linq2db/commit/041c36292c4e46f3c37606c2108e15efb31360de",
+    "https://github.com/linq2db/linq2db/commit/791e382520c928bffe9aa0e0c0b9e03ad92e2073"
+  ],
+  "created_at": "2026-04-11T19:17:05Z",
+  "language": "C#",
+  "commit_url": "https://github.com/linq2db/linq2db/tree/8032726a6142ab531c9fa7e068aa7468348788e3",
+  "setup_cmds": [
+    "cp UserDataProviders.json.template UserDataProviders.json  (exit code: 0)",
+    "dotnet restore linq2db.Testing.slnf  (exit code: 0)",
+    "dotnet build linq2db.Testing.slnf -c Testing  (exit code: 0)",
+    "dotnet test linq2db.Testing.slnf -c Testing --no-build  (exit code: 1)",
+    "dotnet test linq2db.Testing.slnf -c Testing --no-build -v:n  (exit code: 1)",
+    "dotnet test Tests/Linq/Tests.csproj -c Testing --no-build -v:n  (exit code: 124)",
+    "cp UserDataProviders.json.template UserDataProviders.json  (exit code: 0)",
+    "dotnet restore linq2db.Testing.slnf  (exit code: 0)",
+    "dotnet build linq2db.Testing.slnf -c Testing  (exit code: 0)",
+    "dotnet test linq2db.Testing.slnf -c Testing --no-build  (exit code: 1)",
+    "dotnet test linq2db.Testing.slnf -c Testing --no-build -v:n  (exit code: 1)",
+    "dotnet test Tests/Linq/Tests.csproj -c Testing --no-build -v:n  (exit code: 124)"
+  ],
+  "test_cmds": [
+    "dotnet test Tests/Linq/Tests.csproj -c Testing --no-build --logger \"console;verbosity=detailed\" --filter \"FullyQualifiedName~SettingsReaderTests\"",
+    "dotnet test Tests/Linq/Tests.csproj -c Testing --no-build --logger \"console;verbosity=detailed\" --filter \"Name~SettingsReader\"",
+    "rg \"SettingsReaderTests\" -n Tests/Linq",
+    "grep -R \"SettingsReaderTests\" -n Tests/Linq",
+    "dotnet test Tests/Linq/Tests.csproj -c Testing --no-build --list-tests",
+    "dotnet test Tests/Linq/Tests.csproj -c Testing --no-build --filter \"Name=TestSystemType\" --logger \"trx;LogFileName=TestSystemType.trx\"",
+    "cat Tests/Linq/TestResults/TestSystemType.trx"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:linq2db__linq2db-5464_linux"
+}

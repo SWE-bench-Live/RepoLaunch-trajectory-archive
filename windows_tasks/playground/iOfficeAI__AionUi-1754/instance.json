@@ -1,0 +1,63 @@
+{
+  "repo": "iOfficeAI/AionUi",
+  "pull_number": 1754,
+  "instance_id": "iOfficeAI__AionUi-1754",
+  "issue_numbers": [
+    1753
+  ],
+  "base_commit": "245d1659124d64107e52745d21f073b396424eb0",
+  "patch": "diff --git a/src/process/bridge/fsBridge.ts b/src/process/bridge/fsBridge.ts\nindex cc1a985192..9e66290d39 100644\n--- a/src/process/bridge/fsBridge.ts\n+++ b/src/process/bridge/fsBridge.ts\n@@ -343,8 +343,9 @@ export function initFsBridge(): void {\n       const content = await fs.readFile(filePath, 'utf-8');\n       return content;\n     } catch (error) {\n-      // Return null for missing files (e.g., cleaned-up temp workspaces)\n-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {\n+      const code = (error as NodeJS.ErrnoException).code;\n+      // Return null for missing or locked files (e.g., cleaned-up temp workspaces, Windows file locks)\n+      if (code === 'ENOENT' || code === 'EBUSY') {\n         return null;\n       }\n       console.error('Failed to read file:', error);\n@@ -360,7 +361,8 @@ export function initFsBridge(): void {\n       // Convert Node.js Buffer to ArrayBuffer\n       return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);\n     } catch (error) {\n-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {\n+      const code = (error as NodeJS.ErrnoException).code;\n+      if (code === 'ENOENT' || code === 'EBUSY') {\n         return null;\n       }\n       console.error('Failed to read file buffer:', error);\n",
+  "test_patch": "diff --git a/tests/unit/process/bridge/fsBridge.readFile.test.ts b/tests/unit/process/bridge/fsBridge.readFile.test.ts\nnew file mode 100644\nindex 0000000000..e381c9dc8e\n--- /dev/null\n+++ b/tests/unit/process/bridge/fsBridge.readFile.test.ts\n@@ -0,0 +1,179 @@\n+import { describe, it, expect, vi, beforeEach } from 'vitest';\n+\n+// Capture provider callbacks registered during initFsBridge()\n+const providerCallbacks: Record<string, (...args: unknown[]) => unknown> = {};\n+\n+vi.mock('@office-ai/platform', () => ({\n+  bridge: {\n+    buildProvider: () => ({\n+      provider: vi.fn(),\n+      invoke: vi.fn(),\n+    }),\n+    buildEmitter: () => ({\n+      emit: vi.fn(),\n+      on: vi.fn(),\n+    }),\n+  },\n+}));\n+\n+vi.mock('@process/utils/initStorage', () => ({\n+  getSkillsDir: () => '/mock/skills',\n+  getBuiltinSkillsCopyDir: () => '/mock/skills/_builtin',\n+  getSystemDir: () => ({\n+    workDir: '/mock/work',\n+    cacheDir: '/mock/cache',\n+    logDir: '/mock/logs',\n+    platform: 'linux',\n+    arch: 'x64',\n+  }),\n+  getAssistantsDir: () => '/mock/assistants',\n+}));\n+\n+vi.mock('@/common', () => {\n+  const makeProvider = (name: string) => ({\n+    provider: vi.fn((cb: (...args: unknown[]) => unknown) => {\n+      providerCallbacks[name] = cb;\n+    }),\n+  });\n+\n+  return {\n+    ipcBridge: {\n+      fs: {\n+        getFilesByDir: makeProvider('getFilesByDir'),\n+        getImageBase64: makeProvider('getImageBase64'),\n+        fetchRemoteImage: makeProvider('fetchRemoteImage'),\n+        readFile: makeProvider('readFile'),\n+        readFileBuffer: makeProvider('readFileBuffer'),\n+        createTempFile: makeProvider('createTempFile'),\n+        writeFile: makeProvider('writeFile'),\n+        createZip: makeProvider('createZip'),\n+        cancelZip: makeProvider('cancelZip'),\n+        getFileMetadata: makeProvider('getFileMetadata'),\n+        copyFilesToWorkspace: makeProvider('copyFilesToWorkspace'),\n+        removeEntry: makeProvider('removeEntry'),\n+        renameEntry: makeProvider('renameEntry'),\n+        readBuiltinRule: makeProvider('readBuiltinRule'),\n+        readBuiltinSkill: makeProvider('readBuiltinSkill'),\n+        readAssistantRule: makeProvider('readAssistantRule'),\n+        writeAssistantRule: makeProvider('writeAssistantRule'),\n+        deleteAssistantRule: makeProvider('deleteAssistantRule'),\n+        readAssistantSkill: makeProvider('readAssistantSkill'),\n+        writeAssistantSkill: makeProvider('writeAssistantSkill'),\n+        deleteAssistantSkill: makeProvider('deleteAssistantSkill'),\n+        listAvailableSkills: makeProvider('listAvailableSkills'),\n+        readSkillInfo: makeProvider('readSkillInfo'),\n+        importSkill: makeProvider('importSkill'),\n+        scanForSkills: makeProvider('scanForSkills'),\n+        detectCommonSkillPaths: makeProvider('detectCommonSkillPaths'),\n+        detectAndCountExternalSkills: makeProvider('detectAndCountExternalSkills'),\n+        importSkillWithSymlink: makeProvider('importSkillWithSymlink'),\n+        deleteSkill: makeProvider('deleteSkill'),\n+        getSkillPaths: makeProvider('getSkillPaths'),\n+        exportSkillWithSymlink: makeProvider('exportSkillWithSymlink'),\n+        getCustomExternalPaths: makeProvider('getCustomExternalPaths'),\n+        addCustomExternalPath: makeProvider('addCustomExternalPath'),\n+        removeCustomExternalPath: makeProvider('removeCustomExternalPath'),\n+        enableSkillsMarket: makeProvider('enableSkillsMarket'),\n+        disableSkillsMarket: makeProvider('disableSkillsMarket'),\n+      },\n+      fileStream: { contentUpdate: { emit: vi.fn() } },\n+    },\n+  };\n+});\n+\n+// Mock fs/promises to control readFile behavior\n+const mockReadFile = vi.fn();\n+vi.mock('fs/promises', async (importOriginal) => {\n+  const actual = await importOriginal<typeof import('fs/promises')>();\n+  return {\n+    ...actual,\n+    default: {\n+      ...actual,\n+      readFile: mockReadFile,\n+      stat: vi.fn(),\n+      readdir: vi.fn(),\n+      mkdir: vi.fn(),\n+      writeFile: vi.fn(),\n+      rm: vi.fn(),\n+      rename: vi.fn(),\n+      realpath: vi.fn(),\n+      copyFile: vi.fn(),\n+      symlink: vi.fn(),\n+      access: vi.fn(),\n+      unlink: vi.fn(),\n+      lstat: vi.fn(),\n+    },\n+  };\n+});\n+\n+async function setupProviders() {\n+  const { initFsBridge } = await import('@process/bridge/fsBridge');\n+  initFsBridge();\n+}\n+\n+function makeErrnoError(code: string, message: string): NodeJS.ErrnoException {\n+  const err = new Error(message) as NodeJS.ErrnoException;\n+  err.code = code;\n+  return err;\n+}\n+\n+describe('fsBridge readFile/readFileBuffer EBUSY handling', () => {\n+  beforeEach(async () => {\n+    vi.clearAllMocks();\n+    // Re-import and initialize to capture provider callbacks\n+    vi.resetModules();\n+  });\n+\n+  it('readFile returns null for EBUSY (file locked by another process)', async () => {\n+    await setupProviders();\n+    const readFileCb = providerCallbacks['readFile'] as (args: { path: string }) => Promise<string | null>;\n+    expect(readFileCb).toBeDefined();\n+\n+    mockReadFile.mockRejectedValueOnce(makeErrnoError('EBUSY', 'EBUSY: resource busy or locked'));\n+\n+    const result = await readFileCb({ path: '/some/locked/file.pptx' });\n+    expect(result).toBeNull();\n+  });\n+\n+  it('readFile returns null for ENOENT (missing file)', async () => {\n+    await setupProviders();\n+    const readFileCb = providerCallbacks['readFile'] as (args: { path: string }) => Promise<string | null>;\n+\n+    mockReadFile.mockRejectedValueOnce(makeErrnoError('ENOENT', 'ENOENT: no such file or directory'));\n+\n+    const result = await readFileCb({ path: '/missing/file.txt' });\n+    expect(result).toBeNull();\n+  });\n+\n+  it('readFile throws for other errors (e.g., EPERM)', async () => {\n+    await setupProviders();\n+    const readFileCb = providerCallbacks['readFile'] as (args: { path: string }) => Promise<string | null>;\n+\n+    mockReadFile.mockRejectedValueOnce(makeErrnoError('EPERM', 'EPERM: operation not permitted'));\n+\n+    await expect(readFileCb({ path: '/forbidden/file.txt' })).rejects.toThrow('EPERM');\n+  });\n+\n+  it('readFileBuffer returns null for EBUSY', async () => {\n+    await setupProviders();\n+    const readFileBufferCb = providerCallbacks['readFileBuffer'] as (args: {\n+      path: string;\n+    }) => Promise<ArrayBuffer | null>;\n+    expect(readFileBufferCb).toBeDefined();\n+\n+    mockReadFile.mockRejectedValueOnce(makeErrnoError('EBUSY', 'EBUSY: resource busy or locked'));\n+\n+    const result = await readFileBufferCb({ path: '/some/locked/file.pptx' });\n+    expect(result).toBeNull();\n+  });\n+\n+  it('readFile returns content when file is accessible', async () => {\n+    await setupProviders();\n+    const readFileCb = providerCallbacks['readFile'] as (args: { path: string }) => Promise<string | null>;\n+\n+    mockReadFile.mockResolvedValueOnce('file content');\n+\n+    const result = await readFileCb({ path: '/valid/file.txt' });\n+    expect(result).toBe('file content');\n+  });\n+});\n",
+  "problem_statement": "fix: handle EBUSY in fsBridge readFile/readFileBuffer\n## Problem\n\nSentry issue [ELECTRON-D1](https://iofficeai.sentry.io/issues/ELECTRON-D1) \u2014 283 occurrences.\n\n`fsBridge.ts` `readFile` provider throws unhandled `EBUSY: resource busy or locked` when a file is locked by another process (common on Windows with open `.pptx`, `.docx` files).\n\nThe catch block only handles `ENOENT`, so `EBUSY` is re-thrown as an unhandled promise rejection.\n\n## Fix\n\nReturn `null` for `EBUSY` errors in both `readFile` and `readFileBuffer` providers, consistent with the existing `ENOENT` handling for inaccessible files.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/iOfficeAI/AionUi/commit/6d712f37da071fd8144aa9890949a3f02457fe7a",
+    "https://github.com/iOfficeAI/AionUi/commit/38e5e305f88bb0e9bf901f63fac2d33f98e8f842"
+  ],
+  "created_at": "2026-03-26T12:27:19Z",
+  "language": "TypeScript",
+  "commit_url": "https://github.com/iOfficeAI/AionUi/tree/245d1659124d64107e52745d21f073b396424eb0",
+  "setup_cmds": [
+    "nvm --version; choco --version  (exit code: 0)",
+    "nvm list available  (exit code: 0)",
+    "nvm install 18.20.4; nvm use 18.20.4; node -v; npm -v; npx -v  (exit code: 0)",
+    "npm install --save-dev typescript@5.4.5; npx tsc --version  (exit code: 124)",
+    "choco install -y python; nvm install 22.22.2; nvm use 22.22.2; node -v; npm -v  (exit code: 0)",
+    "npm install corepack@latest; corepack enable; corepack prepare pnpm@latest --activate; corepack prepare yarn@stable --activate  (exit code: 0)",
+    "dir  (exit code: 0)",
+    "python --version  (exit code: 1)",
+    "refreshenv; python --version  (exit code: 1)",
+    "Import-Module $env:ChocolateyInstall\\helpers\\chocolateyProfile.psm1; refreshenv; python --version  (exit code: 0)",
+    "bun --version  (exit code: 1)",
+    "choco install -y bun  (exit code: 0)",
+    "Import-Module $env:ChocolateyInstall\\helpers\\chocolateyProfile.psm1; refreshenv; bun --version  (exit code: 0)",
+    "bun install --no-frozen-lockfile  (exit code: 1)",
+    "Set-Content -Path bunx.cmd -Value \"@echo off`r`nbun x %*\"  (exit code: 0)",
+    "bun install --no-frozen-lockfile  (exit code: 0)",
+    "npm test  (exit code: 0)",
+    "nvm --version; choco --version  (exit code: 0)",
+    "nvm list available  (exit code: 0)",
+    "nvm install 18.20.4; nvm use 18.20.4; node -v; npm -v; npx -v  (exit code: 0)",
+    "npm install --save-dev typescript@5.4.5; npx tsc --version  (exit code: 124)",
+    "choco install -y python; nvm install 22.22.2; nvm use 22.22.2; node -v; npm -v  (exit code: 0)",
+    "npm install corepack@latest; corepack enable; corepack prepare pnpm@latest --activate; corepack prepare yarn@stable --activate  (exit code: 0)",
+    "dir  (exit code: 0)",
+    "python --version  (exit code: 1)",
+    "refreshenv; python --version  (exit code: 1)",
+    "Import-Module $env:ChocolateyInstall\\helpers\\chocolateyProfile.psm1; refreshenv; python --version  (exit code: 0)",
+    "bun --version  (exit code: 1)",
+    "choco install -y bun  (exit code: 0)",
+    "Import-Module $env:ChocolateyInstall\\helpers\\chocolateyProfile.psm1; refreshenv; bun --version  (exit code: 0)",
+    "bun install --no-frozen-lockfile  (exit code: 1)",
+    "Set-Content -Path bunx.cmd -Value \"@echo off`r`nbun x %*\"  (exit code: 0)",
+    "bun install --no-frozen-lockfile  (exit code: 0)",
+    "npm test  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "npm test -- --reporter verbose"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:iOfficeAI__AionUi-1754_windows"
+}

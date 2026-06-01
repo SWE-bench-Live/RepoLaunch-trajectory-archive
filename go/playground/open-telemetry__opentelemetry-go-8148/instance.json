@@ -1,0 +1,37 @@
+{
+  "repo": "open-telemetry/opentelemetry-go",
+  "pull_number": 8148,
+  "instance_id": "open-telemetry__opentelemetry-go-8148",
+  "issue_numbers": [
+    8147
+  ],
+  "base_commit": "3b18b21580480e47497fd3105e4049e0866132b5",
+  "patch": "diff --git a/CHANGELOG.md b/CHANGELOG.md\nindex 9d5f5a43230..243ecbc9820 100644\n--- a/CHANGELOG.md\n+++ b/CHANGELOG.md\n@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm\n ### Added\n \n - Add `ByteSlice` and `ByteSliceValue` functions for new `BYTESLICE` attribute type in `go.opentelemetry.io/otel/attribute`. (#7948)\n+- Add `Error` field on `Record` type in `go.opentelemetry.io/otel/log/logtest`. (#8148)\n \n ### Changed\n \n",
+  "test_patch": "diff --git a/log/logtest/assert.go b/log/logtest/assert.go\nindex dfd754425e3..3af20647044 100644\n--- a/log/logtest/assert.go\n+++ b/log/logtest/assert.go\n@@ -34,6 +34,7 @@ func AssertEqual[T Recording | Record](t TestingT, want, got T, opts ...AssertOp\n \t\tcmpopts.SortSlices(\n \t\t\tfunc(a, b log.KeyValue) bool { return a.Key < b.Key },\n \t\t), // Unordered compare of the key values.\n+\t\tcmpopts.EquateErrors(),\n \t\tcmpopts.EquateEmpty(), // Empty and nil collections are equal.\n \t}\n \tcmpOpts = append(cmpOpts, cfg.cmpOpts...)\ndiff --git a/log/logtest/assert_test.go b/log/logtest/assert_test.go\nindex 50f68071123..7fafdc355f0 100644\n--- a/log/logtest/assert_test.go\n+++ b/log/logtest/assert_test.go\n@@ -4,6 +4,7 @@\n package logtest\n \n import (\n+\t\"errors\"\n \t\"fmt\"\n \t\"testing\"\n \t\"time\"\n@@ -14,7 +15,10 @@ import (\n \t\"go.opentelemetry.io/otel/log\"\n )\n \n-var y2k = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)\n+var (\n+\ty2k     = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)\n+\terrBoom = errors.New(\"boom\")\n+)\n \n // Compile-time check to ensure testing structs implement TestingT.\n var (\n@@ -63,6 +67,7 @@ func TestAssertEqualRecording(t *testing.T) {\n \t\t\t\t\t{\n \t\t\t\t\t\tTimestamp:  y2k,\n \t\t\t\t\t\tContext:    t.Context(),\n+\t\t\t\t\t\tError:      errBoom,\n \t\t\t\t\t\tAttributes: []log.KeyValue{log.Int(\"n\", 1), log.String(\"foo\", \"bar\")},\n \t\t\t\t\t},\n \t\t\t\t},\n@@ -72,6 +77,7 @@ func TestAssertEqualRecording(t *testing.T) {\n \t\t\t\t\t{\n \t\t\t\t\t\tTimestamp:  y2k,\n \t\t\t\t\t\tContext:    t.Context(),\n+\t\t\t\t\t\tError:      errBoom,\n \t\t\t\t\t\tAttributes: []log.KeyValue{log.String(\"foo\", \"bar\"), log.Int(\"n\", 1)},\n \t\t\t\t\t},\n \t\t\t\t},\n@@ -145,11 +151,13 @@ func TestAssertEqualRecord(t *testing.T) {\n \t\t\ta: Record{\n \t\t\t\tTimestamp:  y2k,\n \t\t\t\tContext:    t.Context(),\n+\t\t\t\tError:      errBoom,\n \t\t\t\tAttributes: []log.KeyValue{log.Int(\"n\", 1), log.String(\"foo\", \"bar\")},\n \t\t\t},\n \t\t\tb: Record{\n \t\t\t\tTimestamp:  y2k,\n \t\t\t\tContext:    t.Context(),\n+\t\t\t\tError:      errBoom,\n \t\t\t\tAttributes: []log.KeyValue{log.String(\"foo\", \"bar\"), log.Int(\"n\", 1)},\n \t\t\t},\n \t\t\twant: true,\ndiff --git a/log/logtest/recorder.go b/log/logtest/recorder.go\nindex a6c509705c7..2d4e036aa6e 100644\n--- a/log/logtest/recorder.go\n+++ b/log/logtest/recorder.go\n@@ -88,6 +88,7 @@ type Record struct {\n \tSeverity          log.Severity\n \tSeverityText      string\n \tBody              log.Value\n+\tError             error\n \tAttributes        []log.KeyValue\n }\n \n@@ -219,6 +220,7 @@ func (l *logger) Emit(ctx context.Context, record log.Record) {\n \t\tSeverity:          record.Severity(),\n \t\tSeverityText:      record.SeverityText(),\n \t\tBody:              record.Body(),\n+\t\tError:             record.Err(),\n \t\tAttributes:        attrs,\n \t}\n \ndiff --git a/log/logtest/recorder_test.go b/log/logtest/recorder_test.go\nindex f9acae94a0f..d2ad1d090f7 100644\n--- a/log/logtest/recorder_test.go\n+++ b/log/logtest/recorder_test.go\n@@ -5,6 +5,7 @@ package logtest\n \n import (\n \t\"context\"\n+\t\"errors\"\n \t\"sync\"\n \t\"testing\"\n \t\"time\"\n@@ -102,6 +103,7 @@ func TestLoggerEnabledFnUnset(t *testing.T) {\n func TestRecorderLoggerEmitAndReset(t *testing.T) {\n \trec := NewRecorder()\n \tts := time.Now()\n+\terrBoom := errors.New(\"boom\")\n \n \tl := rec.Logger(t.Name())\n \tctx := t.Context()\n@@ -109,6 +111,7 @@ func TestRecorderLoggerEmitAndReset(t *testing.T) {\n \tr.SetTimestamp(ts)\n \tr.SetSeverity(log.SeverityInfo)\n \tr.SetBody(log.StringValue(\"Hello there\"))\n+\tr.SetErr(errBoom)\n \tr.AddAttributes(log.Int(\"n\", 1))\n \tr.AddAttributes(log.String(\"foo\", \"bar\"))\n \tl.Emit(ctx, r)\n@@ -125,6 +128,7 @@ func TestRecorderLoggerEmitAndReset(t *testing.T) {\n \t\t\t\tTimestamp: ts,\n \t\t\t\tSeverity:  log.SeverityInfo,\n \t\t\t\tBody:      log.StringValue(\"Hello there\"),\n+\t\t\t\tError:     errBoom,\n \t\t\t\tAttributes: []log.KeyValue{\n \t\t\t\t\tlog.Int(\"n\", 1),\n \t\t\t\t\tlog.String(\"foo\", \"bar\"),\n",
+  "problem_statement": "logtest: Support Error fields on Record\nFollows https://github.com/open-telemetry/opentelemetry-go/pull/7924\n\nWe need to add support for `Error` field in https://github.com/open-telemetry/opentelemetry-go/blob/main/log/logtest/recorder.go.\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/open-telemetry/opentelemetry-go/commit/80012042599137bd7e443b58f14dba3b6a342c11",
+    "https://github.com/open-telemetry/opentelemetry-go/commit/f79a521f41a27bae4d246d89497d29593a1960c9",
+    "https://github.com/open-telemetry/opentelemetry-go/commit/eb26396658fa7d101cc0177d37e0cec09a1482bf",
+    "https://github.com/open-telemetry/opentelemetry-go/commit/90fa3df5e3f0db4697f53caaca5ae7ce10870854"
+  ],
+  "created_at": "2026-04-07T11:11:50Z",
+  "language": "Go",
+  "commit_url": "https://github.com/open-telemetry/opentelemetry-go/tree/3b18b21580480e47497fd3105e4049e0866132b5",
+  "setup_cmds": [
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "go test ./... -v"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:open-telemetry__opentelemetry-go-8148_linux"
+}

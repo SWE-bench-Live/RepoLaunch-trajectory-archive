@@ -1,0 +1,35 @@
+{
+  "repo": "mgechev/revive",
+  "pull_number": 1686,
+  "instance_id": "mgechev__revive-1686",
+  "issue_numbers": [
+    1685
+  ],
+  "base_commit": "40cc0b32ab395a2d311eaaa82c38c556833780bf",
+  "patch": "diff --git a/RULES_DESCRIPTIONS.md b/RULES_DESCRIPTIONS.md\nindex f73ee6657..3a729f161 100644\n--- a/RULES_DESCRIPTIONS.md\n+++ b/RULES_DESCRIPTIONS.md\n@@ -1759,6 +1759,47 @@ _Limitations_: The rule doesn't rely on type information but on variable names t\n This means the rule search for `wg` (the defacto standard name for wait groups);\n if the waitgroup variable is named differently than `wg` the rule will skip it.\n \n+### Examples (use-waitgroup-go)\n+\n+Before (violation):\n+\n+```go\n+import \"sync\"\n+\n+func concurrentProcess(jobs int) {\n+\twg := sync.WaitGroup{}\n+\n+\twg.Add(jobs)\n+\n+\tfor range jobs {\n+\t\tgo func() {\n+\t\t\tdefer wg.Done()\n+\t\t\t// do something\n+\t\t}()\n+\t}\n+\n+\twg.Wait()\n+}\n+```\n+\n+After (fixed):\n+\n+```go\n+import \"sync\"\n+\n+func concurrentProcess(jobs int) {\n+\twg := sync.WaitGroup{}\n+\n+\tfor range jobs {\n+\t\twg.Go(func() {\n+\t\t\t// do something\n+\t\t})\n+\t}\n+\n+\twg.Wait()\n+}\n+```\n+\n _Configuration_: N/A\n \n ## useless-break\ndiff --git a/rule/use_waitgroup_go.go b/rule/use_waitgroup_go.go\nindex 6f04fd65c..47afc5381 100644\n--- a/rule/use_waitgroup_go.go\n+++ b/rule/use_waitgroup_go.go\n@@ -98,15 +98,9 @@ func (w *lintUseWaitGroupGo) analyzeBlock(b *ast.BlockStmt) {\n \t\t// we will iterate from the (i+1)-th statement up to the last statement of block.List\n \t\tfor i++; i < len(stmts); i++ {\n \t\t\tstmt := stmts[i]\n-\t\t\t// looking for a go statement\n-\t\t\tgoStmt, ok := stmt.(*ast.GoStmt)\n-\t\t\tif !ok {\n-\t\t\t\tcontinue // not a go statement\n-\t\t\t}\n-\n-\t\t\t// here we found a the go statement\n-\t\t\t// now let's check is the go statement is applied to a function literal that contains a wg.Done\n-\t\t\tif !w.hasCallToWgDone(goStmt) {\n+\t\t\t// looking for a go statement (directly or inside a for/range loop)\n+\t\t\tgoStmt := w.findGoStmtWithWgDone(stmt)\n+\t\t\tif goStmt == nil {\n \t\t\t\tcontinue\n \t\t\t}\n \n@@ -122,6 +116,38 @@ func (w *lintUseWaitGroupGo) analyzeBlock(b *ast.BlockStmt) {\n \t}\n }\n \n+// findGoStmtWithWgDone returns the first go statement with wg.Done found in stmt,\n+// searching directly and one level deep inside for/range loop bodies.\n+// Returns nil if no such go statement is found.\n+func (w *lintUseWaitGroupGo) findGoStmtWithWgDone(stmt ast.Stmt) *ast.GoStmt {\n+\tswitch s := stmt.(type) {\n+\tcase *ast.GoStmt:\n+\t\tif w.hasCallToWgDone(s) {\n+\t\t\treturn s\n+\t\t}\n+\tcase *ast.ForStmt:\n+\t\treturn w.seekGoStmtWithWgDoneInBlock(s.Body)\n+\tcase *ast.RangeStmt:\n+\t\treturn w.seekGoStmtWithWgDoneInBlock(s.Body)\n+\t}\n+\treturn nil\n+}\n+\n+// seekGoStmtWithWgDoneInBlock returns the first go statement with wg.Done\n+// found as a direct child of block, or nil if none is found.\n+func (w *lintUseWaitGroupGo) seekGoStmtWithWgDoneInBlock(block *ast.BlockStmt) *ast.GoStmt {\n+\tif block == nil {\n+\t\treturn nil\n+\t}\n+\tfor _, s := range block.List {\n+\t\tgoStmt, ok := s.(*ast.GoStmt)\n+\t\tif ok && w.hasCallToWgDone(goStmt) {\n+\t\t\treturn goStmt\n+\t\t}\n+\t}\n+\treturn nil\n+}\n+\n // hasCallToWgDone returns true if the given go statement\n // calls to a function literal containing a call to wg.Done, false otherwise.\n func (*lintUseWaitGroupGo) hasCallToWgDone(goStmt *ast.GoStmt) bool {\n",
+  "test_patch": "diff --git a/testdata/go1.25/use_waitgroup_go.go b/testdata/go1.25/use_waitgroup_go.go\nindex a827a49e9..3287d219b 100644\n--- a/testdata/go1.25/use_waitgroup_go.go\n+++ b/testdata/go1.25/use_waitgroup_go.go\n@@ -51,3 +51,19 @@ func useWaitGroupGo() {\n \t}()\n \twg.Wait()\n }\n+\n+// from https://github.com/kubernetes-sigs/kueue/blob/4f2d0d2ef10c634daa4766be5f308fe2cda7503a/cmd/importer/util/util.go#L260\n+func concurrentJobs(jobs uint) {\n+\twg := sync.WaitGroup{}\n+\n+\twg.Add(int(jobs)) // MATCH /replace wg.Add()...go {...wg.Done()...} with wg.Go(...)/\n+\n+\tfor range int(jobs) {\n+\t\tgo func() {\n+\t\t\tdefer wg.Done()\n+\t\t\tdoSomething()\n+\t\t}()\n+\t}\n+\n+\twg.Wait()\n+}\n",
+  "problem_statement": "use-waitgroup-go: support for range statements\n**Is your feature request related to a problem? Please describe.**\n\nCurrently, the rule `use-waitgroup-go:` does not report changing to `wg.Go(...)` in the following code:\n\n```go\n\twg := sync.WaitGroup{}\n\n\twg.Add(int(jobs))\n\n\tfor range int(jobs) {\n\t\tgo func() {\n\t\t\tdefer wg.Done()\n\t\t\tdoSomething()\n\t\t}()\n\t}\n\n\twg.Wait()\n```\n\n**Describe the solution you'd like**\n\nUpdate the `use-waitgroup-go` rule.\n\n**Additional context**\n\nIt's from https://github.com/kubernetes-sigs/kueue/pull/9892\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/mgechev/revive/commit/c48f53b07751fa339959d1d0aa2ff4751da4b991",
+    "https://github.com/mgechev/revive/commit/8570d939f7a8c2eccc545151d2877cdce037a012"
+  ],
+  "created_at": "2026-03-16T12:02:49Z",
+  "language": "Go",
+  "commit_url": "https://github.com/mgechev/revive/tree/40cc0b32ab395a2d311eaaa82c38c556833780bf",
+  "setup_cmds": [
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 0)",
+    "go mod download  (exit code: 0)",
+    "go build ./...  (exit code: 0)",
+    "go test ./...  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "go test -v ./..."
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:mgechev__revive-1686_linux"
+}

@@ -1,0 +1,46 @@
+{
+  "repo": "esphome/esphome",
+  "pull_number": 15723,
+  "instance_id": "esphome__esphome-15723",
+  "issue_numbers": [
+    15634
+  ],
+  "base_commit": "8cdffef82a44ec58c43a290ca8b22f9e55071b8c",
+  "patch": "diff --git a/esphome/__main__.py b/esphome/__main__.py\nindex 25b404ae45c0..7879cdad0ca4 100644\n--- a/esphome/__main__.py\n+++ b/esphome/__main__.py\n@@ -750,8 +750,15 @@ def upload_using_esptool(\n             platformio_api.FlashImage(\n                 path=idedata.firmware_bin_path, offset=firmware_offset\n             ),\n-            *idedata.extra_flash_images,\n         ]\n+        for image in idedata.extra_flash_images:\n+            if not image.path.is_file():\n+                _LOGGER.warning(\n+                    \"Skipping missing flash image declared by platform: %s\",\n+                    image.path,\n+                )\n+                continue\n+            flash_images.append(image)\n \n     mcu = \"esp8266\"\n     if CORE.is_esp32:\n",
+  "test_patch": "diff --git a/tests/unit_tests/test_main.py b/tests/unit_tests/test_main.py\nindex 85536d2f1ce6..e07b4accf23f 100644\n--- a/tests/unit_tests/test_main.py\n+++ b/tests/unit_tests/test_main.py\n@@ -1231,6 +1231,48 @@ def test_upload_using_esptool_path_conversion(\n     assert partitions_path.endswith(\"partitions.bin\")\n \n \n+def test_upload_using_esptool_skips_missing_extra_flash_images(\n+    tmp_path: Path,\n+    mock_run_external_command_main: Mock,\n+    mock_get_idedata: Mock,\n+    caplog: pytest.LogCaptureFixture,\n+) -> None:\n+    \"\"\"A non-existent path in extra_flash_images must be filtered out with a\n+    warning, and must not appear in the esptool command line. Only the valid\n+    images are flashed. Regression test for\n+    https://github.com/esphome/esphome/issues/15634.\n+    \"\"\"\n+    setup_core(platform=PLATFORM_ESP32, tmp_path=tmp_path, name=\"test\")\n+    CORE.data[KEY_ESP32] = {KEY_VARIANT: VARIANT_ESP32}\n+\n+    missing_path = tmp_path / \"variants\" / \"tasmota\" / \"tinyuf2.bin\"\n+\n+    mock_idedata = MagicMock(spec=platformio_api.IDEData)\n+    mock_idedata.firmware_bin_path = tmp_path / \"firmware.bin\"\n+    mock_idedata.extra_flash_images = [\n+        platformio_api.FlashImage(path=tmp_path / \"bootloader.bin\", offset=\"0x1000\"),\n+        platformio_api.FlashImage(path=missing_path, offset=\"0x2d0000\"),\n+    ]\n+    mock_get_idedata.return_value = mock_idedata\n+\n+    (tmp_path / \"firmware.bin\").touch()\n+    (tmp_path / \"bootloader.bin\").touch()\n+    # Intentionally do NOT create missing_path\n+\n+    config = {CONF_ESPHOME: {\"platformio_options\": {}}}\n+\n+    with caplog.at_level(logging.WARNING, logger=\"esphome.__main__\"):\n+        result = upload_using_esptool(config, \"/dev/ttyUSB0\", None, None)\n+\n+    assert result == 0\n+    assert \"Skipping missing flash image\" in caplog.text\n+    assert str(missing_path) in caplog.text\n+\n+    cmd_list = list(mock_run_external_command_main.call_args[0][1:])\n+    assert str(missing_path) not in cmd_list\n+    assert \"0x2d0000\" not in cmd_list\n+\n+\n def test_upload_using_esptool_with_file_path(\n     tmp_path: Path,\n     mock_run_external_command_main: Mock,\n",
+  "problem_statement": "Picking wrong files when flashing\n### The problem\n\nHi,\n\nI used `esphome wizard my-device.yaml` to create a `my-device.yaml` for my ESP32, which is an Adafruit QT Py ESP32-S3 (4M Flash 2M PSRAM). See below for the generated config.\n\nNow I wanted to build and flash that to my board (using MacOS) using `esphome run my-device.yaml`.\nBut that failed:\n\n```\nFound multiple options for uploading, please choose one:\n  [1] /dev/cu.usbmodem101 (QT Py ESP32-S3 (4MB Flash 2MB PSRAM))\n  [2] Over The Air (p1s-temperature.local)\n(number): 1\nesptool v5.2.0\n\n Usage: esptool write-flash [OPTIONS] <address> <filename>...         \n       \n Try 'esptool write-flash -h' for help     \n Invalid value for '<address> <filename>...': [Errno 2] No such file or directory: '<PROJECTDIR>/.esphome/build/my-device/variants/tasmota/variants/adafruit_qtpy_esp32s3_n4r2/tinyuf2.bin'        \n```\nAnd indeed, there is no `<PROJECTDIR>/.esphome/build/my-device/variants` folder. And why \"tasmota\" at all?\n\nSo I tried the web version (`esphome dashboard`). It was able to build and flash to my board using the previously generated yaml file.\nNow I noticed that the esphome-cli uses esptool to flash the device, while the web-version uses esptool-js.\nIf I looked correctly, the web-version loads the built `<PROJECTDIR>/.esphome/build/my-device/.pioenvs/my-device/firmware.factory.bin` and flashes that using esptool-js.\nSo I looked at what esphome cli does. Inside `upload_using_esptool` it checks which images (`flash_images`) to flash. That is either a single file that is passed to the function or the function will determine itself which multiple files to flash based on some return value of `platformio_api.get_idedata`. I logged the command that was actually executed:\n\n```\nesptool --before default-reset --after hard-reset --baud 115200 --port /dev/cu.usbmodem2101 --chip esp32s3 write-flash -z --flash-size detect 0x10000  <PROJECTDIR>/.esphome/build/my-device/.pioenvs/my-device/firmware.bin 0x0  <PROJECTDIR>/.esphome/build/my-device/.pioenvs/my-device/bootloader.bin 0x8000  <PROJECTDIR>/.esphome/build/my-device/.pioenvs/my-device/partitions.bin 0x9000  <PROJECTDIR>/.esphome/build/my-device/.pioenvs/my-device/ota_data_initial.bin 0x2d0000  <PROJECTDIR>/.esphome/build/my-device/variants/tasmota/variants/adafruit_qtpy_esp32s3_n4r2/tinyuf2.bin\n```\n\nSo we get in the case where `upload_using_esptool` is determining itself which files to flash. That means, the function does not get passed the path to the generated `firmware.factory.bin` directly.\nTaking a closer look I noticed that the file-path, which gets passed to `upload_using_esptool` is taken from the command arguments, which means the arguments from the `esphome run`-call, which do not contain a `file`-argument.\n\nSo, am I doing something wrong, or did I find a bug? Maybe the bug is even in `platformio_api.get_idedata`, because it returns some tasmota image. When I removed that tasmota entry from `<PROJECTDIR>/.esphome/idedata/my-device.json` and run the `esphome run` command again, it was finally able to flash the device.\n\nSo, is it a bug of esphome or platformio?\nEven if it is a platformio bug I would at least expect the same behavior of the esphome-cli and esphome-dashboard/web-version. \ud83d\ude09 \n\n### Which version of ESPHome has the issue?\n\n2026.3.2\n\n### What type of installation are you using?\n\npip\n\n### What platform are you using?\n\nESP32\n\n### Component causing the issue\n\n_No response_\n\n### YAML Config\n\n```yaml\nesphome:\n  name: my-device\n\nesp32:\n  board: adafruit_qtpy_esp32s3_n4r2\n  framework:\n    type: esp-idf\n\n# Enable logging\nlogger:\n\n# Enable Home Assistant API\napi:\n  encryption:\n    key: \"KEY\"\n\nota:\n  - platform: esphome\n    password: \"KEY\"\n\nwifi:\n  ssid: \"SSID\"\n  password: \"KEY\"\n\n  # Enable fallback hotspot (captive portal) in case wifi connection fails\n  ap:\n    ssid: \"My-Device Fallback Hotspot\"\n    password: \"KEY\"\n\ncaptive_portal:\n```\n\n### Anything in the logs that might be useful for us?\n\n```txt\n\n```\n\n### Additional information\n\n_No response_\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/esphome/esphome/commit/5f76b78cfa3e3266bf2e65bc7ffdedd20551b070",
+    "https://github.com/esphome/esphome/commit/b6133f3d4f96dcd11213224182a6d78411bdf2bb",
+    "https://github.com/esphome/esphome/commit/f975485c6045704594e5988be99dd0a1de1ecc34"
+  ],
+  "created_at": "2026-04-13T23:37:51Z",
+  "language": "C++",
+  "commit_url": "https://github.com/esphome/esphome/tree/8cdffef82a44ec58c43a290ca8b22f9e55071b8c",
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "script/setup  (exit code: 1)",
+    "apt-get update && apt-get install -y python3.12-venv  (exit code: 0)",
+    "script/setup  (exit code: 0)",
+    "source venv/bin/activate && pytest  (exit code: 1)",
+    "useradd -m tester || true; chown -R tester:tester /testbed  (exit code: 0)",
+    "su - tester -c \"cd /testbed && source venv/bin/activate && pytest\"  (exit code: 127)",
+    "su - tester -c \"bash -lc 'cd /testbed && source venv/bin/activate && pytest'\"  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "script/setup  (exit code: 1)",
+    "apt-get update && apt-get install -y python3.12-venv  (exit code: 0)",
+    "script/setup  (exit code: 0)",
+    "source venv/bin/activate && pytest  (exit code: 1)",
+    "useradd -m tester || true; chown -R tester:tester /testbed  (exit code: 0)",
+    "su - tester -c \"cd /testbed && source venv/bin/activate && pytest\"  (exit code: 127)",
+    "su - tester -c \"bash -lc 'cd /testbed && source venv/bin/activate && pytest'\"  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "source venv/bin/activate && pytest -rA"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:esphome__esphome-15723_linux"
+}

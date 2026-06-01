@@ -1,0 +1,44 @@
+{
+  "repo": "pola-rs/polars",
+  "pull_number": 27220,
+  "instance_id": "pola-rs__polars-27220",
+  "issue_numbers": [
+    27193
+  ],
+  "base_commit": "12bd24911e6d4860cdf7245c769bda2465c1a3e5",
+  "patch": "diff --git a/crates/polars-core/src/chunked_array/mod.rs b/crates/polars-core/src/chunked_array/mod.rs\nindex deed7d0ff63c..41007a0aca1d 100644\n--- a/crates/polars-core/src/chunked_array/mod.rs\n+++ b/crates/polars-core/src/chunked_array/mod.rs\n@@ -736,7 +736,7 @@ impl ArrayChunked {\n         length: usize,\n     ) -> Self {\n         let dtype = DataType::Array(Box::new(inner_dtype.clone()), width);\n-        let arrow_dtype = dtype.to_arrow(CompatLevel::newest());\n+        let arrow_dtype = dtype.to_arrow(CompatLevel::newest()).to_storage_recursive();\n         let field = Arc::new(Field::new(name, dtype));\n         if width == 0 {\n             use arrow::array::builder::{ArrayBuilder, make_builder};\n",
+  "test_patch": "diff --git a/py-polars/tests/unit/datatypes/test_extension.py b/py-polars/tests/unit/datatypes/test_extension.py\nindex 0b1af50838a6..dc1782ac12d8 100644\n--- a/py-polars/tests/unit/datatypes/test_extension.py\n+++ b/py-polars/tests/unit/datatypes/test_extension.py\n@@ -7,7 +7,7 @@\n import pytest\n \n import polars as pl\n-from polars.testing import assert_frame_equal\n+from polars.testing import assert_frame_equal, assert_series_equal\n \n if TYPE_CHECKING:\n     from polars._typing import JoinStrategy, PolarsDataType\n@@ -158,3 +158,12 @@ def test_extension_join_payload(how: JoinStrategy) -> None:\n     )\n     print(result, expected)\n     assert_frame_equal(result, expected, check_row_order=False)\n+\n+\n+def test_extension_native_to_extension_cast_27193() -> None:\n+    native = pl.Series(\"inner\", [[1, 2], [3, 4]], pl.Array(pl.Int8, 2))\n+    casted = native.arr.eval(pl.element().ext.to(PythonTestExtension(storage=pl.Int8)))\n+    expected = pl.Series(\n+        \"inner\", [[1, 2], [3, 4]], pl.Array(PythonTestExtension(storage=pl.Int8), 2)\n+    )\n+    assert_series_equal(casted, expected)\n",
+  "problem_statement": "`arr.eval` panics when array children have extension types\n### Checks\n\n- [x] I have checked that this issue has not already been reported.\n- [x] I have confirmed this bug exists on the [latest version](https://pypi.org/project/polars/) of Polars.\n\n### Reproducible example\n\n```python\nimport polars as pl\n\nclass Wrapped(pl.BaseExtension):\n    def __init__(self) -> None:\n        super().__init__(\"repro.wrapped\", pl.Int64())\n\npl.register_extension_type(\"repro.wrapped\", Wrapped)\n\nser = pl.Series(\"inner\", [[1, 2], [3, 4]], pl.Array(pl.Int64, 2))\nser.arr.eval(pl.element().ext.to(Wrapped()))\n```\n\n\n### Log output\n\n```shell\nthread '<unnamed>' (3116463) panicked at crates/polars-core/src/chunked_array/mod.rs:756:17:\ncalled `Result::unwrap()` on an `Err` value: ComputeError(ErrString(\"FixedSizeListArray's child's DataType must match. However, the expected DataType is Extension(ExtensionType { name: \\\"repro.wrapped\\\", inner: Int64, metadata: None }) while it got Int64.\"))\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\nTraceback (most recent call last):\n  File \"repro.py\", line 12, in <module>\n    ser.arr.eval(pl.element().ext.to(Wrapped()))\n    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \".venv/lib/python3.13/site-packages/polars/series/utils.py\", line 104, in wrapper\n    return s.to_frame().select_seq(f(*args, **kwargs)).to_series()\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\n  File \".venv/lib/python3.13/site-packages/polars/dataframe/frame.py\", line 10372, in select_seq\n    .collect(optimizations=QueryOptFlags._eager())\n     ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \".venv/lib/python3.13/site-packages/polars/_utils/deprecation.py\", line 97, in wrapper\n    return function(*args, **kwargs)\n  File \".venv/lib/python3.13/site-packages/polars/lazyframe/opt_flags.py\", line 326, in wrapper\n    return function(*args, **kwargs)\n  File \".venv/lib/python3.13/site-packages/polars/lazyframe/frame.py\", line 2464, in collect\n    return wrap_df(ldf.collect(engine, callback))\n                   ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^\npyo3_runtime.PanicException: called `Result::unwrap()` on an `Err` value: ComputeError(ErrString(\"FixedSizeListArray's child's DataType must match. However, the expected DataType is Extension(ExtensionType { name: \\\"repro.wrapped\\\", inner: Int64, metadata: None }) while it got Int64.\"))\n```\n\n### Issue description\n\nUsing `arr.eval` fails when the inner type is an extension type. It seems like the check is overly strict for extension types.\n\n### Expected behavior\n\nthis should be fine, and ultimately a noop as it should just update metadata around the type\n\n### Installed versions\n\n<details>\n\n```\n--------Version info---------\nPolars:              1.39.3\nIndex type:          UInt32\nPlatform:            macOS-26.4-arm64-arm-64bit-Mach-O\nPython:              3.13.1 (main, Jan 14 2025, 23:31:50) [Clang 19.1.6 ]\nRuntime:             rt32\n\n----Optional dependencies----\nAzure CLI            <not installed>\nadbc_driver_manager  <not installed>\naltair               <not installed>\nazure.identity       <not installed>\nboto3                <not installed>\ncloudpickle          <not installed>\nconnectorx           <not installed>\ndeltalake            <not installed>\nfastexcel            <not installed>\nfsspec               <not installed>\ngevent               <not installed>\ngoogle.auth          <not installed>\ngreat_tables         <not installed>\nmatplotlib           <not installed>\nnumpy                <not installed>\nopenpyxl             <not installed>\npandas               <not installed>\npolars_cloud         <not installed>\npyarrow              23.0.1\npydantic             <not installed>\npyiceberg            <not installed>\nsqlalchemy           <not installed>\ntorch                <not installed>\nxlsx2csv             <not installed>\nxlsxwriter           <not installed>\n```\n\n</details>\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/pola-rs/polars/commit/32124fb5cc62aba10c75b160f62391c9763baeab"
+  ],
+  "created_at": "2026-04-08T00:19:29Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/pola-rs/polars/tree/12bd24911e6d4860cdf7245c769bda2465c1a3e5",
+  "setup_cmds": [
+    "cargo check --workspace --all-targets --all-features  (exit code: 0)",
+    "cargo test  (exit code: 101)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y python3.13-dev  (exit code: 0)",
+    "cargo test  (exit code: 124)",
+    "cargo test -p polars-core -p polars-io -p polars-lazy -p polars-sql -p polars-parquet -p polars-compute -p polars-ops -p polars-plan -p polars-row -p polars-time -p polars-utils --all-features  (exit code: 124)",
+    "cargo test -p polars-core -p polars-io -p polars-lazy -p polars-sql -p polars-parquet -p polars-compute -p polars-ops -p polars-plan -p polars-row -p polars-time -p polars-utils  (exit code: 101)",
+    "RUSTFLAGS=\"-C debuginfo=0\" cargo test -p polars-core --all-features  (exit code: 0)",
+    "cargo check --workspace --all-targets --all-features  (exit code: 0)",
+    "cargo test  (exit code: 101)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y python3.13-dev  (exit code: 0)",
+    "cargo test  (exit code: 124)",
+    "cargo test -p polars-core -p polars-io -p polars-lazy -p polars-sql -p polars-parquet -p polars-compute -p polars-ops -p polars-plan -p polars-row -p polars-time -p polars-utils --all-features  (exit code: 124)",
+    "cargo test -p polars-core -p polars-io -p polars-lazy -p polars-sql -p polars-parquet -p polars-compute -p polars-ops -p polars-plan -p polars-row -p polars-time -p polars-utils  (exit code: 101)",
+    "RUSTFLAGS=\"-C debuginfo=0\" cargo test -p polars-core --all-features  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "RUSTFLAGS=\"-C debuginfo=0\" cargo test -p polars-core --all-features -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:pola-rs__polars-27220_linux"
+}

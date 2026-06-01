@@ -1,0 +1,45 @@
+{
+  "repo": "duckdb/duckdb",
+  "pull_number": 21548,
+  "instance_id": "duckdb__duckdb-21548",
+  "issue_numbers": [
+    21508
+  ],
+  "base_commit": "7e7ee2bdd7be363c44e8943c30c25386e0acab1d",
+  "patch": "diff --git a/extension/parquet/parquet_reader.cpp b/extension/parquet/parquet_reader.cpp\nindex 8673b5ffc048..0d79239207e6 100644\n--- a/extension/parquet/parquet_reader.cpp\n+++ b/extension/parquet/parquet_reader.cpp\n@@ -854,6 +854,9 @@ ParquetReader::ParquetReader(ClientContext &context_p, OpenFileInfo file_p, Parq\n \t\t}\n \t} else {\n \t\tmetadata = std::move(metadata_p);\n+\t\tif (parquet_options.encryption_config) {\n+\t\t\tencryption_util = context_p.db->GetEncryptionUtil(true);\n+\t\t}\n \t}\n \tInitializeSchema(context_p);\n }\n",
+  "test_patch": "diff --git a/test/sql/copy/parquet/issue_21508.test b/test/sql/copy/parquet/issue_21508.test\nnew file mode 100644\nindex 000000000000..1ebe42cc56a4\n--- /dev/null\n+++ b/test/sql/copy/parquet/issue_21508.test\n@@ -0,0 +1,25 @@\n+# name: test/sql/copy/parquet/issue_21508.test\n+# description: Issue #21508: crash when read_parquet uses encryption_config with union_by_name=true\n+# group: [parquet]\n+\n+require parquet\n+\n+require noforcestorage\n+\n+require httpfs\n+\n+statement ok\n+PRAGMA enable_verification\n+\n+statement ok\n+PRAGMA add_parquet_key('key256', '01234567891123450123456789112345')\n+\n+statement ok\n+COPY (SELECT 1 AS id, 'Alice' AS name) TO '__TEST_DIR__/enc_union_by_name.parquet'\n+\t(FORMAT PARQUET, ENCRYPTION_CONFIG {footer_key: 'key256'})\n+\n+query II\n+SELECT * FROM read_parquet('__TEST_DIR__/enc_union_by_name.parquet',\n+\tencryption_config={footer_key: 'key256'}, union_by_name=true)\n+----\n+1\tAlice\n",
+  "problem_statement": "[1.5] read_parquet crashes with NULL dereference when combining encryption_config and union_by_name=true\n### What happens?\n\n`read_parquet()` crashes with `INTERNAL Error: Attempted to dereference shared_ptr that is NULL!` when `encryption_config` is used together with `union_by_name=true`. Each option works correctly on its own \u2014 the crash only occurs when both are combined.\n\nThis is a regression from v1.4.3, where the same query works without issue.\n\n```\n_duckdb.InternalException: INTERNAL Error: Attempted to dereference shared_ptr that is NULL!\n\nStack Trace:\n0        duckdb_adbc_init + 3548796\n1        duckdb_adbc_init + 3444796\n2        PyInit__duckdb + 207604\n3        PyInit__duckdb + 7607676\n4        PyInit__duckdb + 7125652\n5        PyInit__duckdb + 7135024\n6        PyInit__duckdb + 7617300\n7        PyInit__duckdb + 7496932\n8        duckdb_adbc_init + 6214352\n9        duckdb_adbc_init + 8008588\n10       duckdb_adbc_init + 7994820\n11       duckdb_adbc_init + 7994044\n12       duckdb_adbc_init + 7967416\n13       duckdb_adbc_init + 7988508\n14       duckdb_adbc_init + 7429032\n15       duckdb_adbc_init + 7580476\n```\n\n## Additional Notes\n\n- The crash also occurs with glob patterns (e.g., `'dir/**/*.parquet'`) \u2014 same behavior.\n- Other options like `hive_partitioning`, `filename`, `binary_as_string`, `file_row_number` work fine with `encryption_config` individually.\n- Any combination that includes `union_by_name=true` with `encryption_config` triggers the crash.\n- After the crash, the connection is invalidated (`FatalException: database has been invalidated because of a previous fatal error`).\n\n\n### To Reproduce\n\n```python\nimport duckdb\nimport tempfile, os\n\nprint(f\"DuckDB version: {duckdb.__version__}\")\n\ntmpdir = tempfile.mkdtemp()\nfile_path = os.path.join(tmpdir, \"test.parquet\")\n\n# Setup: write an encrypted parquet file\nconn = duckdb.connect()\nconn.execute(\"PRAGMA add_parquet_key('key256', '01234567891123450123456789112345')\")\nconn.execute(f\"\"\"\n    COPY (SELECT 1 AS id, 'Alice' AS name)\n    TO '{file_path}'\n    (FORMAT PARQUET, ENCRYPTION_CONFIG {{footer_key: 'key256'}})\n\"\"\")\n\n# Test 1: encryption_config alone \u2014 WORKS\nr = conn.execute(f\"\"\"\n    SELECT * FROM read_parquet('{file_path}', encryption_config={{footer_key: 'key256'}})\n\"\"\").fetchall()\nprint(f\"encryption_config only: {r}\")  # [(1, 'Alice')]\n\n# Test 2: union_by_name alone (unencrypted) \u2014 WORKS\nplain_path = os.path.join(tmpdir, \"plain.parquet\")\nconn.execute(f\"COPY (SELECT 1 AS id, 'Bob' AS name) TO '{plain_path}' (FORMAT PARQUET)\")\nr = conn.execute(f\"\"\"\n    SELECT * FROM read_parquet('{plain_path}', union_by_name=true)\n\"\"\").fetchall()\nprint(f\"union_by_name only: {r}\")  # [(1, 'Bob')]\n\n# Test 3: both combined \u2014 CRASHES on v1.5.0, works on v1.4.3\nr = conn.execute(f\"\"\"\n    SELECT * FROM read_parquet('{file_path}',\n        encryption_config={{footer_key: 'key256'}},\n        union_by_name=true)\n\"\"\").fetchall()\nprint(f\"both combined: {r}\")  # CRASH\n\nconn.close()\nimport shutil; shutil.rmtree(tmpdir)\n```\n\nEquivalent pure SQL reproduction:\n\n```sql\nPRAGMA add_parquet_key('key256', '01234567891123450123456789112345');\nCOPY (SELECT 1 AS id, 'Alice' AS name) TO '/tmp/enc_test.parquet'\n    (FORMAT PARQUET, ENCRYPTION_CONFIG {footer_key: 'key256'});\n\n-- Works:\nSELECT * FROM read_parquet('/tmp/enc_test.parquet', encryption_config={footer_key: 'key256'});\n\n-- Crashes:\nSELECT * FROM read_parquet('/tmp/enc_test.parquet', encryption_config={footer_key: 'key256'}, union_by_name=true);\n```\n\n## OS\n\nmacOS 15.5 (Darwin 25.0.0), Apple Silicon (arm64)\n\n## DuckDB Version\n\nv1.5.0 (Python package `duckdb==1.5.0`)\n\n## DuckDB Client\n\nPython\n\n## Hardware\n\nApple M5\n\n## Full Error Output\n\n```\n\n### OS:\n\nmacOS 15.5 (Darwin 25.0.0), Apple Silicon (arm64)\n\n### DuckDB Version:\n\n1.5\n\n### DuckDB Client:\n\nPython\n\n### Hardware:\n\nApple M5\n\n### Full Name:\n\nRajesh pachar\n\n### Affiliation:\n\nTHB\n\n### Did you include all relevant configuration (e.g., CPU architecture, Linux distribution) to reproduce the issue?\n\n- [x] Yes, I have\n\n### Did you include all code required to reproduce the issue?\n\n- [x] Yes, I have\n\n### Did you include all relevant data sets for reproducing the issue?\n\nYes\n",
+  "hints_text": "Hi @rajeshpachar, thanks, I could reproduce this on the nightly build with the SQL-only reproducer!\n\n",
+  "all_hints_text": "Hi @rajeshpachar, thanks, I could reproduce this on the nightly build with the SQL-only reproducer!\n\n",
+  "commit_urls": [
+    "https://github.com/duckdb/duckdb/commit/30c8785c7f95237489db07288bb211c0f7366dc6",
+    "https://github.com/duckdb/duckdb/commit/27a5c1d9923566bbd2b789911e49e5ab7777381f"
+  ],
+  "created_at": "2026-03-23T06:06:29Z",
+  "language": "C++",
+  "commit_url": "https://github.com/duckdb/duckdb/tree/7e7ee2bdd7be363c44e8943c30c25386e0acab1d",
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "CMAKE_BUILD_PARALLEL_LEVEL=2 cmake --build build  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "CMAKE_BUILD_PARALLEL_LEVEL=2 cmake --build build  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "ctest --test-dir build -V",
+    "ls -la build",
+    "find build -maxdepth 3 -type f -name \"unittest*\"",
+    "build/test/unittest --help",
+    "build/test/unittest -s -v high",
+    "build/test/unittest -s -v normal",
+    "build/test/unittest -s -v normal --start-offset 0 --end-offset 50"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:duckdb__duckdb-21548_linux"
+}

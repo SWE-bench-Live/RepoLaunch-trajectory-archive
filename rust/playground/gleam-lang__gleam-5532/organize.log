@@ -1,0 +1,2279 @@
+2026-05-11 23:50:18,022 - Using language: rust
+2026-05-11 23:50:18,055 - Loading image repolaunch/dev:gleam-lang__gleam-5532_linux.
+2026-05-11 23:51:50,799 - Repo root in the host cleaned up: /home/v-kenanli/Live-new-tasks/launch/data/rust1/playground/gleam-lang__gleam-5532/repo
+2026-05-11 23:51:50,799 - Setting up environment for language: rust
+2026-05-11 23:51:50,800 - No language-specific server needed
+2026-05-11 23:51:50,810 - setup state: None, 0, None ... 
+2026-05-11 23:51:50,810 - ----------Start rebuild conversation----------
+2026-05-11 23:51:55,413 - 
+================================== Ai Message ==================================
+
+Thought: Determine minimal rebuild: likely just `cargo build` for Rust workspace; dependency changes handled by cargo automatically with `--locked` perhaps only when lock updated. Use `cargo build --release` or debug. We'll verify by running build.
+Action: <command>cd /testbed && cargo build -q</command>
+Thought: Verify the minimal rebuild command for this Rust workspace is just a Cargo build (Cargo will automatically fetch/install any changed deps when Cargo.toml/Cargo.lock changes).
+Action: <command>cd /testbed && cargo build -q</command>
+2026-05-12 00:00:58,108 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && cargo build -q
+warning: unused variable: `rest`
+   --> compiler-core/src/javascript/decision.rs:744:46
+    |
+744 |         RuntimeCheck::StringPrefix { prefix, rest } if utf16_no_escape_len(prefix) == 1 => {
+    |                                              ^^^^ help: try ignoring the field: `rest: _`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+root@8fb373812418:/testbed $
+
+exit code: 0
+
+2026-05-12 00:01:01,260 - 
+================================== Ai Message ==================================
+
+Thought: Cargo auto-resolves and fetches updated crates when Cargo.toml/Cargo.lock changes, so minimal reinstall+rebuild is a single cargo build command.
+Action: <submit>cd /testbed && cargo build -q</submit>
+2026-05-12 00:01:01,260 - Agent submitted commands: cd /testbed && cargo build -q
+2026-05-12 00:01:01,260 - Automatically verifying submitted commands...
+2026-05-12 00:04:07,124 - Verification PASSED - LLM determined commands executed successfully
+2026-05-12 00:04:07,124 - ----------End rebuild organization conversation----------
+2026-05-12 00:04:07,138 - setup state: True, None ... 
+2026-05-12 00:04:07,139 - ----------Start test conversation----------
+2026-05-12 00:04:17,299 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && rm -rf reports && mkdir -p reports && cargo test --workspace --all-targets -- --format json 2>&1 | tee reports/cargo-test.json</command>
+<command>cd /testbed && cat reports/cargo-test.json</command>
+<python>def parser(log: str) -> dict[str, str]:
+    import json
+
+    results: dict[str, str] = {}
+
+    def record(name: str, status: str) -> None:
+        # keep the "worst" status if duplicates appear
+        prev = results.get(name)
+        if prev == "fail":
+            return
+        if prev == "skip" and status == "pass":
+            return
+        results[name] = status
+
+    for line in log.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+
+        # libtest JSON format (cargo test -- --format json)
+        if ev.get("type") == "test":
+            name = ev.get("name")
+            event = ev.get("event")
+            if not name or not event:
+                continue
+            if event == "ok":
+                record(name, "pass")
+            elif event == "failed":
+                record(name, "fail")
+            elif event == "ignored":
+                record(name, "skip")
+
+        # some toolchains emit a slightly different shape
+        elif "name" in ev and "event" in ev:
+            name = ev.get("name")
+            event = ev.get("event")
+            if isinstance(name, str) and isinstance(event, str):
+                if event.lower() in ("ok", "passed", "pass"):
+                    record(name, "pass")
+                elif event.lower() in ("failed", "fail", "error"):
+                    record(name, "fail")
+                elif event.lower() in ("ignored", "skipped", "skip"):
+                    record(name, "skip")
+
+    return results</python>
+2026-05-12 00:04:17,301 - 
+================================ Human Message =================================
+
+Observation:
+Your parser did not extract any test status. It returned an empty dict: {}.
+The system will only pass the last standard output of the last shell command executed into your parser function, so please make sure you have first executed a correct print command to print the test output and then run your parser to extract test status. 
+If your print command is executed correctly but parser still returned empty result, please adjust your parser to make sure it can correctly parse the test output and extract test status of each test case. 
+
+2026-05-12 00:04:23,988 - 
+================================== Ai Message ==================================
+
+<python>def parser(log: str) -> dict[str, str]:
+    import json
+
+    results: dict[str, str] = {}
+
+    def record(name: str, status: str) -> None:
+        prev = results.get(name)
+        if prev == "fail":
+            return
+        if prev == "skip" and status == "pass":
+            return
+        results[name] = status
+
+    for line in log.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+
+        # cargo/libtest JSON lines can be either:
+        # {"type":"test","event":"ok","name":"..."}
+        # {"type":"suite","event":"started"/"ok"/...}
+        # or sometimes {"type":"test","name":"...","status":"ok"}
+        if ev.get("type") == "test":
+            name = ev.get("name")
+            event = ev.get("event") or ev.get("status")
+            if not isinstance(name, str) or not isinstance(event, str):
+                continue
+            event_l = event.lower()
+            if event_l in ("ok", "passed", "pass"):
+                record(name, "pass")
+            elif event_l in ("failed", "fail", "error"):
+                record(name, "fail")
+            elif event_l in ("ignored", "skipped", "skip"):
+                record(name, "skip")
+        else:
+            # fallback for any shape that includes name+outcome-like field
+            name = ev.get("name")
+            outcome = ev.get("event") or ev.get("status") or ev.get("outcome")
+            if isinstance(name, str) and isinstance(outcome, str):
+                o = outcome.lower()
+                if o in ("ok", "passed", "pass"):
+                    record(name, "pass")
+                elif o in ("failed", "fail", "error"):
+                    record(name, "fail")
+                elif o in ("ignored", "skipped", "skip"):
+                    record(name, "skip")
+
+    return results</python>
+<submit>
+    <test_command>cd /testbed && rm -rf reports && mkdir -p reports && cargo test --workspace --all-targets -- --format json 2>&1 | tee reports/cargo-test.json</test_command>
+    <print_command>cd /testbed && cat reports/cargo-test.json</print_command>
+    <parser>parsing success</parser>
+</submit>
+2026-05-12 00:04:23,988 - 
+================================ Human Message =================================
+
+Observation:
+You have not yet provided a valid parser script. Please provide a valid parser script and validate it with <python>...</python> before submission.
+2026-05-12 00:04:26,331 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && head -n 50 reports/cargo-test.json</command>
+<command>cd /testbed && head -n 80 reports/cargo-test.json</command>
+2026-05-12 00:04:26,343 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && head -n 50 reports/cargo-test.json
+head: cannot open 'reports/cargo-test.json' for reading: No such file or directory
+
+root@8fb373812418:/testbed $
+
+exit code: 1
+
+2026-05-12 00:04:28,524 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && rm -rf reports && mkdir -p reports && cargo test --workspace --all-targets -- --format json 2>&1 | tee reports/cargo-test.json</command>
+2026-05-12 00:07:41,764 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && rm -rf reports && mkdir -p reports && cargo test --workspace --alll-targets -- --format json 2>&1 | tee reports/cargo-test.json
+   Compiling hexpm v1.15.1 (/testbed/hexpm)
+   Compiling gleam-core v1.15.1 (/testbed/compiler-core)
+warning: unused variable: `rest`
+   --> compiler-core/src/javascript/decision.rs:744:46
+    |
+744 |         RuntimeCheck::StringPrefix { prefix, rest } if utf16_no_escape_len(prefix) == 1 => {
+    |                                              ^^^^ help: try ignoring the field: `rest: _`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+   Compiling gleam-language-server v1.15.1 (/testbed/language-server)
+   Compiling test-helpers-rs v0.1.0 (/testbed/test-helpers-rs)
+warning: `gleam-core` (lib) generated 1 warning
+   Compiling test-project-compiler v1.15.1 (/testbed/test-project-compiler)
+   Compiling gleam-cli v1.15.1 (/testbed/compiler-cli)
+warning: `gleam-core` (lib test) generated 1 warning (1 duplicate)
+   Compiling test-package-compiler v1.15.1 (/testbed/test-package-compiler)
+   Compiling gleam-wasm v1.15.1 (/testbed/compiler-wasm)
+   Compiling test-output v1.15.1 (/testbed/test-output)
+   Compiling gleam v1.15.1 (/testbed/gleam-bin)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 13s
+     Running unittests src/main.rs (target/debug/deps/gleam-39b56bbc5a673d8a)
+error: The "json" format is only accepted on the nightly compiler with -Z unstable-options
+error: test failed, to rerun pass `-p gleam --bin gleam`
+
+root@8fb373812418:/testbed $
+
+exit code: 0
+
+2026-05-12 00:07:45,189 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && cargo test --workspace --all-targets --verbose 2>&1 | tee reports/cargo-test.log</command>
+2026-05-12 00:08:25,416 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && cargo test --workspace --all-targets --verbose 2>&1 | tee reports//cargo-test.log
+       Fresh unicode-ident v1.0.22
+       Fresh cfg-if v1.0.4
+       Fresh proc-macro2 v1.0.106
+       Fresh version_check v0.9.4
+       Fresh quote v1.0.44
+       Fresh syn v2.0.114
+       Fresh autocfg v1.3.0
+       Fresh serde_derive v1.0.228
+       Fresh displaydoc v0.2.5
+       Fresh itoa v1.0.17
+       Fresh typenum v1.17.0
+       Fresh once_cell v1.21.3
+       Fresh generic-array v0.14.7
+       Fresh synstructure v0.13.2
+       Fresh crypto-common v0.1.6
+       Fresh tinystr v0.7.6
+       Fresh subtle v2.5.0
+       Fresh shlex v1.3.0
+       Fresh serde_core v1.0.228
+       Fresh find-msvc-tools v0.1.9
+       Fresh zerofrom-derive v0.1.6
+       Fresh block-buffer v0.10.4
+       Fresh cc v1.2.57
+       Fresh serde v1.0.228
+       Fresh zeroize_derive v1.4.2
+       Fresh cpufeatures v0.2.12
+       Fresh pin-project-lite v0.2.16
+       Fresh zeroize v1.7.0
+       Fresh zerofrom v0.1.6
+       Fresh yoke-derive v0.8.1
+       Fresh stable_deref_trait v1.2.1
+       Fresh getrandom v0.2.15
+       Fresh bitflags v2.5.0
+       Fresh zerovec-derive v0.11.2
+       Fresh yoke v0.8.1
+       Fresh futures-core v0.3.31
+       Fresh zerovec v0.11.5
+       Fresh equivalent v1.0.1
+       Fresh hashbrown v0.16.1
+       Fresh futures-sink v0.3.31
+       Fresh futures-channel v0.3.31
+       Fresh zmij v1.0.19
+       Fresh thiserror-impl v1.0.69
+       Fresh aho-corasick v1.1.4
+       Fresh same-file v1.0.6
+       Fresh lazy_static v1.5.0
+       Fresh pin-utils v0.1.0
+       Fresh walkdir v2.5.0
+       Fresh thiserror v1.0.69
+       Fresh serde_json v1.0.149
+       Fresh slab v0.4.9
+       Fresh tinystr v0.8.2
+       Fresh futures-macro v0.3.31
+       Fresh writeable v0.6.2
+       Fresh rustc-hash v1.1.0
+       Fresh futures-task v0.3.31
+       Fresh litemap v0.8.1
+       Fresh either v1.10.0
+       Fresh log v0.4.29
+       Fresh futures-io v0.3.31
+       Fresh icu_locale_core v2.1.1
+       Fresh itertools v0.14.0
+       Fresh futures-util v0.3.31
+       Fresh type-map v0.5.0
+       Fresh anyhow v1.0.86
+       Fresh potential_utf v0.1.4
+       Fresh zerotrie v0.2.3
+       Fresh http v1.4.0
+       Fresh percent-encoding v2.3.2
+       Fresh icu_provider v2.1.1
+       Fresh icu_collections v2.1.1
+       Fresh num-traits v0.2.19
+       Fresh digest v0.10.7
+       Fresh heck v0.5.0
+       Fresh self_cell v1.0.4
+       Fresh self_cell v0.10.3
+       Fresh icu_normalizer_data v2.1.1
+       Fresh icu_properties_data v2.1.2
+       Fresh fluent-syntax v0.11.1
+       Fresh basic-toml v0.1.9
+       Fresh unic-langid-impl v0.9.5
+       Fresh thiserror-impl v2.0.17
+       Fresh num-conv v0.2.0
+       Fresh powerfmt v0.2.0
+       Fresh time-core v0.1.8
+       Fresh foldhash v0.1.5
+       Fresh scopeguard v1.2.0
+       Fresh untrusted v0.9.0
+       Fresh smallvec v1.15.1
+       Fresh lock_api v0.4.12
+       Fresh ring v0.17.13
+       Fresh time-macros v0.2.27
+       Fresh hashbrown v0.15.3
+       Fresh deranged v0.5.5
+       Fresh unic-langid v0.9.5
+       Fresh thiserror v2.0.17
+       Fresh icu_normalizer v2.1.1
+       Fresh icu_properties v2.1.2
+       Fresh prost-derive v0.14.3
+       Fresh rand_core v0.6.4
+       Fresh inout v0.1.3
+       Fresh tracing-core v0.1.36
+       Fresh regex-syntax v0.8.9
+       Fresh fixedbitset v0.5.7
+       Fresh bytes v1.11.1
+       Fresh fastrand v2.0.2
+       Fresh regex-automata v0.4.14
+       Fresh prost v0.14.3
+       Fresh cipher v0.4.4
+       Fresh rust-embed-impl v8.5.0
+       Fresh idna_adapter v1.2.1
+       Fresh time v0.3.47
+       Fresh unicase v2.7.0
+       Fresh libc v0.2.180
+       Fresh semver v1.0.23
+       Fresh rusticata-macros v4.1.0
+       Fresh form_urlencoded v1.2.2
+       Fresh sha2 v0.10.8
+       Fresh indexmap v2.13.0
+       Fresh toml v0.5.11
+       Fresh asn1-rs-derive v0.6.0
+       Fresh asn1-rs-impl v0.2.0
+       Fresh tracing-attributes v0.1.31
+       Fresh utf8_iter v1.0.4
+       Fresh strsim v0.11.1
+       Fresh utf8parse v0.2.2
+       Fresh ppv-lite86 v0.2.17
+       Fresh asn1-rs v0.7.1
+       Fresh anstyle-parse v0.2.7
+       Fresh tracing v0.1.44
+       Fresh idna v1.1.0
+       Fresh find-crate v0.6.3
+       Fresh rustc_version v0.4.1
+       Fresh prost-types v0.14.3
+       Fresh prettyplease v0.2.17
+       Fresh i18n-config v0.4.7
+       Fresh num-integer v0.1.46
+       Fresh hmac v0.12.1
+       Fresh multimap v0.10.0
+       Fresh winnow v0.7.13
+       Fresh anstyle v1.0.14
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh colorchoice v1.0.5
+       Fresh anstyle-query v1.1.5
+       Fresh anstream v0.6.21
+       Fresh prost-build v0.14.3
+       Fresh num-bigint v0.4.6
+       Fresh i18n-embed-impl v0.8.4
+       Fresh url v2.5.8
+       Fresh intl-memoizer v0.5.2
+       Fresh intl_pluralrules v7.0.2
+       Fresh fluent-langneg v0.13.0
+       Fresh futures-executor v0.3.31
+       Fresh bstr v1.9.1
+       Fresh universal-hash v0.5.1
+       Fresh minimal-lexical v0.2.1
+       Fresh adler2 v2.0.0
+       Fresh linux-raw-sys v0.4.13
+       Fresh arc-swap v1.7.1
+       Fresh opaque-debug v0.3.1
+       Fresh clap_lex v1.1.0
+       Fresh memchr v2.8.0
+       Fresh clap_builder v4.5.60
+       Fresh nom v7.1.3
+       Fresh poly1305 v0.8.0
+       Fresh miniz_oxide v0.8.8
+       Fresh rustix v0.38.32
+       Fresh fluent-bundle v0.15.3
+       Fresh futures v0.3.31
+       Fresh der-parser v10.0.0
+       Fresh oid-registry v0.8.1
+       Fresh crc32fast v1.4.0
+       Fresh crossbeam-utils v0.8.19
+       Fresh rand_chacha v0.3.1
+       Fresh rust-embed-utils v8.5.0
+       Fresh chacha20 v0.9.1
+       Fresh priority-queue v2.3.1
+       Fresh clap_derive v4.5.55
+       Fresh parking_lot_core v0.9.10
+       Fresh prost-derive v0.13.5
+       Fresh aead v0.5.2
+       Fresh version-ranges v0.1.1
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh proc-macro-error-attr2 v2.0.0
+       Fresh rustc-hash v2.0.0
+       Fresh hashbrown v0.14.3
+       Fresh mime v0.3.17
+       Fresh base64 v0.13.1
+       Fresh data-encoding v2.5.0
+       Fresh http-auth-basic v0.3.3
+       Fresh x509-parser v0.18.0
+       Fresh mime_guess v2.0.4
+       Fresh pubgrub v0.3.0
+       Fresh dashmap v6.1.0
+       Fresh curve25519-dalek v4.1.3
+       Fresh proc-macro-error2 v2.0.1
+       Fresh prost v0.13.5
+       Fresh chacha20poly1305 v0.10.1
+       Fresh clap v4.5.60
+       Fresh parking_lot v0.12.3
+       Fresh rust-embed v8.5.0
+       Fresh rand v0.8.5
+       Fresh flate2 v1.1.2
+       Fresh cookie-factory v0.3.3
+       Fresh fluent v0.16.1
+       Fresh askama_parser v0.2.1
+       Fresh libm v0.2.8
+       Fresh globset v0.4.18
+       Fresh pbkdf2 v0.12.2
+       Fresh hkdf v0.12.4
+       Fresh salsa20 v0.10.2
+       Fresh regex v1.10.5
+       Fresh secrecy v0.10.3
+       Fresh ecow v0.2.6
+       Fresh bitmaps v2.1.0
+       Fresh pin-project-internal v1.1.5
+       Fresh virtue v0.0.18
+       Fresh tap v1.0.1
+       Fresh base64 v0.21.7
+       Fresh base16 v0.2.1
+       Fresh io_tee v0.1.1
+       Fresh wyz v0.5.1
+       Fresh bincode_derive v2.0.1
+       Fresh age-core v0.11.0
+       Fresh pin-project v1.1.5
+       Fresh sized-chunks v0.6.5
+       Fresh scrypt v0.11.0
+       Fresh askama_derive v0.12.5
+       Fresh i18n-embed v0.15.2
+       Fresh humansize v2.1.3
+       Fresh i18n-embed-fl v0.9.2
+       Fresh psm v0.1.26
+       Fresh x25519-dalek v2.0.1
+       Fresh camino v1.2.1
+       Fresh radium v0.7.0
+       Fresh xattr v1.3.1
+       Fresh toml_parser v1.0.6+spec-1.1.0
+       Fresh crossbeam-channel v0.5.15
+       Fresh rand_xoshiro v0.6.0
+       Fresh strum_macros v0.28.0
+       Fresh nibble_vec v0.1.0
+       Fresh serde_spanned v1.0.4
+       Fresh toml_datetime v0.7.5+spec-1.1.0
+       Fresh serde_repr v0.1.18
+       Fresh dirs-sys-next v0.1.2
+       Fresh filetime v0.2.27
+       Fresh pulldown-cmark-escape v0.11.0
+       Fresh toml_writer v1.0.6+spec-1.1.0
+       Fresh termcolor v1.4.1
+       Fresh endian-type v0.2.0
+       Fresh askama_escape v0.10.3
+       Fresh unicode-width v0.1.11
+       Fresh unty v0.0.4
+       Fresh bitflags v1.3.2
+       Fresh funty v2.0.0
+       Fresh bech32 v0.9.1
+       Fresh bincode v2.0.1
+       Fresh lsp-types v....stripped due to length....
+ ok
+test version::tests::missing_minor ... ok
+test version::tests::missing_minor_has_correct_error_type ... ok
+test version::tests::missing_minor_with_dot ... ok
+test version::tests::missing_patch_has_correct_error_type ... ok
+test version::tests::multi_part_pre ... ok
+test version::tests::neq_triplet ... ok
+test version::tests::or_whitespace_after ... ok
+test version::tests::or ... ok
+test version::tests::or_whitespace_before ... ok
+test version::tests::ord_major_greater ... ok
+test version::tests::ord_major_lesser ... ok
+test version::tests::ord_diff_build ... ok
+test version::tests::ord_minor_greater ... ok
+test version::tests::ord_minor_lesser ... ok
+test version::tests::ord_patch_greater ... ok
+test version::tests::ord_patch_lesser ... ok
+test version::tests::ord_pre_rc1_2 ... ok
+test version::tests::ord_pre_smaller_than_zero ... ok
+test version::tests::ord_pre_smaller_than_zero_flip ... ok
+test version::tests::ord_same ... ok
+test version::tests::ord_same_build_left ... ok
+test version::tests::ord_same_build_right ... ok
+test version::tests::ord_same_diff_build ... ok
+test version::tests::patch_zerozero ... ok
+test version::tests::patch_zerozero_dash ... ok
+test version::tests::pessimistic_and_gt_pre ... ok
+test version::tests::pessimistic_major ... ok
+test version::tests::pessimistic_and_gt ... ok
+test version::tests::pessimistic_or_pessimistic ... ok
+test version::tests::pessimistic_triplet ... ok
+test version::tests::pessimistic_pair ... ok
+test version::tests::pessimistic_triplet_build ... ok
+test version::tests::pessimistic_triplet_pre ... ok
+test version::tests::pre ... ok
+test version::tests::pre_and_build ... ok
+test version::tests::print_build ... ok
+test version::tests::print_pre ... ok
+test version::tests::print_pre_build ... ok
+test version::tests::print_pre_dot ... ok
+test version::tests::print_triplet ... ok
+test version::tests::quad ... ok
+test version::tests::range_dot_dash ... ok
+test version::tests::range_dot_plus ... ok
+test version::tests::range_just_major ... ok
+test version::tests::range_just_major_minor ... ok
+test version::tests::range_major_dot ... ok
+test version::tests::range_major_minor_dot ... ok
+test version::tests::range_pre_build ... ok
+test version::tests::range_quad ... ok
+test version::tests::range_triplet_dash ... ok
+test version::tests::range_triplet_plus ... ok
+test version::tests::range_triplet_dot ... ok
+test version::tests::range_word ... ok
+test version::tests::trailing_and ... ok
+test version::tests::range_zero_pre ... ok
+test version::tests::trailing_or ... ok
+test version::tests::trailing_space ... ok
+test version::tests::triplet ... ok
+test version::tests::triplet_containing_whitespace ... ok
+test version::tests::triplet_dash ... ok
+test version::tests::triplet_dot ... ok
+test version::tests::triplet_plus ... ok
+test version::tests::two_part_build ... ok
+test version::tests::zero_pre ... ok
+test tests::get_repository_versions_from_bytes_ok ... ok
+test tests::get_repository_versions_response_ok ... ok
+
+test result: ok. 166 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running `/testbed/target/debug/deps/test_helpers_rs-6810842ec90adcc1`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/test_output-238be308233c35ac`
+
+running 18 tests
+test tests::echo::echo_circular_reference ... FAILED
+test tests::echo::echo_bitarray ... FAILED
+test tests::echo::echo_charlist ... FAILED
+test tests::echo::echo_bool ... FAILED
+test tests::echo::echo_custom_type ... FAILED
+test tests::echo::echo_dict ... FAILED
+test tests::echo::echo_function ... FAILED
+test tests::echo::echo_importing_module_named_inspect ... FAILED
+test tests::echo::echo_float ... FAILED
+test tests::echo::echo_int ... FAILED
+test tests::echo::echo_non_record_atom_tag ... ok
+test tests::echo::echo_list ... FAILED
+test tests::echo::echo_nil ... FAILED
+test tests::echo::echo_singleton ... FAILED
+test tests::echo::echo_string ... FAILED
+test tests::echo::echo_tuple ... FAILED
+test tests::echo::echo_with_message ... FAILED
+test tests::echo::linked_process_exit ... ok
+
+failures:
+
+---- tests::echo::echo_circular_reference stdout ----
+
+thread 'tests::echo::echo_circular_reference' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_bitarray stdout ----
+
+thread 'tests::echo::echo_bitarray' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::echo::echo_charlist stdout ----
+
+thread 'tests::echo::echo_charlist' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_bool stdout ----
+
+thread 'tests::echo::echo_bool' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_custom_type stdout ----
+
+thread 'tests::echo::echo_custom_type' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_dict stdout ----
+
+thread 'tests::echo::echo_dict' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_function stdout ----
+
+thread 'tests::echo::echo_function' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_importing_module_named_inspect stdout ----
+
+thread 'tests::echo::echo_importing_module_named_inspect' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_float stdout ----
+
+thread 'tests::echo::echo_float' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_int stdout ----
+
+thread 'tests::echo::echo_int' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_list stdout ----
+
+thread 'tests::echo::echo_list' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_nil stdout ----
+
+thread 'tests::echo::echo_nil' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_singleton stdout ----
+
+thread 'tests::echo::echo_singleton' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_string stdout ----
+
+thread 'tests::echo::echo_string' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_tuple stdout ----
+
+thread 'tests::echo::echo_tuple' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+---- tests::echo::echo_with_message stdout ----
+
+thread 'tests::echo::echo_with_message' panicked at test-output/src/tests/echo.rs:74:29:
+Failed to spawn process 'deno': No such file or directory (os error 2)
+
+
+failures:
+    tests::echo::echo_bitarray
+    tests::echo::echo_bool
+    tests::echo::echo_charlist
+    tests::echo::echo_circular_reference
+    tests::echo::echo_custom_type
+    tests::echo::echo_dict
+    tests::echo::echo_float
+    tests::echo::echo_function
+    tests::echo::echo_importing_module_named_inspect
+    tests::echo::echo_int
+    tests::echo::echo_list
+    tests::echo::echo_nil
+    tests::echo::echo_singleton
+    tests::echo::echo_string
+    tests::echo::echo_tuple
+    tests::echo::echo_with_message
+
+test result: FAILED. 2 passed; 16 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.76s
+
+error: test failed, to rerun pass `-p test-output --lib`
+
+root@8fb373812418:/testbed $
+
+exit code: 0
+
+2026-05-12 00:08:32,999 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && cat reports/cargo-test.log</command>
+<python>def parser(log: str) -> dict[str, str]:
+    import re
+
+    results: dict[str, str] = {}
+
+    # Matches Rust libtest per-test lines:
+    # test path::to::test_name ... ok
+    # test path::to::test_name ... FAILED
+    # test path::to::test_name ... ignored
+    test_line = re.compile(r"^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED|ignored)\s*$")
+
+    for line in log.splitlines():
+        m = test_line.match(line.strip())
+        if not m:
+            continue
+        name, status = m.group(1), m.group(2)
+        if status == "ok":
+            results[name] = "pass"
+        elif status == "ignored":
+            results[name] = "skip"
+        else:  # FAILED
+            results[name] = "fail"
+
+    return results</python>
+<submit>
+    <test_command>cd /testbed && mkdir -p reports && cargo test --workspace --all-targets --verbose 2>&1 | tee reports/cargo-test.log</test_command>
+    <print_command>cd /testbed && cat reports/cargo-test.log</print_command>
+    <parser>parsing success</parser>
+</submit>
+<command>cd /testbed && cat reports/cargo-test.log</command>
+
+<python>def parser(log: str) -> dict[str, str]:
+    import re
+
+    results: dict[str, str] = {}
+
+    # Rust libtest per-test lines:
+    # test my::test ... ok
+    # test my::test ... FAILED
+    # test my::test ... ignored
+    test_line = re.compile(r"^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED|ignored)\s*$")
+
+    for line in log.splitlines():
+        m = test_line.match(line.strip())
+        if not m:
+            continue
+        name, status = m.group(1), m.group(2)
+        if status == "ok":
+            results[name] = "pass"
+        elif status == "ignored":
+            results[name] = "skip"
+        else:
+            results[name] = "fail"
+
+    return results</python>
+
+<submit>
+    <test_command>cd /testbed && mkdir -p reports && cargo test --workspace --all-targets --verbose 2>&1 | tee reports/cargo-test.log</test_command>
+    <print_command>cd /testbed && cat reports/cargo-test.log</print_command>
+    <parser>parsing success</parser>
+</submit>
+2026-05-12 00:08:33,000 - 
+================================ Human Message =================================
+
+Observation:
+You have not yet provided a valid parser script. Please provide a valid parser script and validate it with <python>...</python> before submission.
+2026-05-12 00:08:36,729 - 
+================================== Ai Message ==================================
+
+<python>def parser(log: str) -> dict[str, str]:
+    import re
+
+    results: dict[str, str] = {}
+
+    # Rust libtest output patterns
+    # 1) "test name ... ok|FAILED|ignored"
+    line_re = re.compile(r"^\s*test\s+(.+?)\s+\.\.\.\s+(ok|FAILED|ignored)\s*$")
+
+    for line in log.splitlines():
+        m = line_re.match(line)
+        if not m:
+            continue
+        name, status = m.group(1).strip(), m.group(2)
+        if status == "ok":
+            results[name] = "pass"
+        elif status == "ignored":
+            results[name] = "skip"
+        else:
+            results[name] = "fail"
+
+    return results</python>
+2026-05-12 00:08:36,750 - 
+================================ Human Message =================================
+
+Observation:
+
+Below is the execution result of your Python script:
+{
+ "add::displays_simple_version_correctly": "pass",
+ "add::displays_full_version_correctly": "pass",
+ "build_lock::locking_dev_javascript": "pass",
+ "build_lock::locking_dev_erlang": "pass",
+ "build_lock::locking_lsp_erlang": "pass",
+ "build_lock::locking_global": "pass",
+ "build_lock::locking_lsp_javascript": "pass",
+ "config::tests::package_root_git": "pass",
+ "config::tests::package_root_hex": "pass",
+ "config::tests::package_root_local": "pass",
+ "build_lock::locking_prod_erlang": "pass",
+ "build_lock::locking_prod_javascript": "pass",
+ "dependencies::tests::list_tree_invalid_package_format": "pass",
+ "dependencies::tests::extra_local_packages": "pass",
+ "dependencies::tests::list_manifest_format": "pass",
+ "dependencies::tests::missing_local_packages": "pass",
+ "dependencies::tests::parse_gleam_add_specifier_default": "pass",
+ "dependencies::tests::parse_gleam_add_specifier_invalid_semver": "pass",
+ "dependencies::tests::parse_gleam_add_specifier_major_and_minor": "pass",
+ "dependencies::tests::parse_gleam_add_specifier_major_minor_and_patch": "pass",
+ "dependencies::tests::parse_gleam_add_specifier_non_numeric_version": "pass",
+ "dependencies::tests::parse_gleam_add_specifier_major_only": "pass",
+ "dependencies::tests::provided_git_to_hex": "pass",
+ "dependencies::tests::provided_git_to_manifest": "pass",
+ "dependencies::tests::provide_wrong_package": "pass",
+ "dependencies::tests::provided_is_absolute": "pass",
+ "dependencies::tests::provide_conflicting_package": "pass",
+ "dependencies::tests::provide_existing_package": "pass",
+ "dependencies::tests::provided_recursive": "pass",
+ "dependencies::tests::provided_local_to_hex": "pass",
+ "dependencies::tests::provided_local_to_manifest": "pass",
+ "dependencies::tests::test_ensure_packages_exist_locally_all_present": "pass",
+ "dependencies::tests::test_ensure_packages_exist_locally_some_missing": "pass",
+ "dependencies::tests::test_remove_do_nothing": "pass",
+ "dependencies::tests::test_remove_package_that_is_also_a_transitive_dependency": "pass",
+ "dependencies::tests::test_path_dependency_config_updates": "pass",
+ "dependencies::tests::test_remove_package_with_shared_transitive_dependencies": "pass",
+ "dependencies::tests::test_remove_package_with_transitive_dependencies": "pass",
+ "dependencies::tests::test_remove_simple": "pass",
+ "dependencies::tests::test_unlock_multiple_packages": "pass",
+ "dependencies::tests::test_unlock_nonexistent_package": "pass",
+ "dependencies::tests::test_unlock_package": "pass",
+ "dependencies::tests::test_unlock_package_preserve_shared_deps": "pass",
+ "dependencies::tests::test_unlock_package_with_root_dep": "pass",
+ "dependencies::tests::test_unlock_package_with_and_without_root_dep": "pass",
+ "dependencies::tests::test_unlock_package_without_manifest": "pass",
+ "dependencies::tests::test_unlock_packages_empty_input": "pass",
+ "dependencies::tests::test_unlock_root_dep_package": "pass",
+ "dependencies::tests::tree_invert_format": "pass",
+ "dependencies::tests::tree_format": "pass",
+ "dependencies::tests::tree_package_format": "pass",
+ "dependencies::tests::verified_requirements_equality_with_canonicalized_paths": "pass",
+ "fs::tests::erlang_files_include_gitignored_files": "pass",
+ "fs::tests::extract_distro_id_test": "pass",
+ "fs::tests::exclude_build_dir": "pass",
+ "fs::tests::git_init_already_in_git": "pass",
+ "fs::tests::is_gleam_path_test": "pass",
+ "fs::tests::git_init_success": "pass",
+ "new::tests::conflict_with_existing_files": "pass",
+ "new::tests::existing_directory_no_files": "pass",
+ "new::tests::existing_directory_with_non_generated_file": "pass",
+ "fs::tests::is_inside_git_work_tree_ok": "pass",
+ "new::tests::existing_directory_with_one_existing_file": "pass",
+ "new::tests::invalid_name": "pass",
+ "new::tests::invalid_path": "pass",
+ "new::tests::new": "pass",
+ "dependencies::tests::test_pretty_print_version_updates": "pass",
+ "dependencies::tests::test_pretty_print_major_versions_available": "pass",
+ "new::tests::new_with_javascript_template": "pass",
+ "new::tests::new_with_skip_git": "pass",
+ "new::tests::new_with_skip_git_and_github": "pass",
+ "new::tests::skip_existing_git_files_when_skip_git_is_true": "pass",
+ "new::tests::suggested_project_name_updates_directory": "pass",
+ "new::tests::new_with_skip_github": "pass",
+ "new::tests::validate_name_format": "pass",
+ "publish::prevent_publish_git_dependency": "pass",
+ "new::tests::suggest_valid_names": "pass",
+ "publish::prevent_publish_local_dependency": "pass",
+ "publish::release_metadata_as_erlang": "pass",
+ "run::invalid_module_names": "pass",
+ "run::valid_module_names": "pass",
+ "publish::exported_project_files_test": "pass",
+ "new::tests::new_with_default_template": "pass",
+ "analyse::tests::module_name_validation": "pass",
+ "ast::module_dependencies_test": "pass",
+ "ast::tests::find_node_binop": "pass",
+ "ast::tests::find_node_bool": "pass",
+ "ast::tests::find_node_float": "pass",
+ "ast::tests::find_node_fn": "pass",
+ "ast::tests::find_node_int": "pass",
+ "ast::tests::find_node_module_select": "pass",
+ "ast::tests::find_node_list": "pass",
+ "ast::tests::find_node_case": "pass",
+ "ast::tests::find_node_call": "pass",
+ "ast::tests::find_node_record_access": "pass",
+ "ast::tests::find_node_sequence": "pass",
+ "ast::tests::find_node_record_update": "pass",
+ "ast::tests::find_node_todo": "pass",
+ "ast::tests::find_node_string": "pass",
+ "ast::tests::find_node_todo_with_string": "pass",
+ "ast::tests::find_node_tuple": "pass",
+ "ast::tests::find_node_statement_import": "pass",
+ "ast::tests::find_node_tuple_index": "pass",
+ "ast::type_ast_print_constructor": "pass",
+ "ast::type_ast_print_fn": "pass",
+ "ast::type_ast_print_tuple": "pass",
+ "build::mode_includes_dev_code": "pass",
+ "build::module_loader::tests::cache_present_and_fresh": "pass",
+ "ast::tests::find_node_var": "pass",
+ "build::module_loader::tests::cache_present_and_stale": "pass",
+ "ast::tests::find_node_statement_fn": "pass",
+ "build::module_loader::tests::cache_present_and_stale_but_source_is_the_same": "pass",
+ "build::module_loader::tests::cache_present_and_stale_source_is_the_same_lsp_mode": "pass",
+ "ast::tests::find_node_use": "pass",
+ "build::module_loader::tests::cache_present_with_codegen_when_required": "pass",
+ "build::module_loader::tests::cache_present_without_codegen_when_not_required": "pass",
+ "build::module_loader::tests::no_cache_present": "pass",
+ "build::module_loader::tests::cache_present_without_codegen_when_required": "pass",
+ "build::module_loader::tests::cache_present_and_stale_source_is_the_same_lsp_mode_and_invalidated": "pass",
+ "build::native_file_copier::tests::all_erlang_files_are_copied_from_dev_subfolders": "pass",
+ "build::native_file_copier::tests::all_erlang_files_are_copied_from_src_subfolders": "pass",
+ "build::native_file_copier::tests::all_javascript_files_are_copied_from_dev_subfolders": "pass",
+ "build::native_file_copier::tests::all_javascript_files_are_copied_from_src_subfolders": "pass",
+ "build::native_file_copier::tests::all_erlang_files_are_copied_from_test_subfolders": "pass",
+ "build::native_file_copier::tests::all_javascript_files_are_copied_from_test_subfolders": "pass",
+ "build::native_file_copier::tests::cjavascript_files_are_copied_from_src": "pass",
+ "build::native_file_copier::tests::cjavascript_files_are_copied_from_test": "pass",
+ "build::native_file_copier::tests::cjavascript_files_are_copied_from_dev": "pass",
+ "build::native_file_copier::tests::conflicting_erlang_modules_in_src_and_dev_result_in_an_error": "pass",
+ "build::native_file_copier::tests::conflicting_erlang_modules_in_src_and_test_result_in_an_error": "pass",
+ "build::native_file_copier::tests::conflicting_erlang_modules_in_dev_and_test_result_in_an_error": "pass",
+ "build::native_file_copier::tests::conflicting_gleam_and_erlang_modules_produce_no_error_in_dependency": "pass",
+ "build::native_file_copier::tests::conflicting_gleam_and_erlang_modules_result_in_an_error": "pass",
+ "build::native_file_copier::tests::conflicting_gleam_and_javascript_modules_result_in_an_error": "pass",
+ "build::native_file_copier::tests::conflicting_nested_gleam_and_erlang_modules_result_in_an_error": "pass",
+ "build::native_file_copier::tests::conflicting_erlang_modules_in_src_result_in_an_error": "pass",
+ "build::native_file_copier::tests::conflicting_nested_gleam_file_does_not_conflict_with_root_erlang_file": "pass",
+ "build::native_file_copier::tests::elixir_files_are_copied_from_dev": "pass",
+ "build::native_file_copier::tests::duplicate_native_files_result_in_an_error": "pass",
+ "build::native_file_copier::tests::differently_nested_gleam_and_javascript_modules_with_same_name_are_ok": "pass",
+ "build::native_file_copier::tests::elixir_files_are_copied_from_src": "pass",
+ "build::native_file_copier::tests::elixir_files_are_copied_from_test": "pass",
+ "build::native_file_copier::tests::erlang_files_are_copied_from_src": "pass",
+ "build::native_file_copier::tests::erlang_files_are_copied_from_dev": "pass",
+ "build::native_file_copier::tests::erlang_files_are_copied_from_test": "pass",
+ "build::native_file_copier::tests::erlang_header_files_are_copied_from_src": "pass",
+ "build::native_file_copier::tests::erlang_header_files_are_copied_from_dev": "pass",
+ "build::native_file_copier::tests::erlang_header_files_are_copied_from_test": "pass",
+ "build::native_file_copier::tests::files_do_not_get_copied_if_there_already_is_a_new_version": "pass",
+ "build::native_file_copier::tests::files_get_copied_if_the_previously_copied_version_is_older": "pass",
+ "build::native_file_copier::tests::javascript_files_are_copied_from_dev": "pass",
+ "build::native_file_copier::tests::javascript_files_are_copied_from_src": "pass",
+ "build::native_file_copier::tests::mjavascript_files_are_copied_from_src": "pass",
+ "build::native_file_copier::tests::javascript_files_are_copied_from_test": "pass",
+ "build::native_file_copier::tests::mjavascript_files_are_copied_from_dev": "pass",
+ "build::native_file_copier::tests::mjavascript_files_are_copied_from_test": "pass",
+ "build::native_file_copier::tests::other_files_are_ignored": "pass",
+ "build::native_file_copier::tests::typescript_files_are_copied_from_dev": "pass",
+ "build::native_file_copier::tests::typescript_files_are_copied_from_src": "pass",
+ "build::native_file_copier::tests::typescript_files_are_copied_from_test": "pass",
+ "build::package_loader::tests::cache_files_are_removed_when_source_removed": "pass",
+ "build::package_loader::tests::invalid_module_name": "pass",
+ "build::package_loader::tests::invalid_module_name_in_dev": "pass",
+ "build::package_loader::tests::invalid_module_name_in_test": "pass",
+ "build::package_loader::tests::importing": "pass",
+ "build::package_loader::tests::invalid_nested_module_name": "pass",
+ "build::package_loader::tests::invalid_nested_module_name_in_dev": "pass",
+ "build::package_loader::tests::invalid_nested_module_name_in_test": "pass",
+ "build::package_loader::tests::module_is_stale_if_cache_older": "pass",
+ "build::package_loader::tests::module_is_stale_if_deps_are_stale": "pass",
+ "build::package_loader::tests::module_continues_to_be_stale_if_deps_get_updated": "pass",
+ "build::package_loader::tests::no_modules": "pass",
+ "build::package_loader::tests::module_is_stale_if_deps_removed": "pass",
+ "build::package_loader::tests::one_dev_module": "pass",
+ "build::package_loader::tests::one_src_module": "pass",
+ "build::package_loader::tests::one_test_module": "pass",
+ "build::tests::usable_build_tool_mix_then_rebar3": "pass",
+ "build::tests::usable_build_tool_none": "pass",
+ "build::tests::usable_build_tool_only_gleam": "pass",
+ "build::tests::usable_build_tool_only_mix": "pass",
+ "build::tests::usable_build_tool_only_rebar3": "pass",
+ "build::tests::usable_build_tool_unknown": "pass",
+ "build::package_loader::tests::reading_cache": "pass",
+ "call_graph::into_dependency_order_tests::assert_message": "pass",
+ "call_graph::into_dependency_order_tests::assert_subject": "pass",
+ "call_graph::into_dependency_order_tests::big_guard": "pass",
+ "call_graph::into_dependency_order_tests::binop": "pass",
+ "call_graph::into_dependency_order_tests::bug_2275": "pass",
+ "call_graph::into_dependency_order_tests::bit_arrays": "pass",
+ "call_graph::into_dependency_order_tests::calling_function": "pass",
+ "call_graph::into_dependency_order_tests::case_clause_doesnt_shadow_after": "pass",
+ "call_graph::into_dependency_order_tests::case_clause_doesnt_shadow_later_clauses": "pass",
+ "call_graph::into_dependency_order_tests::case_pattern_shadow": "pass",
+ "call_graph::into_dependency_order_tests::case_subject": "pass",
+ "call_graph::into_dependency_order_tests::case_subjects": "pass",
+ "call_graph::into_dependency_order_tests::constants_and_functions": "pass",
+ "call_graph::into_dependency_order_tests::duplicate_external_function_name": "pass",
+ "call_graph::into_dependency_order_tests::duplicate_function_name": "pass",
+ "call_graph::into_dependency_order_tests::case_use_in_clause": "pass",
+ "call_graph::into_dependency_order_tests::empty": "pass",
+ "call_graph::into_dependency_order_tests::fn_argument_shadowing": "pass",
+ "call_graph::into_dependency_order_tests::fn_argument_shadowing_then_not": "pass",
+ "call_graph::into_dependency_order_tests::function_argument_shadowing": "pass",
+ "call_graph::into_dependency_order_tests::guard": "pass",
+ "call_graph::into_dependency_order_tests::let_assert_message": "pass",
+ "call_graph::into_dependency_order_tests::list": "pass",
+ "call_graph::into_dependency_order_tests::let_var": "pass",
+ "call_graph::into_dependency_order_tests::list_spread": "pass",
+ "call_graph::into_dependency_order_tests::more_complex_cycle": "pass",
+ "call_graph::into_dependency_order_tests::negate": "pass",
+ "call_graph::into_dependency_order_tests::no_deps": "pass",
+ "call_graph::into_dependency_order_tests::one_dep": "pass",
+ "call_graph::into_dependency_order_tests::pattern_assign": "pass",
+ "call_graph::into_dependency_order_tests::pattern_bit_array_segment_size_var_usage": "pass",
+ "call_graph::into_dependency_order_tests::pattern_constructor": "pass",
+ "call_graph::into_dependency_order_tests::pattern_concat": "pass",
+ "call_graph::into_dependency_order_tests::pattern_float": "pass",
+ "call_graph::into_dependency_order_tests::pattern_int": "pass",
+ "call_graph::into_dependency_order_tests::pattern_list": "pass",
+ "call_graph::into_dependency_order_tests::pattern_list_spread": "pass",
+ "call_graph::into_dependency_order_tests::pattern_string": "pass",
+ "call_graph::into_dependency_order_tests::pattern_tuple": "pass",
+ "call_graph::into_dependency_order_tests::pattern_underscore": "pass",
+ "call_graph::into_dependency_order_tests::pipeline": "pass",
+ "call_graph::into_dependency_order_tests::record_access": "pass",
+ "call_graph::into_dependency_order_tests::record_update": "pass",
+ "call_graph::into_dependency_order_tests::ref_in_call_argument": "pass",
+ "call_graph::into_dependency_order_tests::scope_reset": "pass",
+ "call_graph::into_dependency_order_tests::sequence": "pass",
+ "call_graph::into_dependency_order_tests::tuple": "pass",
+ "call_graph::into_dependency_order_tests::tuple_index": "pass",
+ "call_graph::into_dependency_order_tests::unknown_vars": "pass",
+ "call_graph::into_dependency_order_tests::use_": "pass",
+ "call_graph::into_dependency_order_tests::use_shadowing": "pass",
+ "config::default_internal_modules": "pass",
+ "build::package_compiler::tests::different_packages_defining_duplicate_module": "pass",
+ "build::package_compiler::tests::same_package_defining_duplicate_module": "pass",
+ "config::dev_deps_field_name": "pass",
+ "config::hidden_a_directory_from_docs": "pass",
+ "config::hidden_a_directory_and_a_file_from_docs": "pass",
+ "config::hidden_two_directories_from_docs": "pass",
+ "config::locked_nested_are_removed_too": "pass",
+ "config::locked_no_changes": "pass",
+ "config::locked_no_manifest": "pass",
+ "config::locked_some_changed": "pass",
+ "config::locked_some_removed": "pass",
+ "config::locked_unlock_new": "pass",
+ "config::hidden_a_file_in_all_directories_from_docs": "pass",
+ "config::name_with_dash": "pass",
+ "config::name_with_number_start": "pass",
+ "config::no_internal_modules": "pass",
+ "config::stale_package_remover::tests::optional_package_not_in_manifest": "pass",
+ "dep_tree::tests::cycle_detection": "pass",
+ "dep_tree::tests::toposort_deps_test": "pass",
+ "dependency::tests::parse_exact_version_test": "pass",
+ "config::package_config_to_json": "pass",
+ "dependency::tests::resolution_1_dep": "pass",
+ "dependency::tests::resolution_exact_prerelease_can_be_selected": "pass",
+ "dependency::tests::resolution_locked_to_older_version": "pass",
+ "dependency::tests::resolution_locked_version_doesnt_satisfy_requirements": "pass",
+ "dependency::tests::resolution_no_matching_version": "pass",
+ "dependency::tests::resolution_not_found_dep": "pass",
+ "dependency::tests::resolution_error_message": "pass",
+ "dependency::tests::resolution_prerelease_can_be_selected": "pass",
+ "dependency::tests::resolution_retired_versions_not_used_by_default": "pass",
+ "dependency::tests::resolution_retired_versions_can_be_used_if_locked": "pass",
+ "dependency::tests::resolution_with_exact_dep": "pass",
+ "dependency::tests::resolution_with_locked": "pass",
+ "dependency::tests::resolution_with_nested_deps": "pass",
+ "dependency::tests::resolution_with_optional_deps": "pass",
+ "dependency::tests::resolution_with_optional_deps_incompatible": "pass",
+ "dependency::tests::resolution_with_optional_deps_keep_constraints": "pass",
+ "dependency::tests::resolution_with_optional_deps_required_by_nested_deps": "pass",
+ "dependency::tests::resolution_with_optional_deps_explicitly_provided": "pass",
+ "dependency::tests::resolution_without_deps": "pass",
+ "dependency::tests::resolve_major_version_upgrades": "pass",
+ "docs::barebones_package_config_to_json": "pass",
+ "docs::page_unnest_test": "pass",
+ "docs::package_config_to_json": "pass",
+ "config::barebones_package_config_to_json": "pass",
+ "config::deny_extra_deps_properties": "pass",
+ "docs::tests::constructor_with_long_types_and_many_fields": "pass",
+ "docs::tests::constructor_with_long_types_and_many_fields_that_need_splitting": "pass",
+ "docs::tests::discarded_arguments_are_not_shown": "pass",
+ "docs::tests::doc_for_commented_definitions_is_not_included_in_next_constant": "pass",
+ "docs::tests::doc_for_commented_definitions_is_not_included_in_next_type": "pass",
+ "docs::tests::doc_for_commented_definitions_is_not_included_in_next_type_alias": "pass",
+ "docs::tests::ensure_search_data_matches_exdocs_search_data_model_specification": "pass",
+ "docs::tests::doc_for_commented_definitions_is_not_included_in_next_function": "pass",
+ "docs::tests::docs_of_a_type_constructor_are_not_used_by_the_following_function": "pass",
+ "docs::tests::forgejo_single_line_definition": "pass",
+ "docs::tests::forgejo_multiple_line_definition": "pass",
+ "docs::tests::function_uses_reexport_of_internal_type": "pass",
+ "docs::tests::generated_type_variables": "pass",
+ "docs::tests::generated_type_variables_do_not_take_into_account_other_definitions": "pass",
+ "docs::tests::generated_type_variables_mixed_with_existing_variables": "pass",
+ "docs::tests::gitea_repository_url_has_no_double_slash": "pass",
+ "docs::tests::function_uses_reexport_of_internal_type_in_other_module": "pass",
+ "docs::tests::generated_type_variables_with_existing_variables_coming_afterwards": "pass",
+ "docs::tests::highlight_constant_definition": "pass",
+ "docs::tests::highlight_custom_type": "pass",
+ "docs::tests::highlight_function_definition": "pass",
+ "docs::tests::highlight_opaque_custom_type": "pass",
+ "docs::tests::highlight_type_alias": "pass",
+ "docs::tests::hello_docs": "pass",
+ "docs::tests::ignored_argument_is_called_arg": "pass",
+ "docs::tests::internal_type_reexport_in_same_module": "pass",
+ "docs::tests::internal_type_reexport_in_different_module": "pass",
+ "docs::tests::internal_definitions_are_not_included": "pass",
+ "docs::tests::internal_type_reexport_in_same_module_as_parameter": "pass",
+ "docs::tests::internal_type_reexport_in_same_module_as_parameter_colours": "pass",
+ "docs::tests::link_to_type_in_different_module": "pass",
+ "docs::tests::link_to_type_in_different_module_from_nested_module": "pass",
+ "docs::tests::link_to_type_in_different_module_from_nested_module_with_shared_path": "pass",
+ "docs::tests::link_to_type_in_same_module": "pass",
+ "docs::tests::link_to_type_in_different_package": "pass",
+ "docs::tests::long_function_with_no_arguments_parentheses_are_not_split": "pass",
+ "docs::tests::markdown_code_from_module_comment_is_trimmed": "pass",
+ "docs::tests::long_function_wrapping": "pass",
+ "docs::tests::markdown_code_from_function_comment_is_trimmed": "pass",
+ "docs::tests::no_link_to_type_in_git_dependency": "pass",
+ "docs::tests::no_link_to_type_in_path_dependency": "pass",
+ "docs::tests::no_links_to_prelude_types": "pass",
+ "docs::tests::output_of_search_data_json": "pass",
+ "docs::tests::markdown_code_from_standalone_pages_is_not_trimmed": "pass",
+ "docs::tests::print_qualified_names_from_other_modules": "pass",
+ "docs::tests::print_type_variables_in_function_signatures": "pass",
+ "docs::tests::public_type_reexport_in_different_internal_module": "pass",
+ "docs::tests::search_item_for_custom_type": "pass",
+ "docs::tests::search_item_for_constant": "pass",
+ "docs::tests::search_item_for_function": "pass",
+ "docs::tests::search_item_for_type_alias": "pass",
+ "docs::tests::canonical_link": "pass",
+ "docs::tests::source_link_for_github_repository_with_path_and_tag_prefix": "pass",
+ "docs::tests::source_link_for_github_repository": "pass",
+ "docs::tests::use_reexport_from_other_package": "pass",
+ "docs::tests::tables": "pass",
+ "docs::tests::no_hex_publish": "pass",
+ "erlang::tests::allowed_string_escapes": "pass",
+ "erlang::tests::assert::assert_binary_operation": "pass",
+ "erlang::tests::assert::assert_binary_operation3": "pass",
+ "erlang::tests::assert::assert_binary_operation2": "pass",
+ "erlang::tests::assert::assert_binary_operator_with_side_effects": "pass",
+ "erlang::tests::assert::assert_function_call2": "pass",
+ "erlang::tests::assert::assert_literal": "pass",
+ "erlang::tests::assert::assert_function_call": "pass",
+ "erlang::tests::assert::assert_binary_operator_with_side_effects2": "pass",
+ "erlang::tests::assert::assert_with_block_message": "pass",
+ "erlang::tests::assert::assert_with_message": "pass",
+ "erlang::tests::assert::assert_nested_function_call": "pass",
+ "erlang::tests::assert::assert_variable": "pass",
+ "erlang::tests::bit_arrays::bit_array1": "pass",
+ "erlang::tests::bit_arrays::bit_array2": "pass",
+ "erlang::tests::bit_arrays::bit_array": "pass",
+ "erlang::tests::bit_arrays::bit_array4": "pass",
+ "erlang::tests::bit_arrays::bit_array3": "pass",
+ "erlang::tests::bit_arrays::bit_array5": "pass",
+ "erlang::tests::bit_arrays::bit_array_declare_and_use_var": "pass",
+ "erlang::tests::bit_arrays::bit_array_discard": "pass",
+ "erlang::tests::bit_arrays::bit_array_literal_string_constant_is_treated_as_utf8": "pass",
+ "erlang::tests::bit_arrays::bit_array_literal_string_is_treated_as_utf8": "pass",
+ "erlang::tests::bit_arrays::bit_array_literal_string_pattern_is_treated_as_utf8": "pass",
+ "erlang::tests::bit_arrays::bit_array_discard1": "pass",
+ "erlang::tests::bit_arrays::bit_array_float": "pass",
+ "erlang::tests::bit_arrays::discard_utf8_pattern": "pass",
+ "erlang::tests::bit_arrays::block_in_pattern_size": "pass",
+ "erlang::tests::bit_arrays::non_byte_aligned_size_calculation": "pass",
+ "erlang::tests::bit_arrays::operator_in_pattern_size": "pass",
+ "erlang::tests::bit_arrays::operator_in_pattern_size3": "pass",
+ "erlang::tests::bit_arrays::pattern_match_utf16_codepoint_little_endian": "pass",
+ "erlang::tests::bit_arrays::operator_in_pattern_size2": "pass",
+ "erlang::tests::bit_arrays::pattern_match_utf32_codepoint_little_endian": "pass",
+ "erlang::tests::bit_arrays::pipe_size_segment": "pass",
+ "erlang::tests::bit_arrays::unicode_bit_array_1": "pass",
+ "erlang::tests::bit_arrays::unicode_bit_array_2": "pass",
+ "erlang::tests::bit_arrays::unicode_character_encoding_in_bit_array_pattern_segment": "pass",
+ "erlang::tests::bit_arrays::utf16_codepoint_little_endian": "pass",
+ "erlang::tests::bit_arrays::utf32_codepoint_little_endian": "pass",
+ "erlang::tests::case::aliased_string_prefix_pattern_referenced_in_guard": "pass",
+ "erlang::tests::case::alternative_patter_with_string_alias": "pass",
+ "erlang::tests::case::alternative_pattern_variable_rewriting": "pass",
+ "erlang::tests::case::negative_zero_pattern": "pass",
+ "erlang::tests::case::not": "pass",
+ "erlang::tests::case::not_two": "pass",
+ "erlang::tests::case::positive_zero_pattern": "pass",
+ "erlang::tests::case::spread_empty_list": "pass",
+ "erlang::tests::case::spread_empty_list_assigning": "pass",
+ "erlang::tests::conditional_compilation::excluded_attribute_syntax": "pass",
+ "erlang::tests::conditional_compilation::included_attribute_syntax": "pass",
+ "erlang::tests::constant_named_module_info": "pass",
+ "erlang::tests::bit_pattern_shadowing": "pass",
+ "erlang::tests::block_assignment": "pass",
+ "erlang::tests::binop_parens": "pass",
+ "erlang::tests::constant_named_module_info_with_function_inside": "pass",
+ "erlang::tests::constant_named_module_info_imported": "pass",
+ "erlang::tests::constant_named_module_info_with_function_inside_imported": "pass",
+ "erlang::tests::constant_named_module_info_imported_qualified": "pass",
+ "erlang::tests::consts::const_type_variable": "pass",
+ "erlang::tests::consts::const_generalise": "pass",
+ "erlang::tests::constant_named_module_info_with_function_inside_imported_qualified": "pass",
+ "erlang::tests::consts::list_prepend": "pass",
+ "erlang::tests::consts::pub_const_equal_to_private_function": "pass",
+ "erlang::tests::consts::list_prepend_literal": "pass",
+ "erlang::tests::consts::list_prepend_from_other_module": "pass",
+ "erlang::tests::consts::pub_const_equal_to_record_with_private_function_field": "pass",
+ "erlang::tests::consts::record_constructor": "pass",
+ "erlang::tests::consts::record_constructor_in_tuple": "pass",
+ "erlang::tests::consts::pub_const_equal_to_record_with_nested_private_function_field": "pass",
+ "erlang::tests::consts::use_private_in_list": "pass",
+ "erlang::tests::consts::use_private_in_tuple": "pass",
+ "erlang::tests::consts::use_private_in_internal": "pass",
+ "erlang::tests::consts::use_unqualified_pub_const_equal_to_private_function": "pass",
+ "erlang::tests::consts::use_unqualified_pub_const_equal_to_record_with_private_function_field": "pass",
+ "erlang::tests::custom_types::annotated_external_type": "pass",
+ "erlang::tests::consts::use_qualified_pub_const_equal_to_record_with_private_function_field": "pass",
+ "erlang::tests::custom_types::annotated_external_type_used_in_function": "pass",
+ "erlang::tests::discard_in_assert": "pass",
+ "erlang::tests::custom_types::phantom": "pass",
+ "erlang::tests::custom_types::unused_opaque_constructor_is_generated_correctly": "pass",
+ "erlang::tests::documentation::backslashes_are_escaped_in_module_comment": "pass",
+ "erlang::tests::documentation::function_with_documentation": "pass",
+ "erlang::tests::documentation::double_quotes_are_escaped_in_module_comment": "pass",
+ "erlang::tests::documentation::backslashes_in_documentation_are_escaped": "pass",
+ "erlang::tests::documentation::function_with_multiline_documentation": "pass",
+ "erlang::tests::documentation::internal_function_has_no_documentation": "pass",
+ "erlang::tests::documentation::quotes_in_documentation_are_escaped": "pass",
+ "erlang::tests::documentation::multi_line_module_comment": "pass",
+ "erlang::tests::documentation::single_line_module_comment": "pass",
+ "erlang::tests::dynamic": "pass",
+ "erlang::tests::echo::echo_in_a_pipeline_with_message": "pass",
+ "erlang::tests::echo::echo_in_a_pipeline": "pass",
+ "erlang::tests::echo::echo_with_a_block": "pass",
+ "erlang::tests::echo::echo_with_a_case_expression": "pass",
+ "erlang::tests::echo::echo_with_a_function_call": "pass",
+ "erlang::tests::echo::echo_with_a_function_call_and_a_message": "pass",
+ "erlang::tests::echo::echo_with_a_panic": "pass",
+ "erlang::tests::echo::echo_with_a_simple_expression": "pass",
+ "erlang::tests::echo::echo_with_a_simple_expression_and_a_message": "pass",
+ "erlang::tests::echo::echo_with_complex_expression_as_a_message": "pass",
+ "erlang::tests::echo::multiple_echos_in_a_pipeline": "pass",
+ "erlang::tests::echo::multiple_echos_inside_expression": "pass",
+ "erlang::tests::external_fn::attribute_erlang": "pass",
+ "erlang::tests::echo::pipeline_printed_by_echo_is_wrapped_in_begin_end_block": "pass",
+ "erlang::tests::external_fn::attribute_javascript": "pass",
+ "erlang::tests::external_fn::both_externals_no_valid_impl": "pass",
+ "erlang::tests::echo::record_update_printed_by_echo_is_wrapped_in_begin_end_block": "pass",
+ "erlang::tests::external_fn::discarded_arg_in_external_are_passed_correctly": "pass",
+ "erlang::tests::external_fn::elixir": "pass",
+ "erlang::tests::external_fn::erlang_and_javascript": "pass",
+ "erlang::tests::external_fn::hole_parameter_erlang": "pass",
+ "erlang::tests::external_fn::hole_parameter_javascript": "pass",
+ "erlang::tests::external_fn::hole_return_erlang": "pass",
+ "erlang::tests::external_fn::hole_return_javascript": "pass",
+ "erlang::tests::external_fn::inlining_external_functions_from_another_module": "pass",
+ "erlang::tests::external_fn::integration_test1_3": "pass",
+ "erlang::tests::external_fn::javascript_only": "pass",
+ "erlang::tests::external_fn::integration_test7": "pass",
+ "erlang::tests::external_fn::multiple_discarded_args_in_external_are_passed_correctly": "pass",
+ "erlang::tests::external_fn::javascript_only_indirect": "pass",
+ "erlang::tests::external_fn::multiple_discarded_args_in_external_are_passed_correctly_2": "pass",
+ "erlang::tests::external_fn::no_body": "pass",
+ "erlang::tests::external_fn::no_body_or_implementation": "pass",
+ "erlang::tests::external_fn::no_gleam_impl_no_annotations_function_fault_tolerance": "pass",
+ "erlang::tests::external_fn::no_type_annotation_for_parameter": "pass",
+ "erlang::tests::external_fn::no_target_supported_function_fault_tolerance": "pass",
+ "erlang::tests::external_fn::no_type_annotation_for_return": "pass",
+ "erlang::tests::external_fn::private": "pass",
+ "erlang::tests::external_fn::private_external_function_calls": "pass",
+ "erlang::tests::external_fn::private_local_function_references": "pass",
+ "erlang::tests::external_fn::public_elixir": "pass",
+ "erlang::tests::external_fn::public_local_function_calls": "pass",
+ "erlang::tests::external_fn::reference_to_imported_elixir_external_fn": "pass",
+ "erlang::tests::external_fn::unqualified_reference_to_imported_elixir_external_fn": "pass",
+ "erlang::tests::field_access_function_call": "pass",
+ "erlang::tests::field_access_function_call1": "pass",
+ "erlang::tests::external_fn::unqualified_inlining_external_functions_from_another_module": "pass",
+ "erlang::tests::float_division_by_literal_non_zero": "pass",
+ "erlang::tests::float_division_by_literal_zero": "pass",
+ "erlang::tests::function_named_module_info_imported": "pass",
+ "erlang::tests::function_named_module_info": "pass",
+ "erlang::tests::function_argument_shadowing": "pass",
+ "erlang::tests::function_named_module_info_imported_qualified": "pass",
+ "erlang::tests::function_named_module_info_in_constant": "pass",
+ "erlang::tests::function_named_module_info_in_constant_imported": "pass",
+ "erlang::tests::function_named_module_info_in_constant_imported_qualified": "pass",
+ "erlang::tests::functions::function_called": "pass",
+ "erlang::tests::functions::function_as_value": "pass",
+ "erlang::tests::functions::nested_aliased_imported_function_as_value": "pass",
+ "erlang::tests::functions::labelled_argument_ordering": "pass",
+ "erlang::tests::functions::nested_aliased_imported_function_called": "pass",
+ "erlang::tests::functions::nested_imported_function_as_value": "pass",
+ "erlang::tests::functions::nested_imported_function_called": "pass",
+ "erlang::tests::functions::unused_private_functions": "pass",
+ "erlang::tests::functions::nested_unqualified_imported_function_as_value": "pass",
+ "erlang::tests::functions::nested_unqualified_imported_function_called": "pass",
+ "erlang::tests::guard_variable_rewriting": "pass",
+ "erlang::tests::guards::clause_guards": "pass",
+ "erlang::tests::guards::clause_guards20": "pass",
+ "erlang::tests::guards::clause_guards21": "pass",
+ "erlang::tests::guards::clause_guards22": "pass",
+ "erlang::tests::guards::clause_guards23": "pass",
+ "erlang::tests::guards::clause_guards25": "pass",
+ "erlang::tests::guards::clause_guards24": "pass",
+ "erlang::tests::guards::clause_guards26": "pass",
+ "erlang::tests::guards::clause_guards27": "pass",
+ "erlang::tests::guards::clause_guards29": "pass",
+ "erlang::tests::guards::clause_guards28": "pass",
+ "erlang::tests::guards::clause_guards30": "pass",
+ "erlang::tests::guards::clause_guards31": "pass",
+ "erlang::tests::guards::clause_guards_1": "pass",
+ "erlang::tests::guards::clause_guards_10": "pass",
+ "erlang::tests::guards::clause_guards_2": "pass",
+ "erlang::tests::guards::clause_guards32": "pass",
+ "erlang::tests::guards::clause_guards_3": "pass",
+ "erlang::tests::guards::clause_guards_4": "pass",
+ "erlang::tests::guards::clause_guards_5": "pass",
+ "erlang::tests::guards::clause_guards_9": "pass",
+ "erlang::tests::guards::clause_guards_7": "pass",
+ "erlang::tests::guards::clause_guards_8": "pass",
+ "erlang::tests::guards::clause_guards_6": "pass",
+ "erlang::tests::guards::constants_in_guards1": "pass",
+ "erlang::tests::guards::constants_in_guards": "pass",
+ "erlang::tests::guards::field_access": "pass",
+ "erlang::tests::guards::module_access": "pass",
+ "erlang::tests::guards::module_string_access": "pass",
+ "erlang::tests::guards::module_list_access": "pass",
+ "erlang::tests::guards::module_tuple_access": "pass",
+ "erlang::tests::guards::module_nested_access": "pass",
+ "erlang::tests::guards::only_guards": "pass",
+ "erlang::tests::guards::only_guards1": "pass",
+ "erlang::tests::guards::only_guards2": "pass",
+ "erlang::tests::guards::nested_record_access": "pass",
+ "erlang::tests::guards::only_guards3": "pass",
+ "erlang::tests::inlining::blocks_get_preserved_when_needed": "pass",
+ "erlang::tests::inline_const_pattern_option": "pass",
+ "erlang::tests::inlining::blocks_get_preserved_when_needed2": "pass",
+ "erlang::tests::inlining::inline_anonymous_function_call": "pass",
+ "erlang::tests::inlining::inline_anonymous_function_in_pipe": "pass",
+ "erlang::tests::inlining::do_not_inline_parameters_used_more_than_once": "pass",
+ "erlang::tests::inlining::inline_function_capture_in_pipe": "pass",
+ "erlang::tests::inlining::do_not_inline_parameters_that_have_side_effects": "pass",
+ "erlang::tests::inlining::inline_function_with_use": "pass",
+ "erlang::tests::inlining::inline_function_which_calls_other_function": "pass",
+ "erlang::tests::inlining::inline_function_with_use_and_anonymous": "pass",
+ "erlang::tests::inlining::inline_higher_order_function": "pass",
+ "erlang::tests::inlining::inline_function_with_use_becomes_tail_recursive": "pass",
+ "erlang::tests::inlining::inline_higher_order_function_anonymous": "pass",
+ "erlang::tests::inlining::inline_higher_order_function_with_capture": "pass",
+ "erlang::tests::inlining::inline_shadowed_variable_nested": "pass",
+ "erlang::tests::inlining::inline_shadowed_variable": "pass",
+ "erlang::tests::inlining::inline_variable_shadowing_parameter": "pass",
+ "erlang::tests::inlining::inline_variable_shadowed_in_case_pattern": "pass",
+ "erlang::tests::inlining::inline_variable_shadowing_case_pattern": "pass",
+ "erlang::tests::inlining::inlining_works_through_blocks": "pass",
+ "erlang::tests::integration_test": "pass",
+ "erlang::tests::integration_test0_1": "pass",
+ "erlang::tests::inlining::inlining_works_properly_with_record_updates": "pass",
+ "erlang::tests::integration_test0_3": "pass",
+ "erlang::tests::inlining::parameters_from_nested_functions_are_correctly_inlined": "pass",
+ "erlang::tests::integration_test1": "pass",
+ "erlang::tests::integration_test0_2": "pass",
+ "erlang::tests::integration_test10": "pass",
+ "erlang::tests::integration_test11": "pass",
+ "erlang::tests::integration_test13": "pass",
+ "erlang::tests::integration_test16": "pass",
+ "erlang::tests::integration_test12": "pass",
+ "erlang::tests::integration_test17": "pass",
+ "erlang::tests::integration_test18": "pass",
+ "erlang::tests::integration_test19": "pass",
+ "erlang::tests::integration_test1_1": "pass",
+ "erlang::tests::integration_test1_2": "pass",
+ "erlang::tests::integration_test1_5": "pass",
+ "erlang::tests::integration_test1_4": "pass",
+ "erlang::tests::integration_test1_6": "pass",
+ "erlang::tests::integration_test20": "pass",
+ "erlang::tests::integration_test2": "pass",
+ "erlang::tests::integration_test21": "pass",
+ "erlang::tests::integration_test3": "pass",
+ "erlang::tests::integration_test22": "pass",
+ "erlang::tests::integration_test23": "pass",
+ "erlang::tests::integration_test5": "pass",
+ "erlang::tests::integration_test6": "pass",
+ "erlang::tests::integration_test9": "pass",
+ "erlang::tests::integration_test8": "pass",
+ "erlang::tests::let_assert::assignment_pattern": "pass",
+ "erlang::tests::let_assert::bit_array_assignment_discard": "pass",
+ "erlang::tests::let_assert::bit_array_assignment_float": "pass",
+ "erlang::tests::let_assert::bit_array_assignment_int": "pass",
+ "erlang::tests::let_assert::bit_array_pattern": "pass",
+ "erlang::tests::let_assert::bit_array_assignment_string": "pass",
+ "erlang::tests::let_assert::constructor_pattern": "pass",
+ "erlang::tests::let_assert::discard_pattern": "pass",
+ "erlang::tests::let_assert::constructor_pattern_with_multiple_variables": "pass",
+ "erlang::tests::let_assert::float_pattern": "pass",
+ "erlang::tests::let_assert::just_variable": "pass",
+ "erlang::tests::let_assert::int_pattern": "pass",
+ "erlang::tests::let_assert::let_assert_should_not_use_redefined_variable": "pass",
+ "erlang::tests::let_assert::let_assert_at_end_of_block": "pass",
+ "erlang::tests::keyword_constructors": "pass",
+ "erlang::tests::keyword_constructors1": "pass",
+ "erlang::tests::let_assert::list_pattern_with_multiple_variables": "pass",
+ "erlang::tests::let_assert::list_pattern": "pass",
+ "erlang::tests::let_assert::one_var": "pass",
+ "erlang::tests::let_assert::more_than_one_var": "pass",
+ "erlang::tests::let_assert::pattern_let": "pass",
+ "erlang::tests::let_assert::message": "pass",
+ "erlang::tests::let_assert::reference_earlier_segment": "pass",
+ "erlang::tests::let_assert::string_pattern": "pass",
+ "erlang::tests::let_assert::tuple_pattern": "pass",
+ "erlang::tests::let_assert::variable_message": "pass",
+ "erlang::tests::let_assert::string_prefix_pattern_with_prefix_binding": "pass",
+ "erlang::tests::let_assert::string_prefix_pattern": "pass",
+ "erlang::tests::negation": "pass",
+ "erlang::tests::let_assert::variable_rewrites": "pass",
+ "erlang::tests::numbers::int_negation": "pass",
+ "erlang::tests::negation_block": "pass",
+ "erlang::tests::numbers::numbers_with_scientific_notation": "pass",
+ "erlang::tests::numbers::numbers_with_underscores": "pass",
+ "erlang::tests::numbers::numbers_with_underscores1": "pass",
+ "erlang::tests::numbers::repeated_int_negation": "pass",
+ "erlang::tests::numbers::zero_b_in_hex": "pass",
+ "erlang::tests::numbers::numbers_with_underscores2": "pass",
+ "erlang::tests::operator_pipe_right_hand_side": "pass",
+ "erlang::tests::panic::panic_as_function": "pass",
+ "erlang::tests::panic::panic_as": "pass",
+ "erlang::tests::panic::piped": "pass",
+ "erlang::tests::panic::plain": "pass",
+ "erlang::tests::panic::piped_chain": "pass",
+ "erlang::tests::patterns::alternative_patterns": "pass",
+ "erlang::tests::patterns::alternative_patterns1": "pass",
+ "erlang::tests::patterns::alternative_patterns2": "pass",
+ "erlang::tests::patterns::alternative_patterns3": "pass",
+ "erlang::tests::patterns::string_prefix_as_patte
+...result truncated due to length...
+
+Please judge whether:
+(1) Your Python script extracts the statuses of all testcases and 
+(2) Your script and test command have made best effort to reveal the status of each unit testcase under a test suite / set if there's test suite / set. The testcase names in your output should be split to the finest granularity.
+If not successful, please adjust your test command, run your new test command in container, and adjust your Python script to extract test status.
+If successful, please submit.
+
+2026-05-12 00:08:39,917 - 
+================================== Ai Message ==================================
+
+<submit>
+    <test_command>cd /testbed && mkdir -p reports && cargo test --workspace --all-targets --verbose 2>&1 | tee reports/cargo-test.log</test_command>
+    <print_command>cd /testbed && cat reports/cargo-test.log</print_command>
+    <parser>parsing success</parser>
+</submit>
+2026-05-12 00:08:39,920 - ----------End verify conversation----------
+2026-05-12 00:08:40,258 - Rerunning test command: cd /testbed && mkdir -p reports && cargo test --workspace --all-targets --verbose 2>&1 | tee reports/cargo-test.log
+2026-05-12 00:09:06,663 - Running print command: cd /testbed && cat reports/cargo-test.log
+2026-05-12 00:09:06,891 - ----------Start parse log conversation----------
+2026-05-12 00:09:29,615 - 
+================================== Ai Message ==================================
+
+<analyze>Draft parser only matches Rust libtest “test NAME ... ok/FAILED/ignored”. It will miss:
+- doctest output: “Doc-tests crate” + “test ... ok” (still matches) but may include “FAILED (line X)”; or “ok” with timing.
+- libtest failures printed as “FAILED” plus later “failures:” section; names may appear there even if not in per-test lines when output is truncated/interleaved.
+- cargo adds ANSI color codes; regex should strip.
+- other frameworks possible in workspace (wasm-bindgen-test, insta, etc) but still libtest formatted. Also “running 0 tests” should not create entries.
+- status variants: “ignored”, “measured”, “filtered out”, “bench” lines, “ok” with extra spaces, “FAILED” lowercase? “ok” can be “ok” only.
+- Tests may be printed with module path and “::”; can include spaces when parameterized? Rust test names can include “::” and “/” for integration? Usually no spaces, but should be permissive.
+- Need to handle “test NAME ... FAILED” and also “test NAME ... ok” preceded by “test ” with possible “(line …)” suffix in name, for doctests.
+Robust approach:
+1) Strip ANSI escapes.
+2) Parse multiple patterns: libtest per-test line; unittest style “... ok/FAIL”; pytest nodeid PASSED; go “--- PASS:” etc; jest summary.
+3) For Rust, accept status tokens: ok, FAILED, ignored, should panic? (still ok), timeout? treat as fail.
+4) Also parse “failures:” list and mark any listed names as fail if not already captured.
+5) Keep last status wins to handle reruns.</analyze>
+<python>def parser(log: str) -> dict[str, str]:
+    import re
+
+    results: dict[str, str] = {}
+
+    # Strip ANSI escape sequences (colors, cursor control, etc.)
+    ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
+    log = ansi_re.sub("", log)
+
+    def set_status(name: str, status: str) -> None:
+        name = name.strip()
+        if not name:
+            return
+        if status not in ("pass", "fail", "skip"):
+            status = "fail"
+        # last write wins (useful if frameworks re-run)
+        results[name] = status
+
+    # ---- Rust libtest / cargo test ----
+    # Examples:
+    # test foo::bar ... ok
+    # test foo ... FAILED
+    # test foo ... ignored
+    rust_line_re = re.compile(
+        r"^\s*test\s+(?P<name>.+?)\s+\.\.\.\s+(?P<status>ok|FAILED|ignored)\s*$"
+    )
+
+    # Sometimes doctests can show "(line N)" in the name or other suffixes; above handles it.
+
+    # ---- Python pytest ----
+    # file.py::test_name PASSED/FAILED/SKIPPED/XFAIL/XPASS/ERROR
+    pytest_re = re.compile(
+        r"^\s*(?P<name>[^ \t]+::[^ \t]+)\s+"
+        r"(?P<status>PASSED|FAILED|SKIPPED|XFAIL|XPASS|ERROR)\s*$"
+    )
+
+    # ---- Python unittest ----
+    # test_method (pkg.mod.Class) ... ok/FAIL/ERROR/skipped
+    unittest_re = re.compile(
+        r"^\s*(?P<name>.+?)\s+\.\.\.\s+(?P<status>ok|FAIL|ERROR|skipped)\s*$"
+    )
+
+    # ---- Go test ----
+    # --- PASS: TestName
+    go_re = re.compile(r"^\s*---\s+(?P<status>PASS|FAIL|SKIP):\s+(?P<name>\S+)(?:\s+\(.+\))?\s*$")
+
+    # ---- Jest (best-effort) ----
+    jest_re = re.compile(r"^\s*(?P<status>PASS|FAIL)\s+(?P<name>.+?)\s*$")
+
+    for line in log.splitlines():
+        m = rust_line_re.match(line)
+        if m:
+            st = m.group("status")
+            set_status(
+                m.group("name"),
+                "pass" if st == "ok" else ("skip" if st == "ignored" else "fail"),
+            )
+            continue
+
+        m = pytest_re.match(line)
+        if m:
+            st = m.group("status")
+            if st == "PASSED" or st == "XPASS":
+                set_status(m.group("name"), "pass")
+            elif st == "SKIPPED" or st == "XFAIL":
+                set_status(m.group("name"), "skip")
+            else:
+                set_status(m.group("name"), "fail")
+            continue
+
+        m = unittest_re.match(line)
+        if m:
+            st = m.group("status").lower()
+            if st == "ok":
+                set_status(m.group("name"), "pass")
+            elif st == "skipped":
+                set_status(m.group("name"), "skip")
+            else:
+                set_status(m.group("name"), "fail")
+            continue
+
+        m = go_re.match(line)
+        if m:
+            st = m.group("status")
+            set_status(
+                m.group("name"),
+                "pass" if st == "PASS" else ("skip" if st == "SKIP" else "fail"),
+            )
+            continue
+
+        m = jest_re.match(line)
+        if m:
+            st = m.group("status")
+            set_status(m.group("name"), "pass" if st == "PASS" else "fail")
+            continue
+
+    # Rust libtest sometimes prints a failures list:
+    # failures:
+    #     test_name_1
+    #     mod::test_name_2
+    # Ensure they're marked as failed even if individual lines were missing/truncated.
+    failures_block = False
+    for line in log.splitlines():
+        l = line.rstrip("\n")
+        if re.match(r"^\s*failures:\s*$", l):
+            failures_block = True
+            continue
+        if failures_block:
+            if not l.strip():
+                # blank line often ends the failures list (but keep scanning until summary)
+                continue
+            if re.match(r"^\s*test result:\s*", l) or re.match(r"^\s*error:\s*", l):
+                failures_block = False
+                continue
+            m = re.match(r"^\s{2,}(?P<name>\S.+?)\s*$", l)
+            if m:
+                name = m.group("name").strip()
+                # Avoid capturing headers like "---- foo stdout ----"
+                if not name.startswith("----") and name != "failures":
+                    set_status(name, "fail")
+
+    return results</python>
+2026-05-12 00:09:29,650 - 
+================================ Human Message =================================
+
+Observation:
+Test results for improved parser:
+{
+  "add::displays_simple_version_correctly": "pass",
+  "add::displays_full_version_correctly": "pass",
+  "build_lock::locking_global": "pass",
+  "build_lock::locking_dev_erlang": "pass",
+  "build_lock::locking_dev_javascript": "pass",
+  "build_lock::locking_lsp_erlang": "pass",
+  "config::tests::package_root_git": "pass",
+  "config::tests::package_root_hex": "pass",
+  "config::tests::package_root_local": "pass",
+  "dependencies::tests::extra_local_packages": "pass",
+  "dependencies::tests::list_manifest_format": "pass",
+  "dependencies::tests::list_tree_invalid_package_format": "pass",
+  "build_lock::locking_prod_erlang": "pass",
+  "dependencies::tests::parse_gleam_add_specifier_default": "pass",
+  "dependencies::tests::missing_local_packages": "pass",
+  "dependencies::tests::parse_gleam_add_specifier_invalid_semver": "pass",
+  "dependencies::tests::parse_gleam_add_specifier_major_minor_and_patch": "pass",
+  "build_lock::locking_prod_javascript": "pass",
+  "dependencies::tests::parse_gleam_add_specifier_major_and_minor": "pass",
+  "build_lock::locking_lsp_javascript": "pass",
+  "dependencies::tests::parse_gleam_add_specifier_major_only": "pass",
+  "dependencies::tests::parse_gleam_add_specifier_non_numeric_version": "pass",
+  "dependencies::tests::provided_git_to_hex": "pass",
+  "dependencies::tests::provided_git_to_manifest": "pass",
+  "dependencies::tests::provide_wrong_package": "pass",
+  "dependencies::tests::provide_conflicting_package": "pass",
+  "dependencies::tests::provide_existing_package": "pass",
+  "dependencies::tests::provided_is_absolute": "pass",
+  "dependencies::tests::provided_local_to_manifest": "pass",
+  "dependencies::tests::provided_local_to_hex": "pass",
+  "dependencies::tests::test_ensure_packages_exist_locally_all_present": "pass",
+  "dependencies::tests::provided_recursive": "pass",
+  "dependencies::tests::test_ensure_packages_exist_locally_some_missing": "pass",
+  "dependencies::tests::test_remove_do_nothing": "pass",
+  "dependencies::tests::test_remove_package_that_is_also_a_transitive_dependency": "pass",
+  "dependencies::tests::test_remove_package_with_shared_transitive_dependencies": "pass",
+  "dependencies::tests::test_remove_package_with_transitive_dependencies": "pass",
+  "dependencies::tests::test_remove_simple": "pass",
+  "dependencies::tests::test_unlock_multiple_packages": "pass",
+  "dependencies::tests::test_path_dependency_config_updates": "pass",
+  "dependencies::tests::test_unlock_nonexistent_package": "pass",
+  "dependencies::tests::test_unlock_package": "pass",
+  "dependencies::tests::test_unlock_package_preserve_shared_deps": "pass",
+  "dependencies::tests::test_unlock_package_with_and_without_root_dep": "pass",
+  "dependencies::tests::test_unlock_package_without_manifest": "pass",
+  "dependencies::tests::test_unlock_package_with_root_dep": "pass",
+  "dependencies::tests::test_unlock_packages_empty_input": "pass",
+  "dependencies::tests::tree_format": "pass",
+  "dependencies::tests::test_unlock_root_dep_package": "pass",
+  "dependencies::tests::tree_invert_format": "pass",
+  "dependencies::tests::tree_package_format": "pass",
+  "dependencies::tests::verified_requirements_equality_with_canonicalized_paths": "pass",
+  "fs::tests::erlang_files_include_gitignored_files": "pass",
+  "fs::tests::extract_distro_id_test": "pass",
+  "fs::tests::exclude_build_dir": "pass",
+  "fs::tests::git_init_already_in_git": "pass",
+  "fs::tests::is_gleam_path_test": "pass",
+  "fs::tests::git_init_success": "pass",
+  "new::tests::conflict_with_existing_files": "pass",
+  "new::tests::existing_directory_no_files": "pass",
+  "new::tests::existing_directory_with_non_generated_file": "pass",
+  "new::tests::existing_directory_with_one_existing_file": "pass",
+  "fs::tests::is_inside_git_work_tree_ok": "pass",
+  "new::tests::invalid_name": "pass",
+  "new::tests::invalid_path": "pass",
+  "new::tests::new": "pass",
+  "dependencies::tests::test_pretty_print_version_updates": "pass",
+  "dependencies::tests::test_pretty_print_major_versions_available": "pass",
+  "new::tests::new_with_skip_git": "pass",
+  "new::tests::new_with_skip_git_and_github": "pass",
+  "new::tests::skip_existing_git_files_when_skip_git_is_true": "pass",
+  "new::tests::new_with_default_template": "pass",
+  "new::tests::suggested_project_name_updates_directory": "pass",
+  "new::tests::new_with_javascript_template": "pass",
+  "new::tests::new_with_skip_github": "pass",
+  "publish::prevent_publish_git_dependency": "pass",
+  "publish::prevent_publish_local_dependency": "pass",
+  "publish::release_metadata_as_erlang": "pass",
+  "publish::exported_project_files_test": "pass",
+  "run::invalid_module_names": "pass",
+  "run::valid_module_names": "pass",
+  "new::tests::validate_name_format": "pass",
+  "new::tests::suggest_valid_names": "pass",
+  "analyse::tests::module_name_validation": "pass",
+  "ast::module_dependencies_test": "pass",
+  "ast::tests::find_node_binop": "pass",
+  "ast::tests::find_node_bool": "pass",
+  "ast::tests::find_node_float": "pass",
+  "ast::tests::find_node_fn": "pass",
+  "ast::tests::find_node_list": "pass",
+  "ast::tests::find_node_int": "pass",
+  "ast::tests::find_node_call": "pass",
+  "ast::tests::find_node_module_select": "pass",
+  "ast::tests::find_node_case": "pass",
+  "ast::tests::find_node_record_access": "pass",
+  "ast::tests::find_node_sequence": "pass",
+  "ast::tests::find_node_string": "pass",
+  "ast::tests::find_node_record_update": "pass",
+  "ast::tests::find_node_statement_import": "pass",
+  "ast::tests::find_node_todo": "pass",
+  "ast::tests::find_node_tuple": "pass",
+  "ast::tests::find_node_tuple_index": "pass",
+  "ast::tests::find_node_todo_with_string": "pass",
+  "ast::type_ast_print_constructor": "pass",
+  "ast::tests::find_node_var": "pass",
+  "ast::type_ast_print_fn": "pass",
+  "ast::type_ast_print_tuple": "pass",
+  "build::mode_includes_dev_code": "pass",
+  "ast::tests::find_node_use": "pass",
+  "build::module_loader::tests::cache_present_and_fresh": "pass",
+  "build::module_loader::tests::cache_present_and_stale": "pass",
+  "build::module_loader::tests::cache_present_and_stale_but_source_is_the_same": "pass",
+  "build::module_loader::tests::cache_present_and_stale_source_is_the_same_lsp_mode_and_invalidated": "pass",
+  "build::module_loader::tests::cache_present_and_stale_source_is_the_same_lsp_mode": "pass",
+  "build::module_loader::tests::cache_present_with_codegen_when_required": "pass",
+  "build::module_loader::tests::cache_present_without_codegen_when_not_required": "pass",
+  "build::module_loader::tests::cache_present_without_codegen_when_required": "pass",
+  "build::module_loader::tests::no_cache_present": "pass",
+  "ast::tests::find_node_statement_fn": "pass",
+  "build::native_file_copier::tests::all_erlang_files_are_copied_from_dev_subfolders": "pass",
+  "build::native_file_copier::tests::all_erlang_files_are_copied_from_src_subfolders": "pass",
+  "build::native_file_copier::tests::all_erlang_files_are_copied_from_test_subfolders": "pass",
+  "build::native_file_copier::tests::all_javascript_files_are_copied_from_src_subfolders": "pass",
+  "build::native_file_copier::tests::cjavascript_files_are_copied_from_dev": "pass",
+  "build::native_file_copier::tests::all_javascript_files_are_copied_from_dev_subfolders": "pass",
+  "build::native_file_copier::tests::cjavascript_files_are_copied_from_src": "pass",
+  "build::native_file_copier::tests::cjavascript_files_are_copied_from_test": "pass",
+  "build::native_file_copier::tests::conflicting_erlang_modules_in_dev_and_test_result_in_an_error": "pass",
+  "build::native_file_copier::tests::conflicting_erlang_modules_in_src_and_test_result_in_an_error": "pass",
+  "build::native_file_copier::tests::conflicting_erlang_modules_in_src_and_dev_result_in_an_error": "pass",
+  "build::native_file_copier::tests::conflicting_erlang_modules_in_src_result_in_an_error": "pass",
+  "build::native_file_copier::tests::conflicting_gleam_and_erlang_modules_produce_no_error_in_dependency": "pass",
+  "build::native_file_copier::tests::conflicting_gleam_and_erlang_modules_result_in_an_error": "pass",
+  "build::native_file_copier::tests::conflicting_gleam_and_javascript_modules_result_in_an_error": "pass",
+  "build::native_file_copier::tests::all_javascript_files_are_copied_from_test_subfolders": "pass",
+  "build::native_file_copier::tests::conflicting_nested_gleam_and_erlang_modules_result_in_an_error": "pass",
+  "build::native_file_copier::tests::conflicting_nested_gleam_file_does_not_conflict_with_root_erlang_file": "pass",
+  "build::native_file_copier::tests::elixir_files_are_copied_from_dev": "pass",
+  "build::native_file_copier::tests::differently_nested_gleam_and_javascript_modules_with_same_name_are_ok": "pass",
+  "build::native_file_copier::tests::elixir_files_are_copied_from_src": "pass",
+  "build::native_file_copier::tests::elixir_files_are_copied_from_test": "pass",
+  "build::native_file_copier::tests::erlang_files_are_copied_from_dev": "pass",
+  "build::native_file_copier::tests::duplicate_native_files_result_in_an_error": "pass",
+  "build::native_file_copier::tests::erlang_files_are_copied_from_test": "pass",
+  "build::native_file_copier::tests::erlang_files_are_copied_from_src": "pass",
+  "build::native_file_copier::tests::erlang_header_files_are_copied_from_dev": "pass",
+  "build::native_file_copier::tests::erlang_header_files_are_copied_from_src": "pass",
+  "build::native_file_copier::tests::erlang_header_files_are_copied_from_test": "pass",
+  "build::native_file_copier::tests::files_do_not_get_copied_if_there_already_is_a_new_version": "pass",
+  "build::native_file_copier::tests::javascript_files_are_copied_from_dev": "pass",
+  "build::native_file_copier::tests::files_get_copied_if_the_previously_copied_version_is_older": "pass",
+  "build::native_file_copier::tests::javascript_files_are_copied_from_src": "pass",
+  "build::native_file_copier::tests::javascript_files_are_copied_from_test": "pass",
+  "build::native_file_copier::tests::mjavascript_files
+...result truncated due to length...
+
+Comparison with original parser:
+- Original parser found: 5318 test cases
+- Improved parser found: 5318 test cases
+- Difference: 0 test cases
+
+Please analyze if this is an improvement and submit if satisfied.
+2026-05-12 00:09:31,618 - 
+================================== Ai Message ==================================
+
+<submit>final parser is ready and tested</submit>
+2026-05-12 00:09:31,618 - ----------End parse log conversation----------
+2026-05-12 00:09:31,765 - setup state: True, 0, None ... 
+2026-05-12 00:09:31,772 - ----------Start unit test conversation----------
+2026-05-12 00:09:34,215 - 
+================================== Ai Message ==================================
+
+<command>cd /testbed && cargo test --workspace --all-targets --verbose -- add::displays_simple_version_correctly --exact</command>
+<command>cd /testbed && cargo test --workspace --all-targets --verbose -- add::displays_simple_version_correctly --exact</command>
+2026-05-12 00:09:34,625 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && cargo test --workspace --all-targets --verbose -- add::displays_siimple_version_correctly --exact
+       Fresh unicode-ident v1.0.22
+       Fresh cfg-if v1.0.4
+       Fresh proc-macro2 v1.0.106
+       Fresh version_check v0.9.4
+       Fresh quote v1.0.44
+       Fresh syn v2.0.114
+       Fresh autocfg v1.3.0
+       Fresh serde_derive v1.0.228
+       Fresh displaydoc v0.2.5
+       Fresh itoa v1.0.17
+       Fresh typenum v1.17.0
+       Fresh once_cell v1.21.3
+       Fresh generic-array v0.14.7
+       Fresh synstructure v0.13.2
+       Fresh crypto-common v0.1.6
+       Fresh tinystr v0.7.6
+       Fresh subtle v2.5.0
+       Fresh find-msvc-tools v0.1.9
+       Fresh shlex v1.3.0
+       Fresh serde_core v1.0.228
+       Fresh cc v1.2.57
+       Fresh zerofrom-derive v0.1.6
+       Fresh serde v1.0.228
+       Fresh block-buffer v0.10.4
+       Fresh zeroize_derive v1.4.2
+       Fresh pin-project-lite v0.2.16
+       Fresh cpufeatures v0.2.12
+       Fresh zeroize v1.7.0
+       Fresh zerofrom v0.1.6
+       Fresh yoke-derive v0.8.1
+       Fresh stable_deref_trait v1.2.1
+       Fresh getrandom v0.2.15
+       Fresh bitflags v2.5.0
+       Fresh zerovec-derive v0.11.2
+       Fresh yoke v0.8.1
+       Fresh futures-core v0.3.31
+       Fresh zerovec v0.11.5
+       Fresh equivalent v1.0.1
+       Fresh futures-sink v0.3.31
+       Fresh hashbrown v0.16.1
+       Fresh futures-channel v0.3.31
+       Fresh zmij v1.0.19
+       Fresh thiserror-impl v1.0.69
+       Fresh aho-corasick v1.1.4
+       Fresh same-file v1.0.6
+       Fresh pin-utils v0.1.0
+       Fresh lazy_static v1.5.0
+       Fresh walkdir v2.5.0
+       Fresh thiserror v1.0.69
+       Fresh slab v0.4.9
+       Fresh serde_json v1.0.149
+       Fresh tinystr v0.8.2
+       Fresh futures-macro v0.3.31
+       Fresh futures-task v0.3.31
+       Fresh log v0.4.29
+       Fresh litemap v0.8.1
+       Fresh writeable v0.6.2
+       Fresh futures-io v0.3.31
+       Fresh rustc-hash v1.1.0
+       Fresh either v1.10.0
+       Fresh futures-util v0.3.31
+       Fresh icu_locale_core v2.1.1
+       Fresh type-map v0.5.0
+       Fresh itertools v0.14.0
+       Fresh anyhow v1.0.86
+       Fresh potential_utf v0.1.4
+       Fresh zerotrie v0.2.3
+       Fresh http v1.4.0
+       Fresh percent-encoding v2.3.2
+       Fresh icu_collections v2.1.1
+       Fresh icu_provider v2.1.1
+       Fresh num-traits v0.2.19
+       Fresh digest v0.10.7
+       Fresh self_cell v1.0.4
+       Fresh heck v0.5.0
+       Fresh self_cell v0.10.3
+       Fresh icu_normalizer_data v2.1.1
+       Fresh icu_properties_data v2.1.2
+       Fresh fluent-syntax v0.11.1
+       Fresh basic-toml v0.1.9
+       Fresh unic-langid-impl v0.9.5
+       Fresh thiserror-impl v2.0.17
+       Fresh smallvec v1.15.1
+       Fresh foldhash v0.1.5
+       Fresh num-conv v0.2.0
+       Fresh untrusted v0.9.0
+       Fresh powerfmt v0.2.0
+       Fresh scopeguard v1.2.0
+       Fresh time-core v0.1.8
+       Fresh deranged v0.5.5
+       Fresh time-macros v0.2.27
+       Fresh lock_api v0.4.12
+       Fresh ring v0.17.13
+       Fresh hashbrown v0.15.3
+       Fresh thiserror v2.0.17
+       Fresh unic-langid v0.9.5
+       Fresh icu_properties v2.1.2
+       Fresh icu_normalizer v2.1.1
+       Fresh prost-derive v0.14.3
+       Fresh rand_core v0.6.4
+       Fresh inout v0.1.3
+       Fresh tracing-core v0.1.36
+       Fresh bytes v1.11.1
+       Fresh fixedbitset v0.5.7
+       Fresh fastrand v2.0.2
+       Fresh regex-syntax v0.8.9
+       Fresh prost v0.14.3
+       Fresh regex-automata v0.4.14
+       Fresh cipher v0.4.4
+       Fresh idna_adapter v1.2.1
+       Fresh rust-embed-impl v8.5.0
+       Fresh unicase v2.7.0
+       Fresh libc v0.2.180
+       Fresh time v0.3.47
+       Fresh semver v1.0.23
+       Fresh rusticata-macros v4.1.0
+       Fresh sha2 v0.10.8
+       Fresh form_urlencoded v1.2.2
+       Fresh indexmap v2.13.0
+       Fresh toml v0.5.11
+       Fresh asn1-rs-derive v0.6.0
+       Fresh asn1-rs-impl v0.2.0
+       Fresh tracing-attributes v0.1.31
+       Fresh ppv-lite86 v0.2.17
+       Fresh strsim v0.11.1
+       Fresh utf8parse v0.2.2
+       Fresh utf8_iter v1.0.4
+       Fresh asn1-rs v0.7.1
+       Fresh anstyle-parse v0.2.7
+       Fresh idna v1.1.0
+       Fresh tracing v0.1.44
+       Fresh find-crate v0.6.3
+       Fresh rustc_version v0.4.1
+       Fresh prettyplease v0.2.17
+       Fresh prost-types v0.14.3
+       Fresh i18n-config v0.4.7
+       Fresh num-integer v0.1.46
+       Fresh hmac v0.12.1
+       Fresh colorchoice v1.0.5
+       Fresh winnow v0.7.13
+       Fresh multimap v0.10.0
+       Fresh anstyle v1.0.14
+       Fresh anstyle-query v1.1.5
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh prost-build v0.14.3
+       Fresh anstream v0.6.21
+       Fresh i18n-embed-impl v0.8.4
+       Fresh num-bigint v0.4.6
+       Fresh url v2.5.8
+       Fresh fluent-langneg v0.13.0
+       Fresh intl_pluralrules v7.0.2
+       Fresh intl-memoizer v0.5.2
+       Fresh futures-executor v0.3.31
+       Fresh bstr v1.9.1
+       Fresh universal-hash v0.5.1
+       Fresh opaque-debug v0.3.1
+       Fresh minimal-lexical v0.2.1
+       Fresh memchr v2.8.0
+       Fresh adler2 v2.0.0
+       Fresh clap_lex v1.1.0
+       Fresh linux-raw-sys v0.4.13
+       Fresh arc-swap v1.7.1
+       Fresh rustix v0.38.32
+       Fresh clap_builder v4.5.60
+       Fresh poly1305 v0.8.0
+       Fresh nom v7.1.3
+       Fresh miniz_oxide v0.8.8
+       Fresh fluent-bundle v0.15.3
+       Fresh futures v0.3.31
+       Fresh crossbeam-utils v0.8.19
+       Fresh der-parser v10.0.0
+       Fresh crc32fast v1.4.0
+       Fresh oid-registry v0.8.1
+       Fresh rand_chacha v0.3.1
+       Fresh rust-embed-utils v8.5.0
+       Fresh chacha20 v0.9.1
+       Fresh priority-queue v2.3.1
+       Fresh clap_derive v4.5.55
+       Fresh parking_lot_core v0.9.10
+       Fresh prost-derive v0.13.5
+       Fresh aead v0.5.2
+       Fresh version-ranges v0.1.1
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh proc-macro-error-attr2 v2.0.0
+       Fresh data-encoding v2.5.0
+       Fresh mime v0.3.17
+       Fresh base64 v0.13.1
+       Fresh hashbrown v0.14.3
+       Fresh rustc-hash v2.0.0
+       Fresh dashmap v6.1.0
+       Fresh mime_guess v2.0.4
+       Fresh pubgrub v0.3.0
+       Fresh http-auth-basic v0.3.3
+       Fresh curve25519-dalek v4.1.3
+       Fresh proc-macro-error2 v2.0.1
+       Fresh x509-parser v0.18.0
+       Fresh chacha20poly1305 v0.10.1
+       Fresh prost v0.13.5
+       Fresh clap v4.5.60
+       Fresh parking_lot v0.12.3
+       Fresh rand v0.8.5
+       Fresh rust-embed v8.5.0
+       Fresh flate2 v1.1.2
+       Fresh fluent v0.16.1
+       Fresh cookie-factory v0.3.3
+       Fresh askama_parser v0.2.1
+       Fresh libm v0.2.8
+       Fresh globset v0.4.18
+       Fresh pbkdf2 v0.12.2
+       Fresh hkdf v0.12.4
+       Fresh salsa20 v0.10.2
+       Fresh regex v1.10.5
+       Fresh secrecy v0.10.3
+       Fresh ecow v0.2.6
+       Fresh bitmaps v2.1.0
+       Fresh pin-project-internal v1.1.5
+       Fresh io_tee v0.1.1
+       Fresh base64 v0.21.7
+       Fresh tap v1.0.1
+       Fresh base16 v0.2.1
+       Fresh virtue v0.0.18
+       Fresh wyz v0.5.1
+       Fresh age-core v0.11.0
+       Fresh bincode_derive v2.0.1
+       Fresh sized-chunks v0.6.5
+       Fresh pin-project v1.1.5
+       Fresh scrypt v0.11.0
+       Fresh i18n-embed v0.15.2
+       Fresh askama_derive v0.12.5
+       Fresh humansize v2.1.3
+       Fresh i18n-embed-fl v0.9.2
+       Fresh psm v0.1.26
+       Fresh camino v1.2.1
+       Fresh x25519-dalek v2.0.1
+       Fresh radium v0.7.0
+       Fresh xattr v1.3.1
+       Fresh toml_parser v1.0.6+spec-1.1.0
+       Fresh crossbeam-channel v0.5.15
+       Fresh rand_xoshiro v0.6.0
+       Fresh strum_macros v0.28.0
+       Fresh nibble_vec v0.1.0
+       Fresh toml_datetime v0.7.5+spec-1.1.0
+       Fresh serde_spanned v1.0.4
+       Fresh filetime v0.2.27
+       Fresh serde_repr v0.1.18
+       Fresh dirs-sys-next v0.1.2
+       Fresh pulldown-cmark-escape v0.11.0
+       Fresh unicode-width v0.1.11
+       Fresh unty v0.0.4
+       Fresh endian-type v0.2.0
+       Fresh askama_escape v0.10.3
+       Fresh funty v2.0.0
+       Fresh termcolor v1.4.1
+       Fresh bitflags v1.3.2
+       Fresh toml_writer v1.0.6+spec-1.1.0
+       Fresh bech32 v0.9.1
+       Fresh bitvec v1.0.1
+       Fresh age v0.11.2
+       Fresh toml v0.9.11+spec-1.1.0
+       Fresh lsp-types v0.95.1
+       Fresh codespan-reporting v0.12.0
+       Fresh askama v0.12.1
+       Fresh radix_trie v0.3.0
+       Fresh bincode v2.0.1
+       Fresh dirs-next v2.0.0
+       Fresh pulldown-cmark v0.13.0
+       Fresh tar v0.4.45
+       Fresh im v15.1.0
+       Fresh strum v0.28.0
+       Fresh lsp-server v0.7.8
+       Fresh stacker v0.1.23
+       Fresh pathdiff v0.2.3
+       Fresh petgraph v0.8.3
+       Fresh spdx v0.10.8
+       Fresh async-trait v0.1.89
+       Fresh debug-ignore v1.0.5
+       Fresh bimap v0.6.3
+       Fresh xxhash-rust v0.8.15
+       Fresh id-arena v2.3.0
+       Fresh unicode-segmentation v1.12.0
+       Fresh vec1 v1.12.1
+       Fresh mio v1.0.1
+       Fresh socket2 v0.6.0
+warning: unused variable: `rest`
+   --> compiler-core/src/javascript/decision.rs:744:46
+    |
+744 |         RuntimeCheck::StringPrefix { prefix, rest } if utf16_no_escape_len(prefix) == 1 => {
+    |                                              ^^^^ help: try ignoring the field: `rest: _`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+       Fresh wasm-bindgen-shared v0.2.106
+warning: `gleam-core` (lib) generated 1 warning
+       Fresh tokio v1.50.0
+       Fresh http-body v1.0.0
+       Fresh rustls-pki-types v1.13.1
+       Fresh rustversion v1.0.22
+       Fresh bumpalo v3.19.1
+       Fresh wasm-bindgen-macro-support v0.2.106
+       Fresh try-lock v0.2.5
+       Fresh tower-service v0.3.3
+       Fresh wasm-bindgen-macro v0.2.106
+       Fresh httparse v1.10.1
+       Fresh want v0.3.1
+       Fresh rustls-webpki v0.103.10
+       Fresh console v0.15.8
+       Fresh cfg_aliases v0.2.1
+       Fresh similar v2.5.0
+       Fresh atomic-waker v1.1.2
+       Fresh linked-hash-map v0.5.6
+       Fresh insta v1.41.1
+       Fresh hyper v1.8.1
+       Fresh rustls v0.23.31
+       Fresh wasm-bindgen v0.2.106
+       Fresh tracing-log v0.2.0
+       Fresh matchers v0.2.0
+       Fresh sharded-slab v0.1.7
+       Fresh sync_wrapper v1.0.1
+       Fresh toml_datetime v0.6.11
+       Fresh serde_spanned v0.6.9
+       Fresh thread_local v1.1.9
+       Fresh ipnet v2.9.0
+       Fresh toml_write v0.1.2
+       Fresh nu-ansi-term v0.50.3
+       Fresh base64 v0.22.1
+       Fresh tower-layer v0.3.3
+       Fresh toml_edit v0.22.27
+       Fresh hyper-util v0.1.19
+       Fresh tracing-subscriber v0.3.22
+       Fresh tower v0.5.2
+       Fresh tokio-rustls v0.26.0
+       Fresh webpki-roots v1.0.4
+       Fresh crossbeam-epoch v0.9.18
+       Fresh ryu v1.0.22
+       Fresh iri-string v0.7.9
+       Fresh tower-http v0.6.8
+       Fresh serde_urlencoded v0.7.1
+       Fresh crossbeam-deque v0.8.5
+       Fresh nix v0.30.1
+       Fresh hyper-rustls v0.27.7
+       Fresh http-body-util v0.1.3
+       Fresh rtoolbox v0.0.2
+       Fresh reqwest v0.12.28
+       Fresh rpassword v7.4.0
+       Fresh ctrlc v3.5.1
+       Fresh getrandom v0.3.3
+       Fresh ignore v0.4.22
+       Fresh js-sys v0.3.83
+       Fresh opener v0.8.3
+       Fresh http-serde v2.1.1
+       Fresh fslock v0.2.1
+       Fresh hostname v0.4.2
+       Fresh fs_extra v1.3.0
+       Fresh rand_core v0.9.3
+       Fresh diff v0.1.13
+       Fresh yansi v1.0.1
+       Fresh pretty_assertions v1.4.1
+       Fresh rand_chacha v0.9.0
+       Fresh wasm-bindgen-futures v0.4.42
+       Fresh console_error_panic_hook v0.1.7
+       Fresh wasm-bindgen-test-macro v0.3.42
+       Fresh scoped-tls v1.0.1
+       Fresh wasm-bindgen-test v0.3.42
+       Fresh rand v0.9.2
+       Fresh serde-wasm-bindgen v0.6.5
+       Fresh toml v0.8.23
+       Fresh tracing-wasm v0.2.1
+       Fresh tempfile v3.12.0
+       Fresh test-package-compiler v1.15.1 (/testbed/test-package-compiler)
+       Fresh gleam-wasm v1.15.1 (/testbed/compiler-wasm)
+       Fresh hexpm v1.15.1 (/testbed/hexpm)
+       Fresh gleam-cli v1.15.1 (/testbed/compiler-cli)
+       Fresh gleam-core v1.15.1 (/testbed/compiler-core)
+warning: `gleam-core` (lib test) generated 1 warning (1 duplicate)
+       Fresh test-project-compiler v1.15.1 (/testbed/test-project-compiler)
+       Fresh gleam v1.15.1 (/testbed/gleam-bin)
+       Fresh test-output v1.15.1 (/testbed/test-output)
+       Fresh test-helpers-rs v0.1.0 (/testbed/test-helpers-rs)
+       Fresh gleam-language-server v1.15.1 (/testbed/language-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running `/testbed/target/debug/deps/gleam-39b56bbc5a673d8a 'add::displays_simple_version_correctly' --exact`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/gleam_cli-d36cf87a97ab0469 'add::displays_simple_version_correctly' --exact`
+
+running 1 test
+test add::displays_simple_version_correctly ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/gleam_core-9b92990bbb196b79 'add::displays_simple_version_correctly' --exact`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3720 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/gleam_language_server-3ba0cbb8c60d0247 'add::displays_simple_version_correctly' --exact`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1331 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/gleam_wasm-d7198c77116d0872 'add::displays_simple_version_correctly' --exact`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/hexpm-4df9e3527f7b47bc 'add::displays_simple_version_correctly' --exact`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 166 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/test_helpers_rs-6810842ec90adcc1 'add::displays_simple_version_correctly' --exact`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/test_output-238be308233c35ac 'add::displays_simple_version_correctly' --exact`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/test_package_compiler-9a8bd7e5a9552190 'add::displays_simple_version_correctly' --exact`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+     Running `/testbed/target/debug/deps/test_project_compiler-c93a4963d6efae8a 'add::displays_simple_version_correctly' --exact`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+root@8fb373812418:/testbed $
+
+exit code: 0
+
+2026-05-12 00:09:39,374 - 
+================================== Ai Message ==================================
+
+<python>def get_pertest_cmd(testcase_list:list[str])->dict[str,str]:
+    result: dict[str, str] = {}
+    # Rust (cargo test / libtest) supports filtering by test name, and --exact to avoid prefix matches.
+    # We run at workspace scope so the test is found regardless of which crate it lives in.
+    for testcase in testcase_list:
+        result[testcase] = (
+            "cd /testbed && "
+            "cargo test --workspace --all-targets --verbose -- "
+            f"'{testcase}' --exact"
+        )
+    return result</python>
+<python>def get_pertest_cmd(testcase_list:list[str])->dict[str,str]:
+    result: dict[str, str] = {}
+    # Rust (cargo test / libtest) supports filtering by test name, and --exact to avoid prefix matches.
+    # Run at workspace scope so the test is found regardless of which crate it lives in.
+    for testcase in testcase_list:
+        result[testcase] = (
+            "cd /testbed && "
+            "cargo test --workspace --all-targets --verbose -- "
+            f"'{testcase}' --exact"
+        )
+    return result</python>
+2026-05-12 00:09:40,287 - 
+================================ Human Message =================================
+
+Observation:
+
+This is part of the "testcase name :: per-testcase excution command" mapping returned from your python script: 
+{
+ "add::displays_simple_version_correctly": "cd /testbed && cargo test --workspace --all-targets --verbose -- 'add::displays_simple_version_correctly' --exact",
+ "add::displays_full_version_correctly": "cd /testbed && cargo test --workspace --all-targets --verbose -- 'add::displays_full_version_correctly' --exact"
+}
+==========================
+This is the shell execution result of some of the pertest execution commands returned from your python script:
+{
+ "add::displays_simple_version_correctly": "cd /testbed && cargo test --workspace --all-targets --verbose -- 'add::displays_ssimple_version_correctly' --exact\n       Fresh unicode-ident v1.0.22\n       Fresh cfg-if v1.0.4\n       Fresh version_check v0.9.4\n       Fresh proc-macro2 v1.0.106\n       Fresh quote v1.0.44\n       Fresh autocfg v1.3.0\n       Fresh syn v2.0.114\n       Fresh serde_derive v1.0.228\n       Fresh displaydoc v0.2.5\n       Fresh typenum v1.17.0\n       Fresh itoa v1.0.17\n       Fresh once_cell v1.21.3\n       Fresh synstructure v0.13.2\n       Fresh generic-array v0.14.7\n       Fresh tinystr v0.7.6\n       Fresh crypto-common v0.1.6\n       Fresh subtle v2.5.0\n       Fresh serde_core v1.0.228\n       Fresh find-msvc-tools v0.1.9\n       Fresh shlex v1.3.0\n       Fresh serde v1.0.228\n       Fresh block-buffer v0.10.4\n       Fresh cc v1.2.57\n       Fresh zerofrom-derive v0.1.6\n       Fresh zeroize_derive v1.4.2\n       Fresh pin-project-lite v0.2.16\n       Fresh cpufeatures v0.2.12\n       Fresh zerofrom v0.1.6\n       Fresh zeroize v1.7.0\n       Fresh yoke-derive v0.8.1\n       Fresh stable_deref_trait v1.2.1\n       Fresh getrandom v0.2.15\n       Fresh bitflags v2.5.0\n       Fresh zerovec-derive v0.11.2\n       Fresh yoke v0.8.1\n       Fresh futures-core v0.3.31\n       Fresh zerovec v0.11.5\n       Fresh futures-sink v0.3.31\n       Fresh hashbrown v0.16.1\n       Fresh equivalent v1.0.1\n       Fresh zmij v1.0.19\n       Fresh futures-channel v0.3.31\n       Fresh thiserror-impl v1.0.69\n       Fresh aho-corasick v1.1.4\n       Fresh pin-utils v0.1.0\n       Fresh lazy_static v1.5.0\n       Fresh same-file v1.0.6\n       Fresh walkdir v2.5.0\n       Fresh thiserror v1.0.69\n       Fresh slab v0.4.9\n       Fresh serde_json v1.0.149\n       Fresh tinystr v0.8.2\n       Fresh futures-macro v0.3.31\n       Fresh litemap v0.8.1\n       Fresh log v0.4.29\n       Fresh writeable v0.6.2\n       Fresh either v1.10.0\n       Fresh futures-task v0.3.31\n       Fresh futures-io v0.3.31\n       Fresh rustc-hash v1.1.0\n       Fresh icu_locale_core v2.1.1\n       Fresh itertools v0.14.0\n       Fresh futures-util v0.3.31\n       Fresh type-map v0.5.0\n       Fresh anyhow v1.0.86\n       Fresh potential_utf v0.1.4\n       Fresh zerotrie v0.2.3\n       Fresh http v1.4.0\n       Fresh percent-encoding v2.3.2\n       Fresh icu_collections v2.1.1\n       Fresh icu_provider v2.1.1\n       Fresh num-traits v0.2.19\n       Fresh digest v0.10.7\n       Fresh heck v0.5.0\n       Fresh self_cell v1.0.4\n       Fresh self_cell v0.10.3\n       Fresh icu_properties_data v2.1.2\n       Fresh icu_normalizer_data v2.1.1\n       Fresh fluent-syntax v0.11.1\n       Fresh basic-toml v0.1.9\n       Fresh unic-langid-impl v0.9.5\n       Fresh thiserror-impl v2.0.17\n       Fresh time-core v0.1.8\n       Fresh smallvec v1.15.1\n       Fresh num-conv v0.2.0\n       Fresh foldhash v0.1.5\n       Fresh scopeguard v1.2.0\n       Fresh untrusted v0.9.0\n       Fresh powerfmt v0.2.0\n       Fresh lock_api v0.4.12\n       Fresh ring v0.17.13\n       Fresh deranged v0.5.5\n       Fresh hashbrown v0.15.3\n       Fresh time-macros v0.2.27\n       Fresh thiserror v2.0.17\n       Fresh unic-langid v0.9.5\n       Fresh icu_properties v2.1.2\n       Fresh icu_normalizer v2.1.1\n       Fresh prost-derive v0.14.3\n       Fresh rand_core v0.6.4\n       Fresh inout v0.1.3\n       Fresh tracing-core v0.1.36\n       Fresh fastrand v2.0.2\n       Fresh regex-syntax v0.8.9\n       Fresh bytes v1.11.1\n       Fresh fixedbitset v0.5.7\n       Fresh regex-automata v0.4.14\n       Fresh prost v0.14.3\n       Fresh cipher v0.4.4\n       Fresh rust-embed-impl v8.5.0\n       Fresh idna_adapter v1.2.1\n       Fresh unicase v2.7.0\n       Fresh semver v1.0.23\n       Fresh time v0.3.47\n       Fresh libc v0.2.180\n       Fresh form_urlencoded v1.2.2\n       Fresh rusticata-macros v4.1.0\n       Fresh sha2 v0.10.8\n       Fresh indexmap v2.13.0\n       Fresh toml v0.5.11\n       Fresh asn1-rs-derive v0.6.0\n       Fresh asn1-rs-impl v0.2.0\n       Fresh tracing-attributes v0.1.31\n       Fresh strsim v0.11.1\n       Fresh utf8_iter v1.0.4\n       Fresh ppv-lite86 v0.2.17\n       Fresh utf8parse v0.2.2\n       Fresh asn1-rs v0.7.1\n       Fresh anstyle-parse v0.2.7\n       Fresh idna v1.1.0\n       Fresh tracing v0.1.44\n       Fresh find-crate v0.6.3\n       Fresh rustc_version v0.4.1\n       Fresh prettyplease v0.2.17\n       Fresh prost-types v0.14.3\n       Fresh i18n-config v0.4.7\n       Fresh num-integer v0.1.46\n       Fresh hmac v0.12.1\n       Fresh colorchoice v1.0.5\n       Fresh multimap v0.10.0\n       Fresh is_terminal_polyfill v1.70.2\n       Fresh anstyle-query v1.1.5\n       Fresh anstyle v1.0.14\n       Fresh winnow v0.7.13\n       Fresh anstream v0.6.21\n       Fresh prost-build v0.14.3\n       Fresh i18n-embed-impl v0.8.4\n       Fresh num-bigint v0.4.6\n       Fresh url v2.5.8\n       Fresh intl-memoizer v0.5.2\n       Fresh intl_pluralrules v7.0.2\n       Fresh fluent-langneg v0.13.0\n       Fresh futures-executor v0.3.31\n       Fresh bstr v1.9.1\n       Fresh universal-hash v0.5.1\n       Fresh opaque-debug v0.3.1\n       Fresh arc-swap v1.7.1\n       Fresh minimal-lexical v0.2.1\n       Fresh adler2 v2.0.0\n       Fresh clap_lex v1.1.0\n       Fresh memchr v2.8.0\n       Fresh linux-raw-sys v0.4.13\n       Fresh nom v7.1.3\n       Fresh clap_builder v4.5.60\n       Fresh rustix v0.38.32\n       Fresh poly1305 v0.8.0\n       Fresh miniz_oxide v0.8.8\n       Fresh futures v0.3.31\n       Fresh fluent-bundle v0.15.3\n       Fresh der-parser v10.0.0\n       Fresh crossbeam-utils v0.8.19\n       Fresh oid-registry v0.8.1\n       Fresh crc32fast v1.4.0\n       Fresh rand_chacha v0.3.1\n       Fresh rust-embed-utils v8.5.0\n       Fresh chacha20 v0.9.1\n       Fresh priority-queue v2.3.1\n       Fresh clap_derive v4.5.55\n       Fresh parking_lot_core v0.9.10\n       Fresh prost-derive v0.13.5\n       Fresh aead v0.5.2\n       Fresh version-ranges v0.1.1\n       Fresh curve25519-dalek-derive v0.1.1\n       Fresh proc-macro-error-attr2 v2.0.0\n       Fresh hashbrown v0.14.3\n       Fresh rustc-hash v2.0.0\n       Fresh mime v0.3.17\n       Fresh data-encoding v2.5.0\n       Fresh base64 v0.13.1\n       Fresh mime_guess v2.0.4\n       Fresh http-auth-basic v0.3.3\n       Fresh x509-parser v0.18.0\n       Fresh curve25519-dalek v4.1.3\n       Fresh dashmap v6.1.0\n       Fresh pubgrub v0.3.0\n       Fresh proc-macro-error2 v2.0.1\n       Fresh chacha20poly1305 v0.10.1\n       Fresh prost v0.13.5\n       Fresh parking_lot v0.12.3\n       Fresh clap v4.5.60\n       Fresh rust-embed v8.5.0\n       Fresh rand v0.8.5\n       Fresh flate2 v1.1.2\n       Fresh fluent v0.16.1\n       Fresh cookie-factory v0.3.3\n       Fresh libm v0.2.8\n       Fresh askama_parser v0.2.1\n       Fresh globset v0.4.18\n       Fresh hkdf v0.12.4\n       Fresh pbkdf2 v0.12.2\n       Fresh salsa20 v0.10.2\n       Fresh regex v1.10.5\n       Fresh secrecy v0.10.3\n       Fresh ecow v0.2.6\n       Fresh bitmaps v2.1.0\n       Fresh pin-project-internal v1.1.5\n       Fresh base64 v0.21.7\n       Fresh tap v1.0.1\n       Fresh virtue v0.0.18\n       Fresh base16 v0.2.1\n       Fresh io_tee v0.1.1\n       Fresh wyz v0.5.1\n       Fresh age-core v0.11.0\n       Fresh bincode_derive v2.0.1\n       Fresh sized-chunks v0.6.5\n       Fresh pin-project v1.1.5\n       Fresh scrypt v0.11.0\n       Fresh i18n-embed v0.15.2\n       Fresh askama_derive v0.12.5\n       Fresh humansize v2.1.3\n       Fresh i18n-embed-fl v0.9.2\n       Fresh psm v0.1.26\n       Fresh camino v1.2.1\n       Fresh x25519-dalek v2.0.1\n       Fresh radium v0.7.0\n       Fresh xattr v1.3.1\n       Fresh toml_parser v1.0.6+spec-1.1.0\n       Fresh crossbeam-channel v0.5.15\n       Fresh rand_xoshiro v0.6.0\n       Fresh strum_macros v0.28.0\n       Fresh nibble_vec v0.1.0\n       Fresh toml_datetime v0.7.5+spec-1.1.0\n       Fresh serde_repr v0.1.18\n       Fresh serde_spanned v1.0.4\n       Fresh filetime v0.2.27\n       Fresh dirs-sys-next v0.1.2\n       Fresh pulldown-cmark-escape v0.11.0\n       Fresh toml_writer v1.0.6+spec-1.1.0\n       Fresh bitflags v1.3.2\n       Fresh funty v2.0.0\n       Fresh unty v0.0.4\n       Fresh unicode-width v0.1.11\n       Fresh askama_escape v0.10.3\n       Fresh endian-type v0.2.0\n       Fresh bech32 v0.9.1\n       Fresh termcolor v1.4.1\n       Fresh askama v0.12.1\n       Fresh codespan-reporting v0.12.0\n       Fresh age v0.11.2\n       Fresh radix_trie v0.3.0\n       Fresh bincode v2.0.1\n       Fresh bitvec v1.0.1\n       Fresh dirs-next v2.0.0\n       Fresh lsp-types v0.95.1\n       Fresh toml v0.9.11+spec-1.1.0\n       Fresh pulldown-cmark v0.13.0\n       Fresh tar v0.4.45\n       Fresh lsp-server v0.7.8\n       Fresh strum v0.28.0\n       Fresh im v15.1.0\n       Fresh stacker v0.1.23\n       Fresh pathdiff v0.2.3\n       Fresh petgraph v0.8.3\n       Fresh spdx v0.10.8\n       Fresh async-trait v0.1.89\n       Fresh xxhash-rust v0.8.15\n       Fresh vec1 v1.12.1\n       Fresh bimap v0.6.3\n       Fresh id-arena v2.3.0\n       Fresh unicode-segmentation v1.12.0\n       Fresh debug-ignore v1.0.5\n       Fresh mio v1.0.1\n       Fresh socket2 v0.6.0\nwarning: unused variable: `rest`\n   --> compiler-core/src/javascript/decision.rs:744:46\n    |\n744 |         RuntimeCheck::StringPrefix { prefix, rest } if utf16_no_escape_len(prefix) == 1 => {\n    |                                              ^^^^ help: try ignoring the field: `rest: _`\n    |\n    = note: `#[warn(unused_variables)]` on by default\n\n       Fresh tokio v1.50.0\nwarning: `gleam-core` (lib) generated 1 warning\n       Fresh wasm-bindgen-shared v0.2.106\n       Fresh http-body v1.0.0\n       Fresh rustls-pki-types v1.13.1\n       Fresh rustversion v1.0.22\n       Fresh bumpalo v3.19.1\n       Fresh tower-service v0.3.3\n       Fresh wasm-bindgen-macro-support v0.2.106\n       Fresh try-lock v0.2.5\n       Fresh wasm-bindgen-macro v0.2.106\n       Fresh httparse v1.10.1\n       Fresh want v0.3.1\n       Fresh rustls-webpki v0.103.10\n       Fresh console v0.15.8\n       Fresh linked-hash-map v0.5.6\n       Fresh cfg_aliases v0.2.1\n       Fresh atomic-waker v1.1.2\n       Fresh similar v2.5.0\n       Fresh insta v1.41.1\n       Fresh hyper v1.8.1\n       Fresh rustls v0.23.31\n       Fresh wasm-bindgen v0.2.106\n       Fresh tracing-log v0.2.0\n       Fresh matchers v0.2.0\n       Fresh sharded-slab v0.1.7\n       Fresh sync_wrapper v1.0.1\n       Fresh serde_spanned v0.6.9\n       Fresh toml_datetime v0.6.11\n       Fresh thread_local v1.1.9\n       Fresh ipnet v2.9.0\n       Fresh nu-ansi-term v0.50.3\n       Fresh tower-layer v0.3.3\n       Fresh toml_write v0.1.2\n       Fresh base64 v0.22.1\n       Fresh tower v0.5.2\n       Fresh toml_edit v0.22.27\n       Fresh tracing-subscriber v0.3.22\n       Fresh hyper-util v0.1.19\n       Fresh tokio-rustls v0.26.0\n       Fresh webpki-roots v1.0.4\n       Fresh crossbeam-epoch v0.9.18\n       Fresh iri-string v0.7.9\n       Fresh ryu v1.0.22\n       Fresh serde_urlencoded v0.7.1\n       Fresh crossbeam-deque v0.8.5\n       Fresh tower-http v0.6.8\n       Fresh hyper-rustls v0.27.7\n       Fresh nix v0.30.1\n       Fresh http-body-util v0.1.3\n       Fresh rtoolbox v0.0.2\n       Fresh rpassword v7.4.0\n       Fresh ctrlc v3.5.1\n       Fresh reqwest v0.12.28\n       Fresh getrandom v0.3.3\n       Fresh ignore v0.4.22\n       Fresh js-sys v0.3.83\n       Fresh opener v0.8.3\n       Fresh http-serde v2.1.1\n       Fresh hostname v0.4.2\n       Fresh fslock v0.2.1\n       Fresh fs_extra v1.3.0\n       Fresh rand_core v0.9.3\n       Fresh diff v0.1.13\n       Fresh yansi v1.0.1\n       Fresh pretty_assertions v1.4.1\n       Fresh rand_chacha v0.9.0\n       Fresh wasm-bindgen-futures v0.4.42\n       Fresh console_error_panic_hook v0.1.7\n       Fresh wasm-bindgen-test-macro v0.3.42\n       Fresh scoped-tls v1.0.1\n       Fresh wasm-bindgen-test v0.3.42\n       Fresh rand v0.9.2\n       Fresh serde-wasm-bindgen v0.6.5\n       Fresh tracing-wasm v0.2.1\n       Fresh toml v0.8.23\n       Fresh tempfile v3.12.0\n       Fresh test-package-compiler v1.15.1 (/testbed/test-package-compiler)\n       Fresh gleam-cli v1.15.1 (/testbed/compiler-cli)\n       Fresh hexpm v1.15.1 (/testbed/hexpm)\n       Fresh gleam-wasm v1.15.1 (/testbed/compiler-wasm)\n       Fresh gleam v1.15.1 (/testbed/gleam-bin)\n       Fresh gleam-core v1.15.1 (/testbed/compiler-core)\n       Fresh test-project-compiler v1.15.1 (/testbed/test-project-compiler)\n       Fresh test-output v1.15.1 (/testbed/test-output)\n       Fresh test-helpers-rs v0.1.0 (/testbed/test-helpers-rs)\nwarning: `gleam-core` (lib test) generated 1 warning (1 duplicate)\n       Fresh gleam-language-server v1.15.1 (/testbed/language-server)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s\n     Running `/testbed/target/debug/deps/gleam-39b56bbc5a673d8a 'add::displays_simple_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/gleam_cli-d36cf87a97ab0469 'add::displays_simple_version_correctly' --exact`\n\nrunning 1 test\ntest add::displays_simple_version_correctly ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/gleam_core-9b92990bbb196b79 'add::displays_simple_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3720 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/gleam_language_server-3ba0cbb8c60d0247 'add::displays_simple_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1331 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/gleam_wasm-d7198c77116d0872 'add::displays_simple_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/hexpm-4df9e3527f7b47bc 'add::displays_simple_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 166 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/test_helpers_rs-6810842ec90adcc1 'add::displays_simple_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/test_output-238be308233c35ac 'add::displays_simple_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/test_package_compiler-9a8bd7e5a9552190 'add::displays_simple_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/test_project_compiler-c93a4963d6efae8a 'add::displays_simple_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\n\nroot@8fb373812418:/testbed $\n\nexit code: 0\n",
+ "add::displays_full_version_correctly": "cd /testbed && cargo test --workspace --all-targets --verbose -- 'add::displays_ffull_version_correctly' --exact\n       Fresh unicode-ident v1.0.22\n       Fresh cfg-if v1.0.4\n       Fresh proc-macro2 v1.0.106\n       Fresh version_check v0.9.4\n       Fresh quote v1.0.44\n       Fresh syn v2.0.114\n       Fresh autocfg v1.3.0\n       Fresh serde_derive v1.0.228\n       Fresh displaydoc v0.2.5\n       Fresh itoa v1.0.17\n       Fresh typenum v1.17.0\n       Fresh once_cell v1.21.3\n       Fresh generic-array v0.14.7\n       Fresh synstructure v0.13.2\n       Fresh crypto-common v0.1.6\n       Fresh tinystr v0.7.6\n       Fresh subtle v2.5.0\n       Fresh find-msvc-tools v0.1.9\n       Fresh serde_core v1.0.228\n       Fresh shlex v1.3.0\n       Fresh zerofrom-derive v0.1.6\n       Fresh block-buffer v0.10.4\n       Fresh serde v1.0.228\n       Fresh cc v1.2.57\n       Fresh zeroize_derive v1.4.2\n       Fresh pin-project-lite v0.2.16\n       Fresh cpufeatures v0.2.12\n       Fresh zeroize v1.7.0\n       Fresh zerofrom v0.1.6\n       Fresh yoke-derive v0.8.1\n       Fresh stable_deref_trait v1.2.1\n       Fresh getrandom v0.2.15\n       Fresh bitflags v2.5.0\n       Fresh zerovec-derive v0.11.2\n       Fresh yoke v0.8.1\n       Fresh futures-core v0.3.31\n       Fresh zerovec v0.11.5\n       Fresh equivalent v1.0.1\n       Fresh hashbrown v0.16.1\n       Fresh futures-sink v0.3.31\n       Fresh futures-channel v0.3.31\n       Fresh zmij v1.0.19\n       Fresh thiserror-impl v1.0.69\n       Fresh aho-corasick v1.1.4\n       Fresh lazy_static v1.5.0\n       Fresh pin-utils v0.1.0\n       Fresh same-file v1.0.6\n       Fresh walkdir v2.5.0\n       Fresh serde_json v1.0.149\n       Fresh thiserror v1.0.69\n       Fresh slab v0.4.9\n       Fresh tinystr v0.8.2\n       Fresh futures-macro v0.3.31\n       Fresh log v0.4.29\n       Fresh futures-task v0.3.31\n       Fresh litemap v0.8.1\n       Fresh either v1.10.0\n       Fresh writeable v0.6.2\n       Fresh futures-io v0.3.31\n       Fresh rustc-hash v1.1.0\n       Fresh itertools v0.14.0\n       Fresh icu_locale_core v2.1.1\n       Fresh type-map v0.5.0\n       Fresh futures-util v0.3.31\n       Fresh anyhow v1.0.86\n       Fresh potential_utf v0.1.4\n       Fresh http v1.4.0\n       Fresh zerotrie v0.2.3\n       Fresh percent-encoding v2.3.2\n       Fresh icu_provider v2.1.1\n       Fresh icu_collections v2.1.1\n       Fresh num-traits v0.2.19\n       Fresh digest v0.10.7\n       Fresh self_cell v1.0.4\n       Fresh heck v0.5.0\n       Fresh self_cell v0.10.3\n       Fresh icu_normalizer_data v2.1.1\n       Fresh icu_properties_data v2.1.2\n       Fresh fluent-syntax v0.11.1\n       Fresh basic-toml v0.1.9\n       Fresh unic-langid-impl v0.9.5\n       Fresh thiserror-impl v2.0.17\n       Fresh time-core v0.1.8\n       Fresh powerfmt v0.2.0\n       Fresh foldhash v0.1.5\n       Fresh untrusted v0.9.0\n       Fresh num-conv v0.2.0\n       Fresh smallvec v1.15.1\n       Fresh scopeguard v1.2.0\n       Fresh ring v0.17.13\n       Fresh lock_api v0.4.12\n       Fresh time-macros v0.2.27\n       Fresh hashbrown v0.15.3\n       Fresh deranged v0.5.5\n       Fresh unic-langid v0.9.5\n       Fresh thiserror v2.0.17\n       Fresh icu_properties v2.1.2\n       Fresh icu_normalizer v2.1.1\n       Fresh prost-derive v0.14.3\n       Fresh rand_core v0.6.4\n       Fresh inout v0.1.3\n       Fresh tracing-core v0.1.36\n       Fresh fixedbitset v0.5.7\n       Fresh bytes v1.11.1\n       Fresh fastrand v2.0.2\n       Fresh regex-syntax v0.8.9\n       Fresh regex-automata v0.4.14\n       Fresh prost v0.14.3\n       Fresh cipher v0.4.4\n       Fresh idna_adapter v1.2.1\n       Fresh rust-embed-impl v8.5.0\n       Fresh time v0.3.47\n       Fresh unicase v2.7.0\n       Fresh libc v0.2.180\n       Fresh semver v1.0.23\n       Fresh rusticata-macros v4.1.0\n       Fresh form_urlencoded v1.2.2\n       Fresh sha2 v0.10.8\n       Fresh indexmap v2.13.0\n       Fresh toml v0.5.11\n       Fresh asn1-rs-derive v0.6.0\n       Fresh tracing-attributes v0.1.31\n       Fresh asn1-rs-impl v0.2.0\n       Fresh utf8parse v0.2.2\n       Fresh strsim v0.11.1\n       Fresh ppv-lite86 v0.2.17\n       Fresh utf8_iter v1.0.4\n       Fresh anstyle-parse v0.2.7\n       Fresh idna v1.1.0\n       Fresh tracing v0.1.44\n       Fresh asn1-rs v0.7.1\n       Fresh find-crate v0.6.3\n       Fresh rustc_version v0.4.1\n       Fresh prettyplease v0.2.17\n       Fresh prost-types v0.14.3\n       Fresh i18n-config v0.4.7\n       Fresh num-integer v0.1.46\n       Fresh hmac v0.12.1\n       Fresh anstyle v1.0.14\n       Fresh multimap v0.10.0\n       Fresh winnow v0.7.13\n       Fresh is_terminal_polyfill v1.70.2\n       Fresh colorchoice v1.0.5\n       Fresh anstyle-query v1.1.5\n       Fresh anstream v0.6.21\n       Fresh prost-build v0.14.3\n       Fresh i18n-embed-impl v0.8.4\n       Fresh num-bigint v0.4.6\n       Fresh url v2.5.8\n       Fresh intl_pluralrules v7.0.2\n       Fresh intl-memoizer v0.5.2\n       Fresh fluent-langneg v0.13.0\n       Fresh futures-executor v0.3.31\n       Fresh bstr v1.9.1\n       Fresh universal-hash v0.5.1\n       Fresh clap_lex v1.1.0\n       Fresh minimal-lexical v0.2.1\n       Fresh adler2 v2.0.0\n       Fresh arc-swap v1.7.1\n       Fresh memchr v2.8.0\n       Fresh opaque-debug v0.3.1\n       Fresh linux-raw-sys v0.4.13\n       Fresh nom v7.1.3\n       Fresh rustix v0.38.32\n       Fresh poly1305 v0.8.0\n       Fresh clap_builder v4.5.60\n       Fresh miniz_oxide v0.8.8\n       Fresh fluent-bundle v0.15.3\n       Fresh futures v0.3.31\n       Fresh der-parser v10.0.0\n       Fresh crossbeam-utils v0.8.19\n       Fresh oid-registry v0.8.1\n       Fresh crc32fast v1.4.0\n       Fresh rand_chacha v0.3.1\n       Fresh rust-embed-utils v8.5.0\n       Fresh chacha20 v0.9.1\n       Fresh priority-queue v2.3.1\n       Fresh clap_derive v4.5.55\n       Fresh parking_lot_core v0.9.10\n       Fresh prost-derive v0.13.5\n       Fresh aead v0.5.2\n       Fresh version-ranges v0.1.1\n       Fresh curve25519-dalek-derive v0.1.1\n       Fresh proc-macro-error-attr2 v2.0.0\n       Fresh data-encoding v2.5.0\n       Fresh mime v0.3.17\n       Fresh base64 v0.13.1\n       Fresh hashbrown v0.14.3\n       Fresh rustc-hash v2.0.0\n       Fresh http-auth-basic v0.3.3\n       Fresh dashmap v6.1.0\n       Fresh pubgrub v0.3.0\n       Fresh mime_guess v2.0.4\n       Fresh proc-macro-error2 v2.0.1\n       Fresh curve25519-dalek v4.1.3\n       Fresh x509-parser v0.18.0\n       Fresh chacha20poly1305 v0.10.1\n       Fresh prost v0.13.5\n       Fresh parking_lot v0.12.3\n       Fresh clap v4.5.60\n       Fresh rust-embed v8.5.0\n       Fresh rand v0.8.5\n       Fresh flate2 v1.1.2\n       Fresh fluent v0.16.1\n       Fresh cookie-factory v0.3.3\n       Fresh askama_parser v0.2.1\n       Fresh libm v0.2.8\n       Fresh globset v0.4.18\n       Fresh pbkdf2 v0.12.2\n       Fresh hkdf v0.12.4\n       Fresh salsa20 v0.10.2\n       Fresh regex v1.10.5\n       Fresh secrecy v0.10.3\n       Fresh ecow v0.2.6\n       Fresh bitmaps v2.1.0\n       Fresh pin-project-internal v1.1.5\n       Fresh io_tee v0.1.1\n       Fresh base16 v0.2.1\n       Fresh tap v1.0.1\n       Fresh virtue v0.0.18\n       Fresh base64 v0.21.7\n       Fresh bincode_derive v2.0.1\n       Fresh wyz v0.5.1\n       Fresh age-core v0.11.0\n       Fresh sized-chunks v0.6.5\n       Fresh pin-project v1.1.5\n       Fresh scrypt v0.11.0\n       Fresh humansize v2.1.3\n       Fresh i18n-embed v0.15.2\n       Fresh askama_derive v0.12.5\n       Fresh i18n-embed-fl v0.9.2\n       Fresh psm v0.1.26\n       Fresh x25519-dalek v2.0.1\n       Fresh camino v1.2.1\n       Fresh radium v0.7.0\n       Fresh xattr v1.3.1\n       Fresh toml_parser v1.0.6+spec-1.1.0\n       Fresh crossbeam-channel v0.5.15\n       Fresh rand_xoshiro v0.6.0\n       Fresh strum_macros v0.28.0\n       Fresh nibble_vec v0.1.0\n       Fresh serde_spanned v1.0.4\n       Fresh toml_datetime v0.7.5+spec-1.1.0\n       Fresh dirs-sys-next v0.1.2\n       Fresh serde_repr v0.1.18\n       Fresh filetime v0.2.27\n       Fresh funty v2.0.0\n       Fresh bitflags v1.3.2\n       Fresh unty v0.0.4\n       Fresh bech32 v0.9.1\n       Fresh toml_writer v1.0.6+spec-1.1.0\n       Fresh endian-type v0.2.0\n       Fresh termcolor v1.4.1\n       Fresh askama_escape v0.10.3\n       Fresh pulldown-cmark-escape v0.11.0\n       Fresh unicode-width v0.1.11\n       Fresh age v0.11.2\n       Fresh codespan-reporting v0.12.0\n       Fresh askama v0.12.1\n       Fresh pulldown-cmark v0.13.0\n       Fresh radix_trie v0.3.0\n       Fresh toml v0.9.11+spec-1.1.0\n       Fresh bincode v2.0.1\n       Fresh tar v0.4.45\n       Fresh lsp-types v0.95.1\n       Fresh bitvec v1.0.1\n       Fresh dirs-next v2.0.0\n       Fresh lsp-server v0.7.8\n       Fresh im v15.1.0\n       Fresh strum v0.28.0\n       Fresh pathdiff v0.2.3\n       Fresh stacker v0.1.23\n       Fresh petgraph v0.8.3\n       Fresh spdx v0.10.8\n       Fresh async-trait v0.1.89\n       Fresh vec1 v1.12.1\n       Fresh xxhash-rust v0.8.15\n       Fresh debug-ignore v1.0.5\n       Fresh bimap v0.6.3\n       Fresh id-arena v2.3.0\n       Fresh unicode-segmentation v1.12.0\n       Fresh socket2 v0.6.0\n       Fresh mio v1.0.1\nwarning: unused variable: `rest`\n   --> compiler-core/src/javascript/decision.rs:744:46\n    |\n744 |         RuntimeCheck::StringPrefix { prefix, rest } if utf16_no_escape_len(prefix) == 1 => {\n    |                                              ^^^^ help: try ignoring the field: `rest: _`\n    |\n    = note: `#[warn(unused_variables)]` on by default\n\n       Fresh wasm-bindgen-shared v0.2.106\nwarning: `gleam-core` (lib) generated 1 warning\n       Fresh tokio v1.50.0\n       Fresh http-body v1.0.0\n       Fresh rustls-pki-types v1.13.1\n       Fresh rustversion v1.0.22\n       Fresh bumpalo v3.19.1\n       Fresh wasm-bindgen-macro-support v0.2.106\n       Fresh tower-service v0.3.3\n       Fresh try-lock v0.2.5\n       Fresh wasm-bindgen-macro v0.2.106\n       Fresh httparse v1.10.1\n       Fresh want v0.3.1\n       Fresh rustls-webpki v0.103.10\n       Fresh console v0.15.8\n       Fresh cfg_aliases v0.2.1\n       Fresh linked-hash-map v0.5.6\n       Fresh atomic-waker v1.1.2\n       Fresh similar v2.5.0\n       Fresh hyper v1.8.1\n       Fresh insta v1.41.1\n       Fresh rustls v0.23.31\n       Fresh wasm-bindgen v0.2.106\n       Fresh tracing-log v0.2.0\n       Fresh matchers v0.2.0\n       Fresh sharded-slab v0.1.7\n       Fresh sync_wrapper v1.0.1\n       Fresh serde_spanned v0.6.9\n       Fresh toml_datetime v0.6.11\n       Fresh thread_local v1.1.9\n       Fresh nu-ansi-term v0.50.3\n       Fresh tower-layer v0.3.3\n       Fresh base64 v0.22.1\n       Fresh ipnet v2.9.0\n       Fresh toml_write v0.1.2\n       Fresh tracing-subscriber v0.3.22\n       Fresh hyper-util v0.1.19\n       Fresh tower v0.5.2\n       Fresh toml_edit v0.22.27\n       Fresh tokio-rustls v0.26.0\n       Fresh webpki-roots v1.0.4\n       Fresh crossbeam-epoch v0.9.18\n       Fresh iri-string v0.7.9\n       Fresh ryu v1.0.22\n       Fresh crossbeam-deque v0.8.5\n       Fresh tower-http v0.6.8\n       Fresh serde_urlencoded v0.7.1\n       Fresh hyper-rustls v0.27.7\n       Fresh nix v0.30.1\n       Fresh http-body-util v0.1.3\n       Fresh rtoolbox v0.0.2\n       Fresh ctrlc v3.5.1\n       Fresh rpassword v7.4.0\n       Fresh reqwest v0.12.28\n       Fresh ignore v0.4.22\n       Fresh getrandom v0.3.3\n       Fresh js-sys v0.3.83\n       Fresh opener v0.8.3\n       Fresh http-serde v2.1.1\n       Fresh hostname v0.4.2\n       Fresh fslock v0.2.1\n       Fresh fs_extra v1.3.0\n       Fresh rand_core v0.9.3\n       Fresh diff v0.1.13\n       Fresh yansi v1.0.1\n       Fresh pretty_assertions v1.4.1\n       Fresh rand_chacha v0.9.0\n       Fresh wasm-bindgen-futures v0.4.42\n       Fresh console_error_panic_hook v0.1.7\n       Fresh wasm-bindgen-test-macro v0.3.42\n       Fresh scoped-tls v1.0.1\n       Fresh wasm-bindgen-test v0.3.42\n       Fresh rand v0.9.2\n       Fresh serde-wasm-bindgen v0.6.5\n       Fresh toml v0.8.23\n       Fresh tracing-wasm v0.2.1\n       Fresh tempfile v3.12.0\n       Fresh test-project-compiler v1.15.1 (/testbed/test-project-compiler)\n       Fresh gleam-wasm v1.15.1 (/testbed/compiler-wasm)\n       Fresh gleam-cli v1.15.1 (/testbed/compiler-cli)\n       Fresh hexpm v1.15.1 (/testbed/hexpm)\n       Fresh gleam-core v1.15.1 (/testbed/compiler-core)\nwarning: `gleam-core` (lib test) generated 1 warning (1 duplicate)\n       Fresh test-package-compiler v1.15.1 (/testbed/test-package-compiler)\n       Fresh gleam v1.15.1 (/testbed/gleam-bin)\n       Fresh test-output v1.15.1 (/testbed/test-output)\n       Fresh gleam-language-server v1.15.1 (/testbed/language-server)\n       Fresh test-helpers-rs v0.1.0 (/testbed/test-helpers-rs)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s\n     Running `/testbed/target/debug/deps/gleam-39b56bbc5a673d8a 'add::displays_full_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/gleam_cli-d36cf87a97ab0469 'add::displays_full_version_correctly' --exact`\n\nrunning 1 test\ntest add::displays_full_version_correctly ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/gleam_core-9b92990bbb196b79 'add::displays_full_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3720 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/gleam_language_server-3ba0cbb8c60d0247 'add::displays_full_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1331 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/gleam_wasm-d7198c77116d0872 'add::displays_full_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/hexpm-4df9e3527f7b47bc 'add::displays_full_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 166 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/test_helpers_rs-6810842ec90adcc1 'add::displays_full_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/test_output-238be308233c35ac 'add::displays_full_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/test_package_compiler-9a8bd7e5a9552190 'add::displays_full_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s\n\n     Running `/testbed/target/debug/deps/test_project_compiler-c93a4963d6efae8a 'add::displays_full_version_correctly' --exact`\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\n\nroot@8fb373812418:/testbed $\n\nexit code: 0\n"
+}
+==========================
+Please judge the correctness of your per-testcase execution commands (the commands should run ONLY one specified testcase per command, and run the specified testcase successfully with pass/fail/skip result).
+If correct, submit with <submit>success</submit>;
+If not correct (some of your commands trigger more than one tests, OR many of your commands fail to execute successfully), please explore the correct command to run a specific testcase again and write the python script to generate all per-testcase commands again;
+If you think it is impossible to run each testcase separately, give up by outputting <submit>failure</submit>.
+
+2026-05-12 00:09:42,532 - 
+================================== Ai Message ==================================
+
+<submit>success</submit>
+2026-05-12 00:09:42,536 - ----------End verify conversation----------
+2026-05-12 00:09:43,054 - Duration: 19 minutes
+2026-05-12 00:09:43,054 - Setup completed successfully, now commit into swebench image.
+2026-05-12 00:11:12,084 - Image repolaunch/dev:gleam-lang__gleam-5532_linux committed successfully.
+2026-05-12 00:11:23,864 - Test output saved to: data/rust1/playground/gleam-lang__gleam-5532/test_status.log
+2026-05-12 00:11:33,867 - Result saved to: data/rust1/playground/gleam-lang__gleam-5532/result.json

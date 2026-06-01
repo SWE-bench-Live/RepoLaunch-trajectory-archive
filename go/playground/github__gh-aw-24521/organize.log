@@ -1,0 +1,1563 @@
+2026-05-04 23:44:46,156 - Using language: go
+2026-05-04 23:44:56,941 - Loading image repolaunch/dev:github__gh-aw-24521_linux.
+2026-05-05 00:08:53,667 - Repo root in the host cleaned up: /home/v-kenanli/SWE-bench-Live/launch/data/go/playground/github__gh-aw-24521/repo
+2026-05-05 00:08:53,713 - Setting up environment for language: go
+2026-05-05 00:08:54,325 - No language-specific server needed
+2026-05-05 00:08:58,187 - setup state: None, 0, None ... 
+2026-05-05 00:08:58,187 - ----------Start rebuild conversation----------
+2026-05-05 00:09:28,670 - 
+================================== Ai Message ==================================
+
+Thought: I should inspect the Makefile to understand the build/deps targets for minimal rebuild commands.
+Action: <command>sed -n '1,200p' Makefile</command>
+2026-05-05 00:09:29,949 - 
+================================ Human Message =================================
+
+Observation:
+sed -n '1,200p' Makefile
+# Makefile for gh-aw Go project
+
+# Variables
+BINARY_NAME=gh-aw
+# Add .exe extension on Windows
+ifeq ($(OS),Windows_NT)
+	BINARY_NAME := gh-aw.exe
+endif
+VERSION ?= $(shell git describe --tags --always --dirty)
+DOCKER_IMAGE=ghcr.io/github/gh-aw
+DOCKER_PLATFORMS=linux/amd64,linux/arm64
+
+# Build flags
+LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
+
+# Default target
+.PHONY: all
+all: build
+
+# Build the binary, run make deps before this
+.PHONY: build
+build: sync-action-pins sync-action-scripts
+	go build $(LDFLAGS) -o $(BINARY_NAME) ./cmd/gh-aw
+
+# Build for all platforms
+.PHONY: build-all
+build-all: build-linux build-darwin build-windows build-android
+
+.PHONY: build-linux
+build-linux:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY_NAME)-linux-amd64 ./cmd/gh-aw
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o $(BINARY_NAME)-linux-arm64 ./cmd/gh-aw
+
+.PHONY: build-darwin
+build-darwin:
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY_NAME)-darwin-amd64 ./cmd/gh-aw
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(BINARY_NAME)-darwin-arm64 ./cmd/gh-aw
+
+.PHONY: build-windows
+build-windows:
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY_NAME)-windows-amd64.exe ./cmd/gh-aw
+
+.PHONY: build-android
+build-android:
+	CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build $(LDFLAGS) -o $(BINARY_NAME)-android-arm64 ./cmd/gh-aw
+
+# Build WebAssembly module for browser usage
+# Optionally runs wasm-opt (from Binaryen) if available for ~8% size reduction
+.PHONY: build-wasm
+build-wasm:
+	GOOS=js GOARCH=wasm go build -ldflags="-w -s" -o gh-aw.wasm ./cmd/gh-aw-wasm
+	@if command -v wasm-opt >/dev/null 2>&1; then \
+		echo "Running wasm-opt -Oz (size optimization)..."; \
+		BEFORE=$$(wc -c < gh-aw.wasm); \
+		wasm-opt -Oz --enable-bulk-memory gh-aw.wasm -o gh-aw.opt.wasm && \
+		mv gh-aw.opt.wasm gh-aw.wasm; \
+		AFTER=$$(wc -c < gh-aw.wasm); \
+		echo "✓ wasm-opt: $$BEFORE → $$AFTER bytes"; \
+	else \
+		echo "⚠ wasm-opt not found, skipping optimization (install binaryen for ~8% size reduction)"; \
+	fi
+	@echo "✓ Built gh-aw.wasm ($$(du -h gh-aw.wasm | cut -f1))"
+	@echo "  Copy wasm_exec.js from: $$(go env GOROOT)/lib/wasm/wasm_exec.js (or misc/wasm/ for Go <1.24)"
+
+# Test the code (runs both unlabelled unit tests and integration tests and long tests)
+.PHONY: test
+test: test-unit test-integration
+
+# Test unit tests only (excludes labelled integration tests and long tests)
+.PHONY: test-unit
+test-unit:
+	go test -v -parallel=4 -timeout=10m -run='^Test' ./... -short
+
+.PHONY: test-integration
+test-integration:
+	go test -v -parallel=4 -timeout=10m -run='^Test' ./... -short
+
+# Update golden test files
+.PHONY: update-golden
+update-golden:
+	@echo "Updating golden test files..."
+	go test -v ./pkg/console -run='^TestGolden_' -update
+
+# Wasm golden tests — compare wasm (string API) compiler output against golden files
+.PHONY: test-wasm-golden
+test-wasm-golden:
+	@echo "Running wasm golden tests (Go string API path)..."
+	go test -v -timeout=5m -run='^TestWasmGolden_' ./pkg/workflow
+
+# Update wasm golden files from current string API output
+.PHONY: update-wasm-golden
+update-wasm-golden:
+	@echo "Updating wasm golden test files..."
+	go test -v -timeout=5m -run='^TestWasmGolden_' ./pkg/workflow -update
+
+# Build wasm and run Node.js golden comparison test
+.PHONY: test-wasm
+test-wasm: build-wasm
+	@echo "Running wasm binary golden tests (Node.js)..."
+	node scripts/test-wasm-golden.mjs
+
+# Test specific integration test groups (matching CI workflow)
+.PHONY: test-integration-compile
+test-integration-compile:
+	go test -v -timeout=3m -tags 'integration' -run 'TestCompile|TestPoutine' ./pkg/cli
+
+.PHONY: test-integration-mcp-playwright
+test-integration-mcp-playwright:
+	go test -v -timeout=3m -tags 'integration' -run 'TestMCPInspectPlaywright' ./pkg/cli
+
+.PHONY: test-integration-mcp-other
+test-integration-mcp-other:
+	go test -v -timeout=3m -tags 'integration' -run 'TestMCPAdd|TestMCPInspectGitHub|TestMCPServer|TestMCPConfig' ./pkg/cli
+
+.PHONY: test-integration-logs
+test-integration-logs:
+	go test -v -timeout=3m -tags 'integration' -run 'TestLogs|TestFirewall|TestNoStopTime|TestLocalWorkflow' ./pkg/cli
+
+.PHONY: test-integration-workflow
+test-integration-workflow:
+	go test -v -timeout=3m -tags 'integration' ./pkg/workflow ./cmd/gh-aw
+
+.PHONY: test-perf
+test-perf:
+	go test -v -count=1 -timeout=3m -tags 'integration' -run='^Test' ./... | tee /tmp/gh-aw/test-output.log; \
+	EXIT_CODE=$$?; \
+	echo ""; \
+	echo "=== SLOWEST TESTS ==="; \
+	grep -E "^\s*--- (PASS|FAIL):" /tmp/gh-aw/test-output.log | \
+	grep -E "\([0-9]+\.[0-9]+s\)" | \
+	sed 's/.*\(Test[^ ]*\).* (\([0-9]*\.[0-9]*s\)).*/\2 \1/' | \
+	sort -nr | \
+	head -10; \
+	rm -f /tmp/gh-aw/test-output.log; \
+	exit $$EXIT_CODE
+
+# Run benchmarks for performance testing
+.PHONY: bench
+bench:
+	@echo "Running benchmarks..."
+	go test -bench=. -benchmem -benchtime=3x -run=^$$ ./pkg/... | tee bench_results.txt
+
+# Run only critical performance benchmarks for daily monitoring
+.PHONY: bench-performance
+bench-performance:
+	@echo "Running critical performance benchmarks..."
+	@echo "This includes: CompileSimpleWorkflow, CompileComplexWorkflow, CompileMCPWorkflow,"
+	@echo "               CompileMemoryUsage, ParseWorkflow, Validation, YAMLGeneration"
+	@go test -bench='Benchmark(CompileSimpleWorkflow|CompileComplexWorkflow|CompileMCPWorkflow|CompileMemoryUsage|ParseWorkflow|Validation|YAMLGeneration)$$' \
+		-benchmem -benchtime=3x -run=^$$ ./pkg/workflow | tee bench_performance.txt
+	@echo ""
+	@echo "Also running CLI helper benchmarks..."
+	@go test -bench='Benchmark(ExtractWorkflowNameFromFile|FindIncludesInContent)$$' \
+		-benchmem -benchtime=3x -run=^$$ ./pkg/cli >> bench_performance.txt
+	@echo ""
+	@echo "Performance benchmark results saved to bench_performance.txt"
+
+# Run benchmarks with more iterations for comparison (saves to separate file)
+.PHONY: bench-compare
+bench-compare:
+	@echo "Running benchmarks with more iterations for comparison..."
+	go test -bench=. -benchmem -benchtime=100x -run=^$$ ./pkg/... | tee bench_compare.txt
+	@echo "Comparison results saved to bench_compare.txt"
+	@echo "Compare with: benchstat bench_results.txt bench_compare.txt"
+
+# Run memory profiling benchmarks
+.PHONY: bench-memory
+bench-memory:
+	@echo "Running memory profiling benchmarks..."
+	go test -bench=. -benchmem -memprofile=mem.prof -cpuprofile=cpu.prof -benchtime=10x -run=^$$ ./pkg/workflow
+	@echo "Memory profile saved to mem.prof, CPU profile saved to cpu.prof"
+	@echo "View with: go tool pprof -http=:8080 mem.prof"
+
+# Run fuzz tests
+.PHONY: fuzz
+fuzz:
+	@echo "Running fuzz tests for 30 seconds..."
+	go test -fuzz=FuzzParseFrontmatter -fuzztime=30s ./pkg/parser/
+	go test -fuzz=FuzzExpressionParser -fuzztime=30s ./pkg/workflow/
+
+# Run security regression tests
+.PHONY: test-security
+test-security:
+	@echo "Running security regression tests..."
+	go test -v -timeout=3m -run '^TestSecurity' ./pkg/workflow/... ./pkg/cli/...
+	@echo "Running security fuzz test seed corpus..."
+	go test -v -timeout=3m -run '^FuzzYAML|^FuzzTemplate|^FuzzInput|^FuzzNetwork|^FuzzSafeJob' ./pkg/workflow/...
+	@echo "✓ Security regression tests passed"
+
+# Security scanning with gosec and govulncheck
+.PHONY: security-scan
+security-scan: security-gosec security-govulncheck
+	@echo "✓ All security scans completed"
+
+.PHONY: security-gosec
+security-gosec:
+	@echo "Running gosec security scanner..."
+	@command -v gosec >/dev/null || go install github.com/securego/gosec/v2/cmd/gosec@v2.23.0
+	@# Exclusions configured in .golangci.yml (linters-settings.gosec.exclude)
+	@# Keep this list in sync with .golangci.yml for consistency
+
+root@7660e8772598:/testbed $
+
+exit code: 0
+
+2026-05-05 00:09:46,472 - 
+================================== Ai Message ==================================
+
+Thought: I need to see how sync-action-scripts is implemented to know if it requires npm installs.
+Action: <command>grep -n "sync-action-scripts" -n Makefile</command>
+2026-05-05 00:09:46,642 - 
+================================ Human Message =================================
+
+Observation:
+grep -n "sync-action-scripts" -n Makefile
+22:build: sync-action-pins sync-action-scripts
+680:.PHONY: sync-action-scripts
+681:sync-action-scripts:
+810:	@echo "  sync-action-scripts - Sync install-gh-aw.sh to actions/setup-cli/install.sh (runs automatically during build)"
+
+root@7660e8772598:/testbed $
+
+exit code: 0
+
+2026-05-05 00:09:58,887 - 
+================================== Ai Message ==================================
+
+Thought: I should inspect the sync-action-scripts target body for required tooling.
+Action: <command>sed -n '640,740p' Makefile</command>
+2026-05-05 00:10:00,079 - 
+================================ Human Message =================================
+
+Observation:
+sed -n '640,740p' Makefile
+deps-docs: check-node-version
+	@echo "Installing documentation dependencies..."
+	@cd docs && npm ci
+	@echo "✓ Documentation dependencies installed"
+
+.PHONY: build-docs
+build-docs: deps-docs
+	@echo "Building Astro documentation..."
+	@cd docs && npm run build
+	@echo "✓ Documentation built to docs/dist"
+
+.PHONY: dev-docs
+dev-docs: deps-docs
+	@echo "Starting Astro development server..."
+	@cd docs && npm run dev
+
+.PHONY: preview-docs
+preview-docs: build-docs
+	@echo "Starting Astro preview server..."
+	@cd docs && npm run preview
+
+.PHONY: clean-docs
+clean-docs:
+	@echo "Cleaning documentation artifacts..."
+	@rm -rf docs/dist docs/node_modules docs/.astro
+	@echo "✓ Documentation artifacts cleaned"
+
+# Sync templates from .github to pkg/cli/templates
+# Sync action pins from .github/aw to pkg/workflow/data
+.PHONY: sync-action-pins
+sync-action-pins:
+	@echo "Syncing actions-lock.json from .github/aw to pkg/workflow/data/action_pins.json..."
+	@if [ -f .github/aw/actions-lock.json ]; then \
+		cp .github/aw/actions-lock.json pkg/workflow/data/action_pins.json; \
+		echo "✓ Action pins synced successfully"; \
+	else \
+		echo "⚠ Warning: .github/aw/actions-lock.json does not exist yet"; \
+	fi
+
+# Sync action scripts
+.PHONY: sync-action-scripts
+sync-action-scripts:
+	@echo "Syncing install-gh-aw.sh to actions/setup-cli/install.sh..."
+	@cp install-gh-aw.sh actions/setup-cli/install.sh
+	@chmod +x actions/setup-cli/install.sh
+	@echo "✓ Action scripts synced successfully"
+
+# Recompile all workflow files
+.PHONY: recompile
+recompile: build
+	./$(BINARY_NAME) init --codespaces
+	./$(BINARY_NAME) compile --validate --verbose --purge --stats
+#	./$(BINARY_NAME) compile --dir pkg/cli/workflows --validate --verbose --purge
+
+# Apply automatic fixes to workflow files
+.PHONY: fix
+fix: build
+	./$(BINARY_NAME) fix --write
+
+# Generate Dependabot manifests for npm dependencies
+.PHONY: dependabot
+dependabot: build
+	./$(BINARY_NAME) compile --dependabot --verbose
+
+# Update GitHub Actions and workflows, then sync action pins and rebuild
+.PHONY: update
+update: build
+	./$(BINARY_NAME) update
+	$(MAKE) sync-action-pins
+	$(MAKE) build
+
+# Run development server
+.PHONY: dev
+dev: build
+	./$(BINARY_NAME)
+
+.PHONY: watch
+watch: build
+	./$(BINARY_NAME) compile --watch
+
+.PHONY: pull-main
+pull-main:
+	@echo "check on main branch"
+	@git checkout main
+	@echo "Check out branch is clean"
+	@git diff --quiet || (echo "Error: Working directory is not clean. Please commit or stash changes before pulling." && exit 1)
+	@echo "Pulling latest changes..."
+	@git pull
+
+# Generate Software Bill of Materials (SBOM)
+.PHONY: sbom
+sbom:
+	@if ! command -v syft >/dev/null 2>&1; then \
+		echo "Error: syft is not installed."; \
+		echo ""; \
+		echo "Install syft to generate SBOMs:"; \
+		echo "  curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin"; \
+		echo ""; \
+		echo "Or visit: https://github.com/anchore/syft#installation"; \
+		exit 1; \
+	fi
+
+root@7660e8772598:/testbed $
+
+exit code: 0
+
+2026-05-05 00:10:22,218 - 
+================================== Ai Message ==================================
+
+Thought: I should check the deps target to see which package installs are expected.
+Action: <command>grep -n "deps:" -n Makefile</command>
+2026-05-05 00:10:23,139 - 
+================================ Human Message =================================
+
+Observation:
+grep -n "deps:" -n Makefile
+449:deps: check-node-version
+
+root@7660e8772598:/testbed $
+
+exit code: 0
+
+2026-05-05 00:10:44,389 - 
+================================== Ai Message ==================================
+
+Thought: The minimal rebuild for Go source or go.mod changes is to download modules and rebuild all packages.
+Action: <submit>GOTOOLCHAIN=auto go mod download ; GOTOOLCHAIN=auto go build ./...</submit>
+2026-05-05 00:10:44,390 - Agent submitted commands: GOTOOLCHAIN=auto go mod download ; GOTOOLCHAIN=auto go build ./...
+2026-05-05 00:10:44,390 - Automatically verifying submitted commands...
+2026-05-05 00:11:16,379 - Verification PASSED - LLM determined commands executed successfully
+2026-05-05 00:11:16,609 - ----------End rebuild organization conversation----------
+2026-05-05 00:11:21,103 - setup state: True, None ... 
+2026-05-05 00:11:21,104 - ----------Start test conversation----------
+2026-05-05 00:11:48,952 - 
+================================== Ai Message ==================================
+
+Thought: Run all Go tests with JSON output captured to a report file for per-test status parsing.
+<command>cd /testbed && mkdir -p reports && GOTOOLCHAIN=auto go test -v -json ./... > reports/go-test-results.json</command>
+2026-05-05 00:13:51,886 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && mkdir -p reports && GOTOOLCHAIN=auto go test -v -json ./... > repoorts/go-test-results.json
+
+root@7660e8772598:/testbed $
+
+exit code: 0
+
+2026-05-05 00:14:05,917 - 
+================================== Ai Message ==================================
+
+Thought: Verify the report file exists and print it for parsing.
+<command>cd /testbed && ls -l reports && cat reports/go-test-results.json</command>
+2026-05-05 01:54:17,766 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && ls -l reports && cat reports/go-test-results.json
+total 18824
+-rw-r--r-- 1 root root 19274138 May  5 00:13 go-test-results.json
+{"Time":"2026-05-05T00:11:54.007143815Z","Action":"start","Package":"github.com/github/gh-aw/cmd/gh-aw"}
+{"Time":"2026-05-05T00:11:54.007500772Z","Action":"start","Package":"github.com/github/gh-aw/internal/tools/actions-build"}
+{"Time":"2026-05-05T00:11:54.007664022Z","Action":"start","Package":"github.com/github/gh-aw/internal/tools/generate-action-metadata"}
+{"Time":"2026-05-05T00:11:54.007591632Z","Action":"output","Package":"github.com/github/gh-aw/internal/tools/actions-build","Output":"?   \tgithub.com/github/gh-aw/internal/tools/actions-build\t[no test files]\n"}
+{"Time":"2026-05-05T00:11:54.00775386Z","Action":"output","Package":"github.com/github/gh-aw/internal/tools/generate-action-metadata","Output":"?   \tgithub.com/github/gh-aw/internal/tools/generate-action-metadata\t[no test files]\n"}
+{"Time":"2026-05-05T00:11:54.007812599Z","Action":"skip","Package":"github.com/github/gh-aw/internal/tools/actions-build","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.007819607Z","Action":"skip","Package":"github.com/github/gh-aw/internal/tools/generate-action-metadata","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.038768181Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestCapitalizationConsistency"}
+{"Time":"2026-05-05T00:11:54.038899313Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestCapitalizationConsistency","Output":"=== RUN   TestCapitalizationConsistency\n"}
+{"Time":"2026-05-05T00:11:54.038934035Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestCapitalizationConsistency","Output":"--- PASS: TestCapitalizationConsistency (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.038945838Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestCapitalizationConsistency","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.038960893Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestMCPCommandCapitalization"}
+{"Time":"2026-05-05T00:11:54.038970881Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestMCPCommandCapitalization","Output":"=== RUN   TestMCPCommandCapitalization\n"}
+{"Time":"2026-05-05T00:11:54.038982802Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestMCPCommandCapitalization","Output":"--- PASS: TestMCPCommandCapitalization (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.038993382Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestMCPCommandCapitalization","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039001826Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestTechnicalTermsCapitalization"}
+{"Time":"2026-05-05T00:11:54.039013018Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestTechnicalTermsCapitalization","Output":"=== RUN   TestTechnicalTermsCapitalization\n"}
+{"Time":"2026-05-05T00:11:54.039052969Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestTechnicalTermsCapitalization","Output":"--- PASS: TestTechnicalTermsCapitalization (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039069234Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestTechnicalTermsCapitalization","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039078491Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr"}
+{"Time":"2026-05-05T00:11:54.039088085Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr","Output":"=== RUN   TestFormatListWithOr\n"}
+{"Time":"2026-05-05T00:11:54.039107117Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/empty_list"}
+{"Time":"2026-05-05T00:11:54.039116511Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/empty_list","Output":"=== RUN   TestFormatListWithOr/empty_list\n"}
+{"Time":"2026-05-05T00:11:54.039127201Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/single_item"}
+{"Time":"2026-05-05T00:11:54.039137233Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/single_item","Output":"=== RUN   TestFormatListWithOr/single_item\n"}
+{"Time":"2026-05-05T00:11:54.039174822Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/two_items"}
+{"Time":"2026-05-05T00:11:54.039184857Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/two_items","Output":"=== RUN   TestFormatListWithOr/two_items\n"}
+{"Time":"2026-05-05T00:11:54.039208888Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/three_items"}
+{"Time":"2026-05-05T00:11:54.039219796Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/three_items","Output":"=== RUN   TestFormatListWithOr/three_items\n"}
+{"Time":"2026-05-05T00:11:54.039229958Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/four_items"}
+{"Time":"2026-05-05T00:11:54.039238764Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/four_items","Output":"=== RUN   TestFormatListWithOr/four_items\n"}
+{"Time":"2026-05-05T00:11:54.039248415Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/engine_names_with_quotes"}
+{"Time":"2026-05-05T00:11:54.039257468Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/engine_names_with_quotes","Output":"=== RUN   TestFormatListWithOr/engine_names_with_quotes\n"}
+{"Time":"2026-05-05T00:11:54.039271126Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr","Output":"--- PASS: TestFormatListWithOr (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039282922Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/empty_list","Output":"    --- PASS: TestFormatListWithOr/empty_list (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039293686Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/empty_list","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039303508Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/single_item","Output":"    --- PASS: TestFormatListWithOr/single_item (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039313988Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/single_item","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039322967Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/two_items","Output":"    --- PASS: TestFormatListWithOr/two_items (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.0393333Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/two_items","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039342737Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/three_items","Output":"    --- PASS: TestFormatListWithOr/three_items (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039352923Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/three_items","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039362207Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/four_items","Output":"    --- PASS: TestFormatListWithOr/four_items (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039372489Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/four_items","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039382017Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/engine_names_with_quotes","Output":"    --- PASS: TestFormatListWithOr/engine_names_with_quotes (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039394709Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestForma....stripped due to length....
+kflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-count_-_above_maximum","Output":"=== RUN   TestValidateIntRangeWithRealWorldValues/max-file-count_-_above_maximum\n"}
+{"Time":"2026-05-05T00:12:50.428143018Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/retention-days_-_minimum_valid"}
+{"Time":"2026-05-05T00:12:50.428151847Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/retention-days_-_minimum_valid","Output":"=== RUN   TestValidateIntRangeWithRealWorldValues/retention-days_-_minimum_valid\n"}
+{"Time":"2026-05-05T00:12:50.428161709Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/retention-days_-_maximum_valid"}
+{"Time":"2026-05-05T00:12:50.428170642Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/retention-days_-_maximum_valid","Output":"=== RUN   TestValidateIntRangeWithRealWorldValues/retention-days_-_maximum_valid\n"}
+{"Time":"2026-05-05T00:12:50.428183681Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/retention-days_-_zero_invalid"}
+{"Time":"2026-05-05T00:12:50.42819234Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/retention-days_-_zero_invalid","Output":"=== RUN   TestValidateIntRangeWithRealWorldValues/retention-days_-_zero_invalid\n"}
+{"Time":"2026-05-05T00:12:50.428204925Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/retention-days_-_above_maximum"}
+{"Time":"2026-05-05T00:12:50.428213524Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/retention-days_-_above_maximum","Output":"=== RUN   TestValidateIntRangeWithRealWorldValues/retention-days_-_above_maximum\n"}
+{"Time":"2026-05-05T00:12:50.428240104Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues","Output":"--- PASS: TestValidateIntRangeWithRealWorldValues (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428251423Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/port_-_minimum_valid","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/port_-_minimum_valid (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428262164Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/port_-_minimum_valid","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428275507Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/port_-_maximum_valid","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/port_-_maximum_valid (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428286198Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/port_-_maximum_valid","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428295428Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/port_-_zero_invalid","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/port_-_zero_invalid (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428305968Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/port_-_zero_invalid","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428323235Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/port_-_above_maximum","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/port_-_above_maximum (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428342524Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/port_-_above_maximum","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428352436Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-size_-_minimum_valid","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/max-file-size_-_minimum_valid (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428362926Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-size_-_minimum_valid","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428372654Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-size_-_maximum_valid","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/max-file-size_-_maximum_valid (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428383351Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-size_-_maximum_valid","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428392477Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-size_-_zero_invalid","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/max-file-size_-_zero_invalid (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428403231Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-size_-_zero_invalid","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428412274Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-size_-_above_maximum","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/max-file-size_-_above_maximum (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428422754Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-size_-_above_maximum","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428432258Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-count_-_minimum_valid","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/max-file-count_-_minimum_valid (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428449589Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-count_-_minimum_valid","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428459297Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-count_-_maximum_valid","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/max-file-count_-_maximum_valid (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428469877Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-count_-_maximum_valid","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428479127Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-count_-_zero_invalid","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/max-file-count_-_zero_invalid (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.428489537Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-count_-_zero_invalid","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428498847Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-count_-_above_maximum","Output":"    --- PASS: TestValidateIntRangeWithRealWorldValues/max-file-count_-_above_maximum (0.00s)\n"}
+{"Time":"2026-05-05T00:12:50.42851598Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"TestValidateIntRangeWithRealWorldValues/max-file-count_-_above_maximum","Elapsed":0}
+{"Time":"2026-05-05T00:12:50.428525418Z","Action":"output","Package":"github.com/github/gh-aw/pk
+**Exited due to timeout**
+
+None@None:None $
+
+exit code: 124
+
+2026-05-05 01:54:48,637 - 
+================================== Ai Message ==================================
+
+Thought: Print the full JSON test results file for parsing.
+<command>cd /testbed && cat reports/go-test-results.json</command>
+2026-05-05 03:15:53,061 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && cat reports/go-test-results.json
+{"Time":"2026-05-05T00:11:54.007143815Z","Action":"start","Package":"github.com/github/gh-aw/cmd/gh-aw"}
+{"Time":"2026-05-05T00:11:54.007500772Z","Action":"start","Package":"github.com/github/gh-aw/internal/tools/actions-build"}
+{"Time":"2026-05-05T00:11:54.007664022Z","Action":"start","Package":"github.com/github/gh-aw/internal/tools/generate-action-metadata"}
+{"Time":"2026-05-05T00:11:54.007591632Z","Action":"output","Package":"github.com/github/gh-aw/internal/tools/actions-build","Output":"?   \tgithub.com/github/gh-aw/internal/tools/actions-build\t[no test files]\n"}
+{"Time":"2026-05-05T00:11:54.00775386Z","Action":"output","Package":"github.com/github/gh-aw/internal/tools/generate-action-metadata","Output":"?   \tgithub.com/github/gh-aw/internal/tools/generate-action-metadata\t[no test files]\n"}
+{"Time":"2026-05-05T00:11:54.007812599Z","Action":"skip","Package":"github.com/github/gh-aw/internal/tools/actions-build","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.007819607Z","Action":"skip","Package":"github.com/github/gh-aw/internal/tools/generate-action-metadata","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.038768181Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestCapitalizationConsistency"}
+{"Time":"2026-05-05T00:11:54.038899313Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestCapitalizationConsistency","Output":"=== RUN   TestCapitalizationConsistency\n"}
+{"Time":"2026-05-05T00:11:54.038934035Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestCapitalizationConsistency","Output":"--- PASS: TestCapitalizationConsistency (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.038945838Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestCapitalizationConsistency","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.038960893Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestMCPCommandCapitalization"}
+{"Time":"2026-05-05T00:11:54.038970881Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestMCPCommandCapitalization","Output":"=== RUN   TestMCPCommandCapitalization\n"}
+{"Time":"2026-05-05T00:11:54.038982802Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestMCPCommandCapitalization","Output":"--- PASS: TestMCPCommandCapitalization (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.038993382Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestMCPCommandCapitalization","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039001826Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestTechnicalTermsCapitalization"}
+{"Time":"2026-05-05T00:11:54.039013018Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestTechnicalTermsCapitalization","Output":"=== RUN   TestTechnicalTermsCapitalization\n"}
+{"Time":"2026-05-05T00:11:54.039052969Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestTechnicalTermsCapitalization","Output":"--- PASS: TestTechnicalTermsCapitalization (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039069234Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestTechnicalTermsCapitalization","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039078491Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr"}
+{"Time":"2026-05-05T00:11:54.039088085Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr","Output":"=== RUN   TestFormatListWithOr\n"}
+{"Time":"2026-05-05T00:11:54.039107117Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/empty_list"}
+{"Time":"2026-05-05T00:11:54.039116511Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/empty_list","Output":"=== RUN   TestFormatListWithOr/empty_list\n"}
+{"Time":"2026-05-05T00:11:54.039127201Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/single_item"}
+{"Time":"2026-05-05T00:11:54.039137233Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/single_item","Output":"=== RUN   TestFormatListWithOr/single_item\n"}
+{"Time":"2026-05-05T00:11:54.039174822Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/two_items"}
+{"Time":"2026-05-05T00:11:54.039184857Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/two_items","Output":"=== RUN   TestFormatListWithOr/two_items\n"}
+{"Time":"2026-05-05T00:11:54.039208888Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/three_items"}
+{"Time":"2026-05-05T00:11:54.039219796Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/three_items","Output":"=== RUN   TestFormatListWithOr/three_items\n"}
+{"Time":"2026-05-05T00:11:54.039229958Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/four_items"}
+{"Time":"2026-05-05T00:11:54.039238764Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/four_items","Output":"=== RUN   TestFormatListWithOr/four_items\n"}
+{"Time":"2026-05-05T00:11:54.039248415Z","Action":"run","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/engine_names_with_quotes"}
+{"Time":"2026-05-05T00:11:54.039257468Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/engine_names_with_quotes","Output":"=== RUN   TestFormatListWithOr/engine_names_with_quotes\n"}
+{"Time":"2026-05-05T00:11:54.039271126Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr","Output":"--- PASS: TestFormatListWithOr (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039282922Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/empty_list","Output":"    --- PASS: TestFormatListWithOr/empty_list (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039293686Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/empty_list","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039303508Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/single_item","Output":"    --- PASS: TestFormatListWithOr/single_item (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039313988Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/single_item","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039322967Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/two_items","Output":"    --- PASS: TestFormatListWithOr/two_items (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.0393333Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/two_items","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039342737Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/three_items","Output":"    --- PASS: TestFormatListWithOr/three_items (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039352923Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/three_items","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039362207Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/four_items","Output":"    --- PASS: TestFormatListWithOr/four_items (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039372489Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/four_items","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039382017Z","Action":"output","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/engine_names_with_quotes","Output":"    --- PASS: TestFormatListWithOr/engine_names_with_quotes (0.00s)\n"}
+{"Time":"2026-05-05T00:11:54.039394709Z","Action":"pass","Package":"github.com/github/gh-aw/cmd/gh-aw","Test":"TestFormatListWithOr/engine_names_with_quotes","Elapsed":0}
+{"Time":"2026-05-05T00:11:54.039405931Z","Ac....stripped due to length....
+"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinition/seed#56","Output":"    --- PASS: FuzzParseInputDefinition/seed#56 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366079169Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinition/seed#56","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366087176Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinition","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366095076Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions"}
+{"Time":"2026-05-05T00:13:50.36610314Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions","Output":"=== RUN   FuzzParseInputDefinitions\n"}
+{"Time":"2026-05-05T00:13:50.366112263Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#0"}
+{"Time":"2026-05-05T00:13:50.366120256Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#0","Output":"=== RUN   FuzzParseInputDefinitions/seed#0\n"}
+{"Time":"2026-05-05T00:13:50.366129075Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#1"}
+{"Time":"2026-05-05T00:13:50.366136949Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#1","Output":"=== RUN   FuzzParseInputDefinitions/seed#1\n"}
+{"Time":"2026-05-05T00:13:50.366145821Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#2"}
+{"Time":"2026-05-05T00:13:50.366160843Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#2","Output":"=== RUN   FuzzParseInputDefinitions/seed#2\n"}
+{"Time":"2026-05-05T00:13:50.366170343Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#3"}
+{"Time":"2026-05-05T00:13:50.366178297Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#3","Output":"=== RUN   FuzzParseInputDefinitions/seed#3\n"}
+{"Time":"2026-05-05T00:13:50.366208574Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#4"}
+{"Time":"2026-05-05T00:13:50.366217603Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#4","Output":"=== RUN   FuzzParseInputDefinitions/seed#4\n"}
+{"Time":"2026-05-05T00:13:50.366226442Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#5"}
+{"Time":"2026-05-05T00:13:50.366234409Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#5","Output":"=== RUN   FuzzParseInputDefinitions/seed#5\n"}
+{"Time":"2026-05-05T00:13:50.366243168Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#6"}
+{"Time":"2026-05-05T00:13:50.366251051Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#6","Output":"=== RUN   FuzzParseInputDefinitions/seed#6\n"}
+{"Time":"2026-05-05T00:13:50.366275276Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#7"}
+{"Time":"2026-05-05T00:13:50.366283667Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#7","Output":"=== RUN   FuzzParseInputDefinitions/seed#7\n"}
+{"Time":"2026-05-05T00:13:50.366292443Z","Action":"run","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#8"}
+{"Time":"2026-05-05T00:13:50.366300286Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#8","Output":"=== RUN   FuzzParseInputDefinitions/seed#8\n"}
+{"Time":"2026-05-05T00:13:50.366310629Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions","Output":"--- PASS: FuzzParseInputDefinitions (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366320537Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#0","Output":"    --- PASS: FuzzParseInputDefinitions/seed#0 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366329961Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#0","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.36633863Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#1","Output":"    --- PASS: FuzzParseInputDefinitions/seed#1 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.36634788Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#1","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366356124Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#2","Output":"    --- PASS: FuzzParseInputDefinitions/seed#2 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366365458Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#2","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366373782Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#3","Output":"    --- PASS: FuzzParseInputDefinitions/seed#3 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366402171Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#3","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366412373Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#4","Output":"    --- PASS: FuzzParseInputDefinitions/seed#4 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366444669Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#4","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366454363Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#5","Output":"    --- PASS: FuzzParseInputDefinitions/seed#5 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366463911Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#5","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366472436Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#6","Output":"    --- PASS: FuzzParseInputDefinitions/seed#6 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366481703Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#6","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366490244Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#7","Output":"    --- PASS: FuzzParseInputDefinitions/seed#7 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366499508Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#7","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366524772Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#8","Output":"    --- PASS: FuzzParseInputDefinitions/seed#8 (0.00s)\n"}
+{"Time":"2026-05-05T00:13:50.366534052Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions/seed#8","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366542259Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Test":"FuzzParseInputDefinitions","Elapsed":0}
+{"Time":"2026-05-05T00:13:50.366550423Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Output":"PASS\n"}
+{"Time":"2026-05-05T00:13:50.378811957Z","Action":"output","Package":"github.com/github/gh-aw/pkg/workflow","Output":"ok  \tgithub.com/github/gh-aw/pkg/workflow\t104.491s\n"}
+{"Time":"2026-05-05T00:13:51.436323831Z","Action":"pass","Package":"github.com/github/gh-aw/pkg/workflow","Elapsed":105.554}
+
+root@7660e8772598:/testbed $
+
+exit code: 0
+
+2026-05-05 03:16:07,417 - 
+================================== Ai Message ==================================
+
+Thought: Write a parser for Go test JSON output to extract per-test status.
+<python>def parser(log: str) -> dict[str, str]:
+    import json
+    results: dict[str, str] = {}
+    for line in log.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        action = event.get("Action")
+        test = event.get("Test")
+        if not test or action not in ("pass", "fail", "skip"):
+            continue
+        package = event.get("Package", "")
+        name = f"{package}.{test}" if package else test
+        if action == "pass":
+            results[name] = "pass"
+        elif action == "skip":
+            results[name] = "skip"
+        else:
+            results[name] = "fail"
+    return results</python>
+2026-05-05 03:16:40,295 - 
+================================ Human Message =================================
+
+Observation:
+
+Below is the execution result of your Python script:
+{
+ "github.com/github/gh-aw/cmd/gh-aw.TestCapitalizationConsistency": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestMCPCommandCapitalization": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestTechnicalTermsCapitalization": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/empty_list": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/single_item": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/two_items": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/three_items": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/four_items": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/engine_names_with_quotes": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_add_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_add-wizard_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_audit_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_audit_diff_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_checks_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_compile_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_completion_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_completion_install_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_completion_uninstall_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_disable_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_domains_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_enable_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_fix_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_hash-frontmatter_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_health_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_init_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_list_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_logs_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_add_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_inspect_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_list_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_list-tools_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp-server_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_new_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_pr_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_pr_transfer_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_project_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_project_new_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_remove_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_run_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_secrets_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_secrets_bootstrap_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_secrets_set_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_status_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_trial_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_update_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_upgrade_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_validate_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_version_has_consistent_help_flag": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_gh_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_new_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_remove_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_enable_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_disable_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_compile_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_run_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_version_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_status_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_init_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_logs_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_trial_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_add_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_add-wizard_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_update_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_audit_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_mcp_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_mcp-server_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_pr_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_add_has_no_trailing_punctuation#01": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_inspect_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_list_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_list-tools_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_transfer_has_no_trailing_punctuation": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestLongDescriptionHasSentences/command_gh_Long_description_uses_sentences": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestLongDescriptionHasSentences/command_new_Long_description_uses_sentences": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestLongDescriptionHasSentences/command_remove_Long_description_uses_sentences": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestLongDescriptionHasSentences/command_enable_Long_description_uses_sentences": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestLongDescriptionHasSentences/command_disable_Long_description_uses_sentences": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestLongDescriptionHasSentences/command_compile_Long_description_uses_sentences": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestLongDescriptionHasSentences/command_run_Long_description_uses_sentences": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestLongDescriptionHasSentences/command_mcp_Long_description_uses_sentences": "pass",
+ "github.com/github/gh-aw/cmd/gh-aw.TestLongDescriptionHasSentences": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/low_similarity_below_threshold": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/normal_event_has_no_anomaly": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnalyzeEvent": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestNewMiner": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterCreation": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterMerge": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMatch_InferenceOnly": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/UUID_replaced": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/URL_replaced": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/Number_value_replaced": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestFlattenEvent": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestSaveLoadJSON": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestConcurrency": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestStageRouting": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/identical": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/one_diff": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/length_mismatch": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/wildcard_ignored": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/all_wildcards": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate/no_difference": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate/one_diff_becomes_wildcard": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate/existing_wildcard_preserved": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate/length_mismatch_returns_existing": "pass",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestGetWorkflowDir": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestDefaultAllowedDomains": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestSafeWorkflowEvents": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestAllowedExpressions": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestAgenticEngines": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestDefaultGitHubTools": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestDefaultBashTools": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestPriorityFields": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/CLIExtensionPrefix": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/DefaultMCPRegistryURL": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/AgentJobName": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/ActivationJobName": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/PreActivationJobName": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/DetectionJobName": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/SafeOutputArtifactName": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/AgentOutputArtifactName": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/SafeOutputItemsArtifactName": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/SafeOutputsMCPServerID": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/CheckMembershipStepID": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/CheckStopTimeStepID": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/CheckSkipIfMatchStepID": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/CheckSkipIfNoMatchStepID": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/CheckCommandPositionStepID": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/IsTeamMemberOutput": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/StopTimeOkOutput": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/SkipCheckOkOutput": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/SkipNoMatchCheckOkOutput": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/CommandPositionOkOutput": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/ActivatedOutput": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues/DefaultActivationJobRunnerImage": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestConstantValues": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestModelNameConstants/ModelName_basic": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestModelNameConstants": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestNumericConstants/MaxExpressionLineLength": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestNumericConstants/ExpressionBreakThreshold": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestNumericConstants": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestTimeoutConstants/DefaultAgenticWorkflowTimeout": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestTimeoutConstants/DefaultToolTimeout": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestTimeoutConstants/DefaultMCPStartupTimeout": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestTimeoutConstants": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestFeatureFlagConstants/MCPScriptsFeatureFlag": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestFeatureFlagConstants/MCPGatewayFeatureFlag": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestFeatureFlagConstants/DisableXPIAPromptFeatureFlag": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestFeatureFlagConstants/DIFCProxyFeatureFlag": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestFeatureFlagConstants": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestFeatureFlagType": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestSemanticTypeAliases/URL_type": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestSemanticTypeAliases/ModelName_type": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestSemanticTypeAliases/JobName_type": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestSemanticTypeAliases/StepID_type": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestSemanticTypeAliases/CommandPrefix_type": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestSemanticTypeAliases/WorkflowID_type": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestSemanticTypeAliases/EngineName_type": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestSemanticTypeAliases": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestTypeSafetyBetweenSemanticTypes": "pass",
+ "github.com/github/gh-aw/pkg/console.TestIsAccessibleMode/ACCESSIBLE_set": "pass",
+ "github.com/github/gh-aw/pkg/console.TestIsAccessibleMode/TERM=dumb": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestHelperMethods/Version": "pass",
+ "github.com/github/gh-aw/pkg/console.TestIsAccessibleMode/NO_COLOR_set": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestHelperMethods/JobName": "pass",
+ "github.com/github/gh-aw/pkg/console.TestIsAccessibleMode/no_accessibility_indicators": "pass",
+ "github.com/github/gh-aw/pkg/console.TestIsAccessibleMode/TERM_not_dumb": "pass",
+ "github.com/github/gh-aw/pkg/console.TestIsAccessibleMode": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestHelperMethods/StepID": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestHelperMethods/CommandPrefix": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestHelperMethods": "pass",
+ "github.com/github/gh-aw/pkg/constants.TestGetAllEngineSecretNames": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBanner": "pass",
+ "github.com/github/gh-aw/pkg/console.TestBannerLogoEmbedded": "pass",
+ "github.com/github/gh-aw/pkg/console.TestBannerStyleInitialized": "pass",
+ "github.com/github/gh-aw/pkg/console.TestConfirmAction/function_signature": "pass",
+ "github.com/github/gh-aw/pkg/console.TestConfirmAction": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatCommandMessage/simple_command": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatCommandMessage/complex_command_with_flags": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatCommandMessage/empty_command": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatCommandMessage/command_with_special_characters": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatCommandMessage/multiline_command": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatCommandMessage": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatProgressMessage/simple_progress_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatProgressMessage/build_progress_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatProgressMessage/empty_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatProgressMessage/message_with_numbers": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatProgressMessage": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatPromptMessage/confirmation_prompt": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatPromptMessage/input_prompt": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatPromptMessage/empty_prompt": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatPromptMessage": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatVerboseMessage/debug_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatVerboseMessage/detailed_trace": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatVerboseMessage/empty_verbose_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatVerboseMessage": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatListItem/simple_item": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatListItem/item_with_path": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatListItem/empty_item": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatListItem/item_with_spaces": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatListItem": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorMessage/simple_error": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorMessage/detailed_error": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorMessage/empty_error_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorMessage/error_with_code": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorMessage": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatSectionHeader/simple_header": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatSectionHeader/header_with_spaces": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatSectionHeader/empty_header": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatSectionHeader/header_with_numbers": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatSectionHeader": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormattingFunctionsWithSpecialCharacters/special_characters_don't_cause_panic": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormattingFunctionsWithSpecialCharacters": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormattingFunctionsWithUnicodeCharacters/unicode_characters_handled_properly": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormattingFunctionsWithUnicodeCharacters": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorChain/nil_error": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorChain/simple_single_error": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorChain/two-level_wrapped_error": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorChain/three-level_wrapped_error_chain": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorChain/multiline_error_from_errors.Join": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorChain": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorChainDoesNotRepeatContext": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatError/basic_error_with_position": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatError/warning_with_hint": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatError/error_with_context": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatError": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorWithSuggestions/error_with_suggestions": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorWithSuggestions/error_without_suggestions": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorWithSuggestions/error_with_single_suggestion": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorWithSuggestions": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatSuccessMessage": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatInfoMessage": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatWarningMessage": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderTable/simple_table": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderTable/table_with_title_and_total": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderTable/empty_table": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderTable": "pass",
+ "github.com/github/gh-aw/pkg/console.TestToRelativePath/relative_path_unchanged": "pass",
+ "github.com/github/gh-aw/pkg/console.TestToRelativePath/nested_relative_path_unchanged": "pass",
+ "github.com/github/gh-aw/pkg/console.TestToRelativePath/absolute_path_with_.._in_relative_form_returns_absolute": "pass",
+ "github.com/github/gh-aw/pkg/console.TestToRelativePath/absolute_path_within_working_directory_converted_to_relative": "pass",
+ "github.com/github/gh-aw/pkg/console.TestToRelativePath": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatErrorWithAbsolutePaths": "pass",
+ "github.com/github/gh-aw/pkg/console.TestClearScreen/clear_screen_does_not_panic": "pass",
+ "github.com/github/gh-aw/pkg/console.TestClearScreen": "pass",
+ "github.com/github/gh-aw/pkg/console.TestClearLine/clear_line_does_not_panic": "pass",
+ "github.com/github/gh-aw/pkg/console.TestClearLine": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderTitleBox/basic_title": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderTitleBox/longer_title": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderTitleBox": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderErrorBox/security_advisory": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderErrorBox/critical_error": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderErrorBox": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderInfoSection/single_line": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderInfoSection/multiple_lines": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderInfoSection": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderComposedSections/empty_sections": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderComposedSections/single_section": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderComposedSections/multiple_sections": "pass",
+ "github.com/github/gh-aw/pkg/console.TestRenderComposedSections": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFileSize": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestAccessLogParsing": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_TableRendering/simple_table": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_TableRendering/table_with_title": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_TableRendering/table_with_total": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_TableRendering/wide_table": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_TableRendering/empty_table": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_TableRendering": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestMultipleAccessLogAnalysis": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_BoxRendering/narrow_box": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_BoxRendering/medium_box": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_BoxRendering/wide_box": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_BoxRendering/box_with_emoji": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_BoxRendering/very_narrow_box": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_BoxRendering": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorFormatting/basic_error": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorFormatting/warning_with_hint": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorFormatting/error_with_context": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorFormatting/error_multiline_context": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorFormatting/info_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorFormatting": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorWithSuggestions/error_with_multiple_suggestions": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorWithSuggestions/error_no_suggestions": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorWithSuggestions/error_single_suggestion": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorWithSuggestions/compilation_error_with_suggestions": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_ErrorWithSuggestions": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestAnalyzeAccessLogsDirectory/multiple_access_logs_in_subdirectory": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestAnalyzeAccessLogsDirectory/no_access_logs_-_returns_nil": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestAnalyzeAccessLogsDirectory/access_logs_in_sandbox/firewall/logs/_(new_path)": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestAnalyzeAccessLogsDirectory": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestExtractDomainFromURL/http://example.com/path": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestExtractDomainFromURL/https://api.github.com/repos": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestExtractDomainFromURL/github.com:443": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestExtractDomainFromURL/malicious.site": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestExtractDomainFromURL/http://sub.domain.com:8080/path": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestExtractDomainFromURL": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseSquidLogLine/valid_squid_log_line": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseSquidLogLine/valid_denied_request": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseSquidLogLine/insufficient_fields_-_should_error": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseSquidLogLine/empty_line": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseSquidLogLine/exactly_9_fields_-_should_error": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseSquidLogLine": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestAddMetrics/add_valid_domain_analysis": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestAddMetrics/add_zero_values": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestAddMetrics/add_to_empty_base": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestAddMetrics": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseAndDisplayActionlintOutput/single_error": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseAndDisplayActionlintOutput/multiple_errors": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseAndDisplayActionlintOutput/no_errors_-_empty_output": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseAndDisplayActionlintOutput/invalid_JSON": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseAndDisplayActionlintOutput/multiple_errors_from_multiple_files": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseAndDisplayActionlintOutput/errors_from_three_files": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestParseAndDisplayActionlintOutput": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintVersion": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestDisplayActionlintSummary/summary_with_errors_and_warnings": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestDisplayActionlintSummary/summary_with_only_errors": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestDisplayActionlintSummary/summary_with_no_issues": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestDisplayActionlintSummary/nil_stats_-_no_output": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestDisplayActionlintSummary/integration_errors_only_-_no_lint_issues": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestDisplayActionlintSummary/integration_errors_alongside_lint_issues": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestDisplayActionlintSummary": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestInitActionlintStats": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintDocsURL/empty_kind_returns_base_URL": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintDocsURL/runner-label_kind": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintDocsURL/shellcheck_kind": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintDocsURL/pyflakes_kind": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintDocsURL/expression_kind": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintDocsURL/syntax-check_kind": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintDocsURL/generic_kind_with_check-_prefix": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintDocsURL/generic_kind_without_check-_prefix": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestGetActionlintDocsURL": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestActionsBuildCommand_NoActionsDir": "pass",
+ "github.com/github/gh-aw/pkg/cli.TestActionsValidateCommand_NoActionsDir": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_MessageFormatting/success_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_MessageFormatting/info_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_MessageFormatting/warning_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_MessageFormatting/error_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_MessageFormatting/command_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_MessageFormatting/progress_message": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_MessageFormatting": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_InfoSection/single_line": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_InfoSection/multiple_lines": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_InfoSection/with_special_chars": "pass",
+ "github.com/github/gh-aw/pkg/console.TestGolden_InfoSection": "pass",
+ "github.com/github/gh-aw/pkg/console.TestPromptSecretInput/function_signature": "pass",
+ "github.com/github/gh-aw/pkg/console.TestPromptSecretInput/validates_parameters": "pass",
+ "github.com/github/gh-aw/pkg/console.TestPromptSecretInput": "pass",
+ "github.com/github/gh-aw/pkg/console.TestNewListItem": "pass",
+ "github.com/github/gh-aw/pkg/console.TestShowInteractiveList_EmptyItems": "pass",
+ "github.com/github/gh-aw/pkg/console.TestNewProgressBar/creates_progress_bar_successfully": "pass",
+ "github.com/github/gh-aw/pkg/console.TestNewProgressBar/creates_progress_bar_with_zero_total": "pass",
+ "github.com/github/gh-aw/pkg/console.TestNewProgressBar/creates_progress_bar_with_large_total": "pass",
+ "github.com/github/gh-aw/pkg/console.TestNewProgressBar": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarUpdate/0%_progress": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarUpdate/50%_progress": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarUpdate/100%_progress": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarUpdate/large_file_progress": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarUpdate/zero_total_edge_case": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarUpdate": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarMultipleUpdates": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/zero_bytes": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/bytes_only": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/exactly_1KB": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/kilobytes": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/exactly_1MB": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/megabytes": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/megabytes_with_decimal": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/exactly_1GB": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/gigabytes": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/gigabytes_with_decimal": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes/large_file_size": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatBytes": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarPercentageCalculation/0%_progress": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarPercentageCalculation/25%_progress": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarPercentageCalculation/50%_progress": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarPercentageCalculation/75%_progress": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarPercentageCalculation/100%_progress": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarPercentageCalculation/33%_progress_(rounded_down)": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarPercentageCalculation": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarOutputFormat/non-TTY_format_structure": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarOutputFormat": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarEdgeCases/current_exceeds_total": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarEdgeCases/negative_current_value": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarEdgeCases/very_small_progress_increments": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarEdgeCases": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarConcurrency/multiple_updates_are_safe": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarConcurrency": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarNonTTYFallback/non-TTY_output_is_human_readable": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarNonTTYFallback": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarModeSelection/determinate_mode_has_total_and_not_indeterminate": "pass",
+ "github.com/github/gh-aw/pkg/console.TestProgressBarModeSelection": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_Pointers/nil_pointer": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_Pointers/single_pointer_to_int": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_Pointers/double_pointer_to_int": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_Pointers": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/int_zero": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/int_positive": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/int_negative": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/int8": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/int16": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/int32": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/int64": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/uint_zero": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/uint_positive": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/uint8": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/uint16": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/uint32": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/uint64": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/float32_zero": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/float32_positive": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/float64_zero": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes/float64_positive": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_NumericTypes": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_TimeType/valid_time.Time": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_TimeType/zero_time.Time": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_TimeType": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_UnexportedFields": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_BoolType/true": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_BoolType/false": "pass",
+ "github.com/github/gh-aw/pkg/console.TestFormatFieldValue_BoolType": "pass",
+ "github.com/
+...result truncated due to length...
+
+Please judge whether:
+(1) Your Python script extracts the statuses of all testcases and 
+(2) Your script and test command have made best effort to reveal the status of each unit testcase under a test suite / set if there's test suite / set. The testcase names in your output should be split to the finest granularity.
+If not successful, please adjust your test command, run your new test command in container, and adjust your Python script to extract test status.
+If successful, please submit.
+
+2026-05-05 03:16:56,405 - 
+================================== Ai Message ==================================
+
+<submit>
+    <test_command>cd /testbed && mkdir -p reports && GOTOOLCHAIN=auto go test -v -json ./... > reports/go-test-results.json</test_command>
+    <print_command>cd /testbed && cat reports/go-test-results.json</print_command>
+    <parser>parsing success</parser>
+</submit>
+2026-05-05 03:16:57,024 - ----------End verify conversation----------
+2026-05-05 03:17:53,277 - Rerunning test command: cd /testbed && mkdir -p reports && GOTOOLCHAIN=auto go test -v -json ./... > reports/go-test-results.json
+2026-05-05 03:18:02,474 - Running print command: cd /testbed && cat reports/go-test-results.json
+2026-05-05 04:16:10,744 - ----------Start parse log conversation----------
+2026-05-05 04:16:23,667 - 
+================================== Ai Message ==================================
+
+Thought: I should analyze the draft parser against the Go JSON test output to identify missing cases and robustness gaps.
+Action: <analyze>Review draft parser: it only reads JSON lines with Action pass/fail/skip and Test field, ignoring package-level pass/fail (no Test), output-derived statuses, and potential non-JSON lines. Go test -json emits pass/fail for packages (no Test) and for subtests; draft handles subtests fine but may miss failures when only output contains --- FAIL or when JSON lines are truncated or interleaved. It also ignores Action=="output" lines that can include "=== RUN", "--- FAIL", "--- SKIP" when Test field absent or malformed. Additionally, packages with no tests are marked skip; draft records only with Test present, so package-only skip/pass may be missed (if needed). Need robust parsing: 1) primary: parse JSON lines (Action pass/fail/skip) with Test; 2) fallback: parse output lines for "--- (PASS|FAIL|SKIP): TestName" possibly indented for subtests; 3) handle events where Test missing but output contains test name; 4) guard against duplicate events, prefer fail over pass/skip; 5) support non-JSON lines by regex; 6) keep package+test naming; 7) trim whitespace, handle interleaved output.</analyze>
+2026-05-05 04:16:23,668 - 
+================================ Human Message =================================
+
+Observation:
+Analysis completed: Review draft parser: it only reads JSON lines with Action pass/fail/skip and Test field, ignoring package-level pass/fail (no Test), output-derived statuses, and potential non-JSON lines. Go test -json emits pass/fail for packages (no Test) and for subtests; draft handles subtests fine but may miss failures when only output contains --- FAIL or when JSON lines are truncated or interleaved. It also ignores Action=="output" lines that can include "=== RUN", "--- FAIL", "--- SKIP" when Test field absent or malformed. Additionally, packages with no tests are marked skip; draft records only with Test present, so package-only skip/pass may be missed (if needed). Need robust parsing: 1) primary: parse JSON lines (Action pass/fail/skip) with Test; 2) fallback: parse output lines for "--- (PASS|FAIL|SKIP): TestName" possibly indented for subtests; 3) handle events where Test missing but output contains test name; 4) guard against duplicate events, prefer fail over pass/skip; 5) support non-JSON lines by regex; 6) keep package+test naming; 7) trim whitespace, handle interleaved output.
+
+Now try to write the parser.
+2026-05-05 04:16:51,476 - 
+================================== Ai Message ==================================
+
+Thought: I will implement a more robust parser that prioritizes JSON events but falls back to parsing output lines for PASS/FAIL/SKIP, with status precedence handling.
+Action: <python>def parser(log: str) -> dict[str, str]:
+    import json
+    import re
+
+    results: dict[str, str] = {}
+    status_rank = {"pass": 0, "skip": 1, "fail": 2}
+
+    def set_status(name: str, status: str) -> None:
+        if not name or status not in status_rank:
+            return
+        current = results.get(name)
+        if current is None or status_rank[status] > status_rank[current]:
+            results[name] = status
+
+    # Regex for Go test output lines
+    # Example: --- PASS: TestName (0.00s)
+    output_status_re = re.compile(r"---\s+(PASS|FAIL|SKIP):\s+([^\s]+)")
+
+    last_package = ""
+
+    for raw_line in log.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        event = None
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            event = None
+
+        if event is not None:
+            action = event.get("Action")
+            package = event.get("Package") or ""
+            test = event.get("Test") or ""
+            output = event.get("Output") or ""
+            if package:
+                last_package = package
+
+            if action in ("pass", "fail", "skip") and test:
+                name = f"{package}.{test}" if package else test
+                set_status(name, "fail" if action == "fail" else "skip" if action == "skip" else "pass")
+                continue
+
+            # Fallback: parse output lines for status
+            if output:
+                for match in output_status_re.finditer(output):
+                    status = match.group(1).lower()
+                    test_name = match.group(2)
+                    pkg = package or last_package
+                    name = f"{pkg}.{test_name}" if pkg else test_name
+                    set_status(name, status)
+            continue
+
+        # Non-JSON fallback: parse plain output lines
+        match = output_status_re.search(line)
+        if match:
+            status = match.group(1).lower()
+            test_name = match.group(2)
+            pkg = last_package
+            name = f"{pkg}.{test_name}" if pkg else test_name
+            set_status(name, status)
+
+    return results</python>
+2026-05-05 04:16:52,138 - 
+================================ Human Message =================================
+
+Observation:
+Test results for improved parser:
+{
+  "github.com/github/gh-aw/cmd/gh-aw.TestCapitalizationConsistency": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestMCPCommandCapitalization": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestTechnicalTermsCapitalization": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/empty_list": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/single_item": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/two_items": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/three_items": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/four_items": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/engine_names_with_quotes": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/low_similarity_below_threshold": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/normal_event_has_no_anomaly": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestAnalyzeEvent": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestNewMiner": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterCreation": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterMerge": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMatch_InferenceOnly": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMasking": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMasking/UUID_replaced": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMasking/URL_replaced": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMasking/Number_value_replaced": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestFlattenEvent": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestSaveLoadJSON": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestConcurrency": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestStageRouting": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/identical": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/one_diff": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/length_mismatch": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/wildcard_ignored": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/all_wildcards": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate/no_difference": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate/one_diff_becomes_wildcard": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate/existing_wildcard_preserved": "pass",
+  "github.com/github/gh-aw/pkg/agentdrain.TestMergeTemplate/length_mismatch_returns_existing": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_add_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_add-wizard_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_audit_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_audit_diff_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_checks_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_compile_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_completion_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_completion_install_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_completion_uninstall_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_disable_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_domains_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_enable_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_fix_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_hash-frontmatter_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_health_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_init_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_list_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_logs_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_add_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_inspect_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_list_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp_list-tools_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_mcp-server_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_new_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_pr_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_pr_transfer_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_project_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_project_new_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_remove_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_run_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_secrets_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_secrets_bootstrap_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_secrets_set_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_status_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_trial_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_update_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_upgrade_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_validate_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency/command_gh_version_has_consistent_help_flag": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_gh_has_no_trailing_punctuation": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_new_has_no_trailing_punctuation": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_remove_has_no_trailing_punctuation": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_enable_has_no_trailing_punctuation": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_disable_has_no_trailing_punctuation": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_compile_has_no_trailing_punctuation": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_run_has_no_trailing_punctuation": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_version_has_no_trailing_punctuation": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_status_has_no_trailing_punctuation": "pass",
+  "github.com/github/gh-aw/cmd/gh-aw.TestShortDescriptionConsistency/command_init_has_no_trailing_punctuation": "pass",
+  "github.com/g
+...result truncated due to length...
+
+Comparison with original parser:
+- Original parser found: 18485 test cases
+- Improved parser found: 18488 test cases
+- Difference: 3 test cases
+
+Please analyze if this is an improvement and submit if satisfied.
+2026-05-05 04:16:56,034 - 
+================================== Ai Message ==================================
+
+Thought: The improved parser captures more cases and is robust; I should submit the final parser.
+Action: <submit>final parser is ready and tested</submit>
+2026-05-05 04:16:56,034 - ----------End parse log conversation----------
+2026-05-05 04:17:00,450 - setup state: True, 0, None ... 
+2026-05-05 04:17:00,476 - ----------Start unit test conversation----------
+2026-05-05 04:17:09,873 - 
+================================== Ai Message ==================================
+
+Thought: Start by running a single known test with go test -run to confirm syntax for individual cases.
+Action: <command>cd /testbed && GOTOOLCHAIN=auto go test -v ./cmd/gh-aw -run 'TestFormatListWithOr/empty_list'</command>
+2026-05-05 04:17:12,166 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && GOTOOLCHAIN=auto go test -v ./cmd/gh-aw -run 'TestFormatListWithOrr/empty_list'
+=== RUN   TestFormatListWithOr
+=== RUN   TestFormatListWithOr/empty_list
+--- PASS: TestFormatListWithOr (0.00s)
+    --- PASS: TestFormatListWithOr/empty_list (0.00s)
+PASS
+ok  	github.com/github/gh-aw/cmd/gh-aw	0.049s
+
+root@7660e8772598:/testbed $
+
+exit code: 0
+
+2026-05-05 04:17:29,031 - 
+================================== Ai Message ==================================
+
+Thought: Prepare the Python helper to map fully-qualified Go test names to per-test go test -run commands.
+Action: <python>def get_pertest_cmd(testcase_list:list[str])->dict[str,str]:
+    result: dict[str, str] = {}
+    for testcase in testcase_list:
+        pkg = ""
+        test = testcase
+        if ".Test" in testcase:
+            pkg, test = testcase.rsplit(".Test", 1)
+            test = "Test" + test
+        # Build regex for exact match of test/subtest
+        if "/" in test:
+            regex = f"^{test}$"
+        else:
+            regex = f"^{test}$"
+        cmd = f"cd /testbed && GOTOOLCHAIN=auto go test -v {pkg} -run '{regex}'"
+        result[testcase] = cmd
+    return result</python>
+2026-05-05 04:18:16,783 - 
+================================ Human Message =================================
+
+Observation:
+
+This is part of the "testcase name :: per-testcase excution command" mapping returned from your python script: 
+{
+ "github.com/github/gh-aw/cmd/gh-aw.TestCapitalizationConsistency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestCapitalizationConsistency$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestMCPCommandCapitalization": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestMCPCommandCapitalization$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestTechnicalTermsCapitalization": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestTechnicalTermsCapitalization$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/empty_list": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/empty_list$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/single_item": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/single_item$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/two_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/two_items$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/three_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/three_items$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/four_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/four_items$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/engine_names_with_quotes": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/engine_names_with_quotes$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/low_similarity_below_threshold": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/low_similarity_below_threshold$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/normal_event_has_no_anomaly": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/normal_event_has_no_anomaly$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnalyzeEvent": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnalyzeEvent$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestNewMiner": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestNewMiner$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterCreation": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestTrain_ClusterCreation$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterMerge": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestTrain_ClusterMerge$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMatch_InferenceOnly": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMatch_InferenceOnly$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMasking$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/UUID_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMasking/UUID_replaced$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/URL_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMasking/URL_replaced$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/Number_value_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMasking/Number_value_replaced$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestFlattenEvent": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestFlattenEvent$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestSaveLoadJSON": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestSaveLoadJSON$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestConcurrency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestConcurrency$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestStageRouting": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestStageRouting$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/identical": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/identical$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/one_diff": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/one_diff$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/length_mismatch": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/length_mismatch$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/wildcard_ignored": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/wildcard_ignored$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/all_wildcards": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/all_wildcards$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestHelpFlagConsistency$'"
+}
+==========================
+This is the shell execution result of some of the pertest execution commands returned from your python script:
+{
+ "github.com/github/gh-aw/cmd/gh-aw.TestCapitalizationConsistency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestCapitalizationConsistency$'\n=== RUN   TestCapitalizationConsistency\n--- PASS: TestCapitalizationConsistency (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.029s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestMCPCommandCapitalization": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestMCPCommandCapitalization$'\n=== RUN   TestMCPCommandCapitalization\n--- PASS: TestMCPCommandCapitalization (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.029s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestTechnicalTermsCapitalization": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestTechnicalTermsCapitalization$'\n=== RUN   TestTechnicalTermsCapitalization\n--- PASS: TestTechnicalTermsCapitalization (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.028s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/empty_list\n=== RUN   TestFormatListWithOr/single_item\n=== RUN   TestFormatListWithOr/two_items\n=== RUN   TestFormatListWithOr/three_items\n=== RUN   TestFormatListWithOr/four_items\n=== RUN   TestFormatListWithOr/engine_names_with_quotes\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/empty_list (0.00s)\n    --- PASS: TestFormatListWithOr/single_item (0.00s)\n    --- PASS: TestFormatListWithOr/two_items (0.00s)\n    --- PASS: TestFormatListWithOr/three_items (0.00s)\n    --- PASS: TestFormatListWithOr/four_items (0.00s)\n    --- PASS: TestFormatListWithOr/engine_names_with_quotes (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.029s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/empty_list": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/empty_list$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/empty_list\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/empty_list (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.027s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/single_item": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/single_item$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/single_item\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/single_item (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.028s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare\n=== RUN   TestAnomalyDetector_Analyze/low_similarity_below_threshold\n=== RUN   TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity\n=== RUN   TestAnomalyDetector_Analyze/normal_event_has_no_anomaly\n=== RUN   TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low\n=== RUN   TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low\n=== RUN   TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster\n=== RUN   TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag\n=== RUN   TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/low_similarity_below_threshold (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/normal_event_has_no_anomaly (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/two_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/two_items$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/two_items\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/two_items (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.027s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rarre$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.009s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/three_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/three_items$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/three_items\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/three_items (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.032s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/four_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/four_items$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/four_items\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/four_items (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.027s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/engine_names_with_quotes": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/engine_names_with_quotes$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/engine_names_with_quotes\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/engine_names_with_quotes (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.028s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/low_similarity_below_threshold": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/low_similarity_below_threshold$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/low_similarity_below_threshold\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/low_similarity_below_threshold (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.008s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.009s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/normal_event_has_no_anomaly": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/normal_event_has_no_anomaly$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/normal_event_has_no_anomaly\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/normal_event_has_no_anomaly (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.008s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flaggged_as_low$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_aas_low$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.009s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.010s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_fllag$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.008s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rarre_cluster$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnalyzeEvent": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnalyzeEvent$'\n=== RUN   TestAnalyzeEvent\n--- PASS: TestAnalyzeEvent (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.006s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestNewMiner": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestNewMiner$'\n=== RUN   TestNewMiner\n--- PASS: TestNewMiner (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.006s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterCreation": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestTrain_ClusterCreation$'\n=== RUN   TestTrain_ClusterCreation\n--- PASS: TestTrain_ClusterCreation (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterMerge": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestTrain_ClusterMerge$'\n=== RUN   TestTrain_ClusterMerge\n--- PASS: TestTrain_ClusterMerge (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMatch_InferenceOnly": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMatch_InferenceOnly$'\n=== RUN   TestMatch_InferenceOnly\n--- PASS: TestMatch_InferenceOnly (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMasking$'\n=== RUN   TestMasking\n=== RUN   TestMasking/UUID_replaced\n=== RUN   TestMasking/URL_replaced\n=== RUN   TestMasking/Number_value_replaced\n--- PASS: TestMasking (0.00s)\n    --- PASS: TestMasking/UUID_replaced (0.00s)\n    --- PASS: TestMasking/URL_replaced (0.00s)\n    --- PASS: TestMasking/Number_value_replaced (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/UUID_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMasking/UUID_replaced$'\n=== RUN   TestMasking\n=== RUN   TestMasking/UUID_replaced\n--- PASS: TestMasking (0.00s)\n    --- PASS: TestMasking/UUID_replaced (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/URL_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMasking/URL_replaced$'\n=== RUN   TestMasking\n=== RUN   TestMasking/URL_replaced\n--- PASS: TestMasking (0.00s)\n    --- PASS: TestMasking/URL_replaced (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/Number_value_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMasking/Number_value_replaced$'\n=== RUN   TestMasking\n=== RUN   TestMasking/Number_value_replaced\n--- PASS: TestMasking (0.00s)\n    --- PASS: TestMasking/Number_value_replaced (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.006s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestFlattenEvent": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestFlattenEvent$'\n=== RUN   TestFlattenEvent\n--- PASS: TestFlattenEvent (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.006s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestSaveLoadJSON": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestSaveLoadJSON$'\n=== RUN   TestSaveLoadJSON\n--- PASS: TestSaveLoadJSON (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestConcurrency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestConcurrency$'\n=== RUN   TestConcurrency\n--- PASS: TestConcurrency (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.009s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestStageRouting": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestStageRouting$'\n=== RUN   TestStageRouting\n--- PASS: TestStageRouting (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/identical\n=== RUN   TestComputeSimilarity/one_diff\n=== RUN   TestComputeSimilarity/length_mismatch\n=== RUN   TestComputeSimilarity/wildcard_ignored\n=== RUN   TestComputeSimilarity/all_wildcards\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/identical (0.00s)\n    --- PASS: TestComputeSimilarity/one_diff (0.00s)\n    --- PASS: TestComputeSimilarity/length_mismatch (0.00s)\n    --- PASS: TestComputeSimilarity/wildcard_ignored (0.00s)\n    --- PASS: TestComputeSimilarity/all_wildcards (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/identical": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/identical$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/identical\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/identical (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/one_diff": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/one_diff$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/one_diff\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/one_diff (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.008s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/length_mismatch": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/length_mismatch$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/length_mismatch\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/length_mismatch (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/wildcard_ignored": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/wildcard_ignored$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/wildcard_ignored\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/wildcard_ignored (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.007s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/all_wildcards": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/all_wildcards$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/all_wildcards\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/all_wildcards (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t0.006s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestHelpFlagConsistency$'\n=== RUN   TestHelpFlagConsistency\n=== RUN   TestHelpFlagConsistency/command_gh_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_add_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_add-wizard_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_audit_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_audit_diff_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_checks_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_compile_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_completion_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_completion_install_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_completion_uninstall_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_disable_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_domains_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_enable_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_fix_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_hash-frontmatter_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_health_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_init_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_list_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_logs_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_add_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_inspect_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_list_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_list-tools_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp-server_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_new_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_pr_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_pr_transfer_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_project_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_project_new_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_remove_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_run_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_secrets_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_secrets_bootstrap_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_secrets_set_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_status_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_trial_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_update_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_upgrade_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_validate_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_version_has_consistent_help_flag\n--- PASS: TestHelpFlagConsistency (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_add_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_add-wizard_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_audit_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_audit_diff_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_checks_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_compile_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_completion_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_completion_install_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_completion_uninstall_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_disable_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_domains_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_enable_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_fix_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_hash-frontmatter_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_health_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_init_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_list_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_logs_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_add_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_inspect_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_list_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_list-tools_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp-server_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_new_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_pr_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_pr_transfer_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_project_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_project_new_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_remove_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_run_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_secrets_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_secrets_bootstrap_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_secrets_set_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_status_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_trial_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_update_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_upgrade_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_validate_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_version_has_consistent_help_flag (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t0.029s\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n"
+}
+==========================
+Please judge the correctness of your per-testcase execution commands (the commands should run ONLY one specified testcase per command, and run the specified testcase successfully with pass/fail/skip result).
+If correct, submit with <submit>success</submit>;
+If not correct (some of your commands trigger more than one tests, OR many of your commands fail to execute successfully), please explore the correct command to run a specific testcase again and write the python script to generate all per-testcase commands again;
+If you think it is impossible to run each testcase separately, give up by outputting <submit>failure</submit>.
+
+2026-05-05 04:18:33,338 - 
+================================== Ai Message ==================================
+
+Thought: Update the per-test command generator to ensure exact regex matching and proper package extraction for each fully-qualified test name.
+Action: <python>def get_pertest_cmd(testcase_list:list[str])->dict[str,str]:
+    import re
+    result: dict[str, str] = {}
+    for testcase in testcase_list:
+        pkg = ""
+        test = testcase
+        if ".Test" in testcase:
+            pkg, test = testcase.rsplit(".Test", 1)
+            test = "Test" + test
+        escaped = re.escape(test)
+        regex = f"^{escaped}$"
+        cmd = f"cd /testbed && GOTOOLCHAIN=auto go test -v {pkg} -run '{regex}'"
+        result[testcase] = cmd
+    return result</python>
+2026-05-05 04:18:49,585 - 
+================================ Human Message =================================
+
+Observation:
+
+This is part of the "testcase name :: per-testcase excution command" mapping returned from your python script: 
+{
+ "github.com/github/gh-aw/cmd/gh-aw.TestCapitalizationConsistency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestCapitalizationConsistency$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestMCPCommandCapitalization": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestMCPCommandCapitalization$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestTechnicalTermsCapitalization": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestTechnicalTermsCapitalization$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/empty_list": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/empty_list$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/single_item": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/single_item$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/two_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/two_items$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/three_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/three_items$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/four_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/four_items$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/engine_names_with_quotes": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestFormatListWithOr/engine_names_with_quotes$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/low_similarity_below_threshold": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/low_similarity_below_threshold$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/normal_event_has_no_anomaly": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/normal_event_has_no_anomaly$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnalyzeEvent": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestAnalyzeEvent$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestNewMiner": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestNewMiner$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterCreation": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestTrain_ClusterCreation$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterMerge": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestTrain_ClusterMerge$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMatch_InferenceOnly": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMatch_InferenceOnly$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMasking$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/UUID_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMasking/UUID_replaced$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/URL_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMasking/URL_replaced$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/Number_value_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestMasking/Number_value_replaced$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestFlattenEvent": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestFlattenEvent$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestSaveLoadJSON": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestSaveLoadJSON$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestConcurrency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestConcurrency$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestStageRouting": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestStageRouting$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/identical": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/identical$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/one_diff": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/one_diff$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/length_mismatch": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/length_mismatch$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/wildcard_ignored": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/wildcard_ignored$'",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/all_wildcards": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrain -run '^TestComputeSimilarity/all_wildcards$'",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -run '^TestHelpFlagConsistency$'"
+}
+==========================
+This is the shell execution result of some of the pertest execution commands returned from your python script:
+{
+ "github.com/github/gh-aw/cmd/gh-aw.TestCapitalizationConsistency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestCapitalizationConsistency$'\n=== RUN   TestCapitalizationConsistency\n--- PASS: TestCapitalizationConsistency (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestMCPCommandCapitalization": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestMCPCommandCapitalization$'\n=== RUN   TestMCPCommandCapitalization\n--- PASS: TestMCPCommandCapitalization (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestTechnicalTermsCapitalization": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestTechnicalTermsCapitalization$'\n=== RUN   TestTechnicalTermsCapitalization\n--- PASS: TestTechnicalTermsCapitalization (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/empty_list\n=== RUN   TestFormatListWithOr/single_item\n=== RUN   TestFormatListWithOr/two_items\n=== RUN   TestFormatListWithOr/three_items\n=== RUN   TestFormatListWithOr/four_items\n=== RUN   TestFormatListWithOr/engine_names_with_quotes\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/empty_list (0.00s)\n    --- PASS: TestFormatListWithOr/single_item (0.00s)\n    --- PASS: TestFormatListWithOr/two_items (0.00s)\n    --- PASS: TestFormatListWithOr/three_items (0.00s)\n    --- PASS: TestFormatListWithOr/four_items (0.00s)\n    --- PASS: TestFormatListWithOr/engine_names_with_quotes (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/empty_list": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/empty_list$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/empty_list\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/empty_list (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/single_item": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/single_item$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/single_item\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/single_item (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare\n=== RUN   TestAnomalyDetector_Analyze/low_similarity_below_threshold\n=== RUN   TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity\n=== RUN   TestAnomalyDetector_Analyze/normal_event_has_no_anomaly\n=== RUN   TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low\n=== RUN   TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low\n=== RUN   TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster\n=== RUN   TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag\n=== RUN   TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/low_similarity_below_threshold (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/normal_event_has_no_anomaly (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/two_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/two_items$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/two_items\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/two_items (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rarre$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/new_template_creates_cluster_and_is_also_rare (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/three_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/three_items$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/three_items\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/three_items (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/four_items": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/four_items$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/four_items\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/four_items (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestFormatListWithOr/engine_names_with_quotes": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestFormatListWithOr/engine_names_with_quotes$'\n=== RUN   TestFormatListWithOr\n=== RUN   TestFormatListWithOr/engine_names_with_quotes\n--- PASS: TestFormatListWithOr (0.00s)\n    --- PASS: TestFormatListWithOr/engine_names_with_quotes (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/low_similarity_below_threshold": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/low_similarity_below_threshold$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/low_similarity_below_threshold\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/low_similarity_below_threshold (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/rare_cluster_with_high_similarity (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/normal_event_has_no_anomaly": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/normal_event_has_no_anomaly$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/normal_event_has_no_anomaly\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/normal_event_has_no_anomaly (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flaggged_as_low$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/similarity_exactly_at_threshold_is_not_flagged_as_low (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_aas_low$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/similarity_just_below_threshold_is_flagged_as_low (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/combined_low_similarity_and_rare_cluster (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_fllag$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/nil_cluster_does_not_trigger_rare_cluster_flag (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rarre_cluster$'\n=== RUN   TestAnomalyDetector_Analyze\n=== RUN   TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster\n--- PASS: TestAnomalyDetector_Analyze (0.00s)\n    --- PASS: TestAnomalyDetector_Analyze/max_score_achieved_with_new_template_and_rare_cluster (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestAnalyzeEvent": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestAnalyzeEvent$'\n=== RUN   TestAnalyzeEvent\n--- PASS: TestAnalyzeEvent (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestNewMiner": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestNewMiner$'\n=== RUN   TestNewMiner\n--- PASS: TestNewMiner (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterCreation": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestTrain_ClusterCreation$'\n=== RUN   TestTrain_ClusterCreation\n--- PASS: TestTrain_ClusterCreation (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestTrain_ClusterMerge": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestTrain_ClusterMerge$'\n=== RUN   TestTrain_ClusterMerge\n--- PASS: TestTrain_ClusterMerge (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMatch_InferenceOnly": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMatch_InferenceOnly$'\n=== RUN   TestMatch_InferenceOnly\n--- PASS: TestMatch_InferenceOnly (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMasking$'\n=== RUN   TestMasking\n=== RUN   TestMasking/UUID_replaced\n=== RUN   TestMasking/URL_replaced\n=== RUN   TestMasking/Number_value_replaced\n--- PASS: TestMasking (0.00s)\n    --- PASS: TestMasking/UUID_replaced (0.00s)\n    --- PASS: TestMasking/URL_replaced (0.00s)\n    --- PASS: TestMasking/Number_value_replaced (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/UUID_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMasking/UUID_replaced$'\n=== RUN   TestMasking\n=== RUN   TestMasking/UUID_replaced\n--- PASS: TestMasking (0.00s)\n    --- PASS: TestMasking/UUID_replaced (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/URL_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMasking/URL_replaced$'\n=== RUN   TestMasking\n=== RUN   TestMasking/URL_replaced\n--- PASS: TestMasking (0.00s)\n    --- PASS: TestMasking/URL_replaced (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestMasking/Number_value_replaced": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestMasking/Number_value_replaced$'\n=== RUN   TestMasking\n=== RUN   TestMasking/Number_value_replaced\n--- PASS: TestMasking (0.00s)\n    --- PASS: TestMasking/Number_value_replaced (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestFlattenEvent": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestFlattenEvent$'\n=== RUN   TestFlattenEvent\n--- PASS: TestFlattenEvent (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestSaveLoadJSON": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestSaveLoadJSON$'\n=== RUN   TestSaveLoadJSON\n--- PASS: TestSaveLoadJSON (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestConcurrency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestConcurrency$'\n=== RUN   TestConcurrency\n--- PASS: TestConcurrency (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestStageRouting": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestStageRouting$'\n=== RUN   TestStageRouting\n--- PASS: TestStageRouting (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/identical\n=== RUN   TestComputeSimilarity/one_diff\n=== RUN   TestComputeSimilarity/length_mismatch\n=== RUN   TestComputeSimilarity/wildcard_ignored\n=== RUN   TestComputeSimilarity/all_wildcards\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/identical (0.00s)\n    --- PASS: TestComputeSimilarity/one_diff (0.00s)\n    --- PASS: TestComputeSimilarity/length_mismatch (0.00s)\n    --- PASS: TestComputeSimilarity/wildcard_ignored (0.00s)\n    --- PASS: TestComputeSimilarity/all_wildcards (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/identical": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/identical$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/identical\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/identical (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/one_diff": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/one_diff$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/one_diff\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/one_diff (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/length_mismatch": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/length_mismatch$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/length_mismatch\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/length_mismatch (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/wildcard_ignored": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/wildcard_ignored$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/wildcard_ignored\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/wildcard_ignored (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/pkg/agentdrain.TestComputeSimilarity/all_wildcards": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/pkg/agentdrainn -run '^TestComputeSimilarity/all_wildcards$'\n=== RUN   TestComputeSimilarity\n=== RUN   TestComputeSimilarity/all_wildcards\n--- PASS: TestComputeSimilarity (0.00s)\n    --- PASS: TestComputeSimilarity/all_wildcards (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/pkg/agentdrain\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n",
+ "github.com/github/gh-aw/cmd/gh-aw.TestHelpFlagConsistency": "cd /testbed && GOTOOLCHAIN=auto go test -v github.com/github/gh-aw/cmd/gh-aw -runn '^TestHelpFlagConsistency$'\n=== RUN   TestHelpFlagConsistency\n=== RUN   TestHelpFlagConsistency/command_gh_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_add_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_add-wizard_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_audit_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_audit_diff_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_checks_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_compile_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_completion_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_completion_install_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_completion_uninstall_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_disable_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_domains_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_enable_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_fix_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_hash-frontmatter_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_health_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_init_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_list_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_logs_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_add_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_inspect_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_list_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp_list-tools_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_mcp-server_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_new_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_pr_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_pr_transfer_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_project_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_project_new_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_remove_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_run_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_secrets_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_secrets_bootstrap_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_secrets_set_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_status_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_trial_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_update_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_upgrade_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_validate_has_consistent_help_flag\n=== RUN   TestHelpFlagConsistency/command_gh_version_has_consistent_help_flag\n--- PASS: TestHelpFlagConsistency (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_add_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_add-wizard_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_audit_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_audit_diff_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_checks_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_compile_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_completion_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_completion_install_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_completion_uninstall_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_disable_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_domains_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_enable_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_fix_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_hash-frontmatter_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_health_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_init_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_list_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_logs_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_add_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_inspect_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_list_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp_list-tools_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_mcp-server_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_new_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_pr_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_pr_transfer_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_project_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_project_new_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_remove_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_run_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_secrets_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_secrets_bootstrap_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_secrets_set_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_status_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_trial_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_update_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_upgrade_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_validate_has_consistent_help_flag (0.00s)\n    --- PASS: TestHelpFlagConsistency/command_gh_version_has_consistent_help_flag (0.00s)\nPASS\nok  \tgithub.com/github/gh-aw/cmd/gh-aw\t(cached)\n\nroot@7660e8772598:/testbed $\n\nexit code: 0\n"
+}
+==========================
+Please judge the correctness of your per-testcase execution commands (the commands should run ONLY one specified testcase per command, and run the specified testcase successfully with pass/fail/skip result).
+If correct, submit with <submit>success</submit>;
+If not correct (some of your commands trigger more than one tests, OR many of your commands fail to execute successfully), please explore the correct command to run a specific testcase again and write the python script to generate all per-testcase commands again;
+If you think it is impossible to run each testcase separately, give up by outputting <submit>failure</submit>.
+
+2026-05-05 04:19:00,467 - 
+================================== Ai Message ==================================
+
+Thought: Commands are correct for running each specified Go test (including subtests) with -run anchors, so submit success.
+Action: <submit>success</submit>
+2026-05-05 04:19:00,492 - ----------End verify conversation----------
+2026-05-05 04:19:07,152 - Duration: 274 minutes
+2026-05-05 04:19:07,152 - Setup completed successfully, now commit into swebench image.
+2026-05-05 04:19:35,652 - Image repolaunch/dev:github__gh-aw-24521_linux committed successfully.
+2026-05-05 04:19:52,581 - Test output saved to: data/go/playground/github__gh-aw-24521/test_status.log
+2026-05-05 04:20:02,594 - Result saved to: data/go/playground/github__gh-aw-24521/result.json

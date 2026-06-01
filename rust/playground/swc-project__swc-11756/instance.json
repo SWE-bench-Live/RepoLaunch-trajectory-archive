@@ -1,0 +1,55 @@
+{
+  "repo": "swc-project/swc",
+  "pull_number": 11756,
+  "instance_id": "swc-project__swc-11756",
+  "issue_numbers": [
+    11748
+  ],
+  "base_commit": "f21d33629033f305d300d91982d0a87bc807e427",
+  "patch": "diff --git a/.changeset/neat-worms-vanish.md b/.changeset/neat-worms-vanish.md\nnew file mode 100644\nindex 000000000000..cbc5213c41ab\n--- /dev/null\n+++ b/.changeset/neat-worms-vanish.md\n@@ -0,0 +1,6 @@\n+---\n+swc_core: patch\n+swc_html_codegen: patch\n+---\n+\n+fix(html): keep </p> for span-parent paragraphs\ndiff --git a/crates/swc_html_codegen/src/lib.rs b/crates/swc_html_codegen/src/lib.rs\nindex dc6b7d5abbfe..d13d4fe702aa 100644\n--- a/crates/swc_html_codegen/src/lib.rs\n+++ b/crates/swc_html_codegen/src/lib.rs\n@@ -512,6 +512,8 @@ where\n                                 tag_name,\n                                 ..\n                             }) if is_html_tag_name(*namespace, tag_name)\n+                                // Keep </p> under span to preserve parser stability for invalid\n+                                // markup such as `<span><p>...` (#11748).\n                                 && !matches!(\n                                     &**tag_name,\n                                     \"a\" | \"audio\"\n@@ -524,6 +526,7 @@ where\n                                         | \"strike\"\n                                         | \"map\"\n                                         | \"noscript\"\n+                                        | \"span\"\n                                         | \"video\"\n                                         | \"kbd\"\n                                         | \"rbc\"\n",
+  "test_patch": "diff --git a/crates/swc_html_codegen/tests/fixture/issue-11748/input.html b/crates/swc_html_codegen/tests/fixture/issue-11748/input.html\nnew file mode 100644\nindex 000000000000..9139775d18fc\n--- /dev/null\n+++ b/crates/swc_html_codegen/tests/fixture/issue-11748/input.html\n@@ -0,0 +1,1 @@\n+<span><p>TEXT</p></span>\ndiff --git a/crates/swc_html_codegen/tests/fixture/issue-11748/output.html b/crates/swc_html_codegen/tests/fixture/issue-11748/output.html\nnew file mode 100644\nindex 000000000000..282f903ae8bb\n--- /dev/null\n+++ b/crates/swc_html_codegen/tests/fixture/issue-11748/output.html\n@@ -0,0 +1,3 @@\n+<html>\n+<head></head><body><span><p>TEXT</p></span>\n+</body></html>\n\\ No newline at end of file\ndiff --git a/crates/swc_html_codegen/tests/fixture/issue-11748/output.min.html b/crates/swc_html_codegen/tests/fixture/issue-11748/output.min.html\nnew file mode 100644\nindex 000000000000..9139775d18fc\n--- /dev/null\n+++ b/crates/swc_html_codegen/tests/fixture/issue-11748/output.min.html\n@@ -0,0 +1,1 @@\n+<span><p>TEXT</p></span>\ndiff --git a/crates/swc_html_minifier/tests/recovery/element/issue-11748/input.html b/crates/swc_html_minifier/tests/recovery/element/issue-11748/input.html\nnew file mode 100644\nindex 000000000000..9139775d18fc\n--- /dev/null\n+++ b/crates/swc_html_minifier/tests/recovery/element/issue-11748/input.html\n@@ -0,0 +1,1 @@\n+<span><p>TEXT</p></span>\ndiff --git a/crates/swc_html_minifier/tests/recovery/element/issue-11748/output.min.html b/crates/swc_html_minifier/tests/recovery/element/issue-11748/output.min.html\nnew file mode 100644\nindex 000000000000..a628d49ff20d\n--- /dev/null\n+++ b/crates/swc_html_minifier/tests/recovery/element/issue-11748/output.min.html\n@@ -0,0 +1,1 @@\n+<span><p>TEXT</p></span>\n\\ No newline at end of file\n",
+  "problem_statement": "`@swc/html` wrongly minifies invalid HTML markup\n### Describe the bug\n\nThe HTML minifier transforms:\n\n```html\n<span><p>TEXT</p></span>\n```\n\ninto:\n\n```html\n<span><p>TEXT</span>\n```\n\n---\n\nThe source is invalid because we are not supposed to put paragraphs inside spans. However, this happens to create similar invalid markup, in particular with MDX, that often creates extra paragraphs without us noticing it. In my case, the bug appeared due to the following MDX:\n\n```mdx\n# My MDX doc\n\n<span>\n  TEST\n</span>\n```\n\nI believe, even if the input is invalid HTML, the minified output should be interpreted by browsers in the same way as its invalid source.\n\n\nThis is how the browser interprets the original html:\n\n<img width=\"1506\" height=\"196\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/ac47fdc2-7db4-41e4-87dd-c75e49494f7f\" />\n\nAnd this is how it interprets the minified html:\n\n<img width=\"1550\" height=\"218\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/99992b85-ae7b-491c-81fa-1f5b2af6d6ca\" />\n\nI believe the way the HTML gets parsed should remain the same with/without minification, and the dom elements should be nested similarly in the tree. \n\nEven though it's bad to use invalid HTML, browsers can still render it nicely, and minifiers should rather not produce unexpected side effects. I also thought maybe the minifier could emit an error\n\nNote that there's no problem at all if we use a div and the minifier emits: `<div><p>TEXT</div>`: browsers will be able to close the `<p>`:\n\n<img width=\"376\" height=\"104\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/64e9d26c-81c9-42b7-be55-e817d1271d51\" />\n\n\n\n### Input code\n\n```typescript\n<span><p>TEXT</p></span>\n```\n\n### Config\n\n```json\nN/A\n```\n\n### Link to the code that reproduces this issue\n\nhttps://github.com/slorber/swc-html-minify-bug-repro\n\n### SWC Info output\n\n`\"@swc/html\": \"^1.15.21\"`\n\n### Expected behavior\n\nAlthough the source html is invalid, the HTML minifier should produce an output that remains consistent with the input.\n\n### Actual behavior\n\n_No response_\n\n### Version\n\n1.15.21\n\n### Additional context\n\n_No response_\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/swc-project/swc/commit/1b138cae5b60420d1066687faf89cdca22aed507",
+    "https://github.com/swc-project/swc/commit/e6fd8ab94cd4799ea6bcfefd2167fa86336d4be3"
+  ],
+  "created_at": "2026-03-31T07:34:50Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/swc-project/swc/tree/f21d33629033f305d300d91982d0a87bc807e427",
+  "setup_cmds": [
+    "rustup toolchain install nightly-2025-05-06 --profile minimal --component rustfmt,clippy  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "cargo +nightly-2025-05-06 check -q  (exit code: 0)",
+    "cargo +nightly-2025-05-06 build  (exit code: 0)",
+    "cargo +nightly-2025-05-06 test  (exit code: 101)",
+    "cargo +nightly-2025-05-06 clean  (exit code: 0)",
+    "cargo +nightly-2025-05-06 test  (exit code: 101)",
+    "cargo +nightly-2025-05-06 test --workspace --exclude swc --exclude swc_cli --exclude swc_cli_impl  (exit code: 101)",
+    "cargo +nightly-2025-05-06 clean  (exit code: 0)",
+    "cargo +nightly-2025-05-06 test --workspace --exclude swc --exclude swc_cli --exclude swc_cli_impl -j 1  (exit code: 124)",
+    "cargo +nightly-2025-05-06 test -p swc_plugin_backend_tests  (exit code: 101)",
+    "rustup +nightly-2025-05-06 target add wasm32-wasip1  (exit code: 0)",
+    "cargo +nightly-2025-05-06 test -p swc_plugin_backend_tests  (exit code: 0)",
+    "rustup toolchain install nightly-2025-05-06 --profile minimal --component rustfmt,clippy  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "cargo +nightly-2025-05-06 check -q  (exit code: 0)",
+    "cargo +nightly-2025-05-06 build  (exit code: 0)",
+    "cargo +nightly-2025-05-06 test  (exit code: 101)",
+    "cargo +nightly-2025-05-06 clean  (exit code: 0)",
+    "cargo +nightly-2025-05-06 test  (exit code: 101)",
+    "cargo +nightly-2025-05-06 test --workspace --exclude swc --exclude swc_cli --exclude swc_cli_impl  (exit code: 101)",
+    "cargo +nightly-2025-05-06 clean  (exit code: 0)",
+    "cargo +nightly-2025-05-06 test --workspace --exclude swc --exclude swc_cli --exclude swc_cli_impl -j 1  (exit code: 124)",
+    "cargo +nightly-2025-05-06 test -p swc_plugin_backend_tests  (exit code: 101)",
+    "rustup +nightly-2025-05-06 target add wasm32-wasip1  (exit code: 0)",
+    "cargo +nightly-2025-05-06 test -p swc_plugin_backend_tests  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo +nightly-2025-05-06 test -p swc_plugin_backend_tests -- --nocapture"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:swc-project__swc-11756_linux"
+}

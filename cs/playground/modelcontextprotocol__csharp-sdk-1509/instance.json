@@ -1,0 +1,56 @@
+{
+  "repo": "modelcontextprotocol/csharp-sdk",
+  "pull_number": 1509,
+  "instance_id": "modelcontextprotocol__csharp-sdk-1509",
+  "issue_numbers": [
+    1486
+  ],
+  "base_commit": "6a02c5a1b0330cb81f5a249974043a4356d5d2d5",
+  "patch": "diff --git a/src/ModelContextProtocol.Core/Server/McpServerImpl.cs b/src/ModelContextProtocol.Core/Server/McpServerImpl.cs\nindex 50c988cde..04d11e016 100644\n--- a/src/ModelContextProtocol.Core/Server/McpServerImpl.cs\n+++ b/src/ModelContextProtocol.Core/Server/McpServerImpl.cs\n@@ -98,6 +98,18 @@ public McpServerImpl(ITransport transport, McpServerOptions options, ILoggerFact\n             _notificationHandlers.RegisterRange(notificationHandlers);\n         }\n \n+        // In stateless mode, the server cannot send unsolicited notifications,\n+        // so listChanged should not be advertised.\n+        if (transport is StreamableHttpServerTransport { Stateless: true })\n+        {\n+            if (ServerCapabilities.Tools is not null)\n+                ServerCapabilities.Tools.ListChanged = null;\n+            if (ServerCapabilities.Prompts is not null)\n+                ServerCapabilities.Prompts.ListChanged = null;\n+            if (ServerCapabilities.Resources is not null)\n+                ServerCapabilities.Resources.ListChanged = null;\n+        }\n+\n         // Now that everything has been configured, subscribe to any necessary notifications.\n         if (transport is not StreamableHttpServerTransport streamableHttpTransport || streamableHttpTransport.Stateless is false)\n         {\n",
+  "test_patch": "diff --git a/tests/ModelContextProtocol.AspNetCore.Tests/StatelessServerTests.cs b/tests/ModelContextProtocol.AspNetCore.Tests/StatelessServerTests.cs\nindex 131adcdf2..80c37ea61 100644\n--- a/tests/ModelContextProtocol.AspNetCore.Tests/StatelessServerTests.cs\n+++ b/tests/ModelContextProtocol.AspNetCore.Tests/StatelessServerTests.cs\n@@ -292,6 +292,32 @@ public async Task ConfigureSessionOptions_RunsPerRequest_InStatelessMode()\n         Assert.Equal(\"configured-beta\", Assert.IsType<TextContentBlock>(content2).Text);\n     }\n \n+    [Fact]\n+    public async Task StatelessMode_DoesNotAdvertise_ListChangedCapabilities()\n+    {\n+        Builder.Services.AddMcpServer()\n+            .WithHttpTransport(options =>\n+            {\n+                options.Stateless = true;\n+            })\n+            .WithTools([McpServerTool.Create(() => \"result\", new() { Name = \"myTool\" })])\n+            .WithPrompts([McpServerPrompt.Create(() => new GetPromptResult(), new() { Name = \"myPrompt\" })])\n+            .WithResources([McpServerResource.Create(() => new ReadResourceResult(), new() { UriTemplate = \"resource://test\" })]);\n+\n+        _app = Builder.Build();\n+        _app.MapMcp();\n+        await _app.StartAsync(TestContext.Current.CancellationToken);\n+\n+        HttpClient.DefaultRequestHeaders.Accept.Add(new(\"application/json\"));\n+        HttpClient.DefaultRequestHeaders.Accept.Add(new(\"text/event-stream\"));\n+\n+        await using var client = await ConnectMcpClientAsync();\n+\n+        Assert.Null(client.ServerCapabilities.Tools?.ListChanged);\n+        Assert.Null(client.ServerCapabilities.Prompts?.ListChanged);\n+        Assert.Null(client.ServerCapabilities.Resources?.ListChanged);\n+    }\n+\n     [McpServerTool(Name = \"testSamplingErrors\")]\n     public static async Task<string> TestSamplingErrors(McpServer server)\n     {\n",
+  "problem_statement": "Stateless HTTP server should not advertise `listChanged` capabilities\n**Description:**\n\nWhen configuring an MCP server with `Stateless = true` on the HTTP transport, the server still advertises `listChanged: true` for tools, resources, and prompts in the `initialize` response.\n\n**Server configuration:**\n\n```csharp\nbuilder.Services.AddMcpServer()\n    .WithHttpTransport(options =>\n        options.Stateless = true\n    )\n    .WithTools<MyTools>()\n    .WithResources<MyResources>()\n    .WithPrompts<MyPrompts>();\n```\n\n**Actual initialize response:**\n\n```json\n{\n  \"result\": {\n    \"protocolVersion\": \"2025-11-25\",\n    \"capabilities\": {\n      \"logging\": {},\n      \"prompts\": { \"listChanged\": true },\n      \"resources\": { \"listChanged\": true },\n      \"tools\": { \"listChanged\": true }\n    },\n    \"serverInfo\": { \"name\": \"Stateless\", \"version\": \"1.0.0.0\" }\n  },\n  \"id\": 1,\n  \"jsonrpc\": \"2.0\"\n}\n```\n\n**Expected initialize response:**\n\nThe `listChanged` capability should not be advertised (or should be `false`) for tools, resources, and prompts when the server is configured in stateless mode. In stateless mode, each request creates a new server instance, so there is no persistent session to receive `notifications/tools/list_changed`, `notifications/resources/list_changed`, or `notifications/prompts/list_changed` notifications.\n\n```json\n{\n  \"result\": {\n    \"protocolVersion\": \"2025-11-25\",\n    \"capabilities\": {\n      \"logging\": {},\n      \"prompts\": {},\n      \"resources\": {},\n      \"tools\": {}\n    },\n    \"serverInfo\": { \"name\": \"Stateless\", \"version\": \"1.0.0.0\" }\n  },\n  \"id\": 1,\n  \"jsonrpc\": \"2.0\"\n}\n```\n\n**Rationale:**\n\nThe `listChanged` capability indicates that the server may send list-changed notifications to the client during a session. In stateless mode, there is no persistent session \u2014 each HTTP request creates a new server instance and the server cannot send unsolicited notifications to the client. Advertising `listChanged: true` is misleading because the server will never actually send these notifications.\n\n**Version:** ModelContextProtocol.AspNetCore 1.1.0\n",
+  "hints_text": "Good call out. It will never work in stateless. I wonder if this shouldn't be opt-in in general, since the pattern of modifying a tools/prompts/resource list at runtime in general is pretty niche.\nAnyone working on this? If not can I pick up for contribution?\n\n",
+  "all_hints_text": "Good call out. It will never work in stateless. I wonder if this shouldn't be opt-in in general, since the pattern of modifying a tools/prompts/resource list at runtime in general is pretty niche.\nAnyone working on this? If not can I pick up for contribution?\nI have created a pull request for this, I also added the triage in PR description, please help review\n\n@mikekistler / @halter73 \n\n",
+  "commit_urls": [
+    "https://github.com/modelcontextprotocol/csharp-sdk/commit/272ebc970aa726237819980306021bced8cc4a9a"
+  ],
+  "created_at": "2026-04-09T02:07:58Z",
+  "language": "C#",
+  "commit_url": "https://github.com/modelcontextprotocol/csharp-sdk/tree/6a02c5a1b0330cb81f5a249974043a4356d5d2d5",
+  "setup_cmds": [
+    "npm ci  (exit code: 127)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y nodejs npm  (exit code: 0)",
+    "npm ci  (exit code: 0)",
+    "dotnet restore  (exit code: 1)",
+    "dotnet restore -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet build -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet test -p:NuGetAudit=false  (exit code: 124)",
+    "dotnet test --no-build -p:NuGetAudit=false  (exit code: 124)",
+    "npm install -g n  (exit code: 0)",
+    "n 20  (exit code: 0)",
+    "hash -r  (exit code: 0)",
+    "dotnet dev-certs https  (exit code: 0)",
+    "dotnet test --no-build -p:NuGetAudit=false  (exit code: 0)",
+    "npm ci  (exit code: 127)",
+    "apt-get update  (exit code: 0)",
+    "apt-get install -y nodejs npm  (exit code: 0)",
+    "npm ci  (exit code: 0)",
+    "dotnet restore  (exit code: 1)",
+    "dotnet restore -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet build -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet test -p:NuGetAudit=false  (exit code: 124)",
+    "dotnet test --no-build -p:NuGetAudit=false  (exit code: 124)",
+    "npm install -g n  (exit code: 0)",
+    "n 20  (exit code: 0)",
+    "hash -r  (exit code: 0)",
+    "dotnet dev-certs https  (exit code: 0)",
+    "dotnet test --no-build -p:NuGetAudit=false  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "dotnet test --no-build -p:NuGetAudit=false --logger \"console;verbosity=detailed\""
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:modelcontextprotocol__csharp-sdk-1509_linux"
+}
