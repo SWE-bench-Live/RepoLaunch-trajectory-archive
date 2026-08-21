@@ -1,0 +1,69 @@
+{
+ "repo": "linq2db/linq2db",
+ "base_commit": "0f32e403b6874ecbae71f5c3574d5b9e305e082b",
+ "rebuild_cmds": [
+  "dotnet restore linq2db.playground.slnf -p:Configuration=Testing; dotnet build linq2db.playground.slnf -c Testing --no-restore -v minimal"
+ ],
+ "test_cmds": [
+  "rm -rf TestResults/playground; mkdir -p TestResults/playground; .build/bin/Tests.Playground/Testing/net10.0/linq2db.Tests.Playground --output Detailed --no-progress --no-ansi --report-trx --report-trx-filename playground.trx --results-directory TestResults/playground"
+ ],
+ "print_cmds": [
+  "cat TestResults/playground/playground.trx"
+ ],
+ "log_parser": "def parser(log: str) -> dict[str, str]:\n    import html\n    import re\n    import xml.etree.ElementTree as ET\n\n    results: dict[str, str] = {}\n    priority = {\"pass\": 0, \"skip\": 1, \"fail\": 2}\n\n    skip_outcomes = {\n        \"skip\", \"skipped\", \"notexecuted\", \"notrun\", \"pending\",\n        \"ignored\", \"ignore\", \"disabled\", \"inconclusive\",\n    }\n    pass_outcomes = {\"pass\", \"passed\", \"success\", \"succeeded\"}\n\n    def status_for(outcome: str) -> str:\n        # Ignore punctuation and formatting differences such as\n        # \"Not Executed\", \"not-executed\", and \"NOT_EXECUTED\".\n        normalized = re.sub(r\"[^a-z0-9]+\", \"\", outcome.casefold())\n        if normalized in pass_outcomes:\n            return \"pass\"\n        if normalized in skip_outcomes:\n            return \"skip\"\n        # Unknown, missing, failed, error, timeout, and aborted outcomes fail.\n        return \"fail\"\n\n    def add(name: str, outcome: str) -> None:\n        name = html.unescape(name).strip()\n        if not name:\n            return\n        status = status_for(outcome)\n        previous = results.get(name)\n        if previous is None or priority[status] > priority[previous]:\n            results[name] = status\n\n    def parse_tree(text: str) -> bool:\n        # Remove characters forbidden by XML 1.0 while preserving whitespace.\n        text = re.sub(\n            r\"[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F-\\x84\\x86-\\x9F]\",\n            \"\",\n            text,\n        )\n        try:\n            root = ET.fromstring(text)\n        except (ET.ParseError, ValueError):\n            return False\n\n        for element in root.iter():\n            local_name = element.tag.rsplit(\"}\", 1)[-1].split(\":\")[-1]\n            if not local_name.casefold().endswith(\"testresult\"):\n                continue\n            name = element.get(\"testName\") or element.get(\"name\")\n            outcome = element.get(\"outcome\") or element.get(\"result\")\n            if name and outcome:\n                add(name, outcome)\n        return True\n\n    def fallback(text: str) -> None:\n        # Recover result start tags from malformed/truncated TRX. Restrict the\n        # scan to *TestResult elements to avoid interpreting logged XML.\n        tag_pattern = re.compile(\n            r\"<(?:[A-Za-z_][\\w.-]*:)?[A-Za-z_][\\w.-]*TestResult\\b[^>]*>\",\n            re.IGNORECASE,\n        )\n        attr_pattern = re.compile(\n            r\"\"\"([A-Za-z_][\\w:.-]*)\\s*=\\s*([\"'])(.*?)\\2\"\"\",\n            re.DOTALL,\n        )\n        for match in tag_pattern.finditer(text):\n            attrs = {\n                key.rsplit(\":\", 1)[-1].casefold(): value\n                for key, _, value in attr_pattern.findall(match.group(0))\n            }\n            name = attrs.get(\"testname\") or attrs.get(\"name\")\n            outcome = attrs.get(\"outcome\") or attrs.get(\"result\")\n            if name and outcome:\n                add(name, outcome)\n\n    # Handle one or more TRX documents embedded in surrounding console output.\n    fragments = list(re.finditer(\n        r\"<(?:[A-Za-z_][\\w.-]*:)?TestRun\\b[\\s\\S]*?\"\n        r\"</(?:[A-Za-z_][\\w.-]*:)?TestRun\\s*>\",\n        log,\n        re.IGNORECASE,\n    ))\n\n    if fragments:\n        for fragment in fragments:\n            text = fragment.group(0)\n            if not parse_tree(text):\n                fallback(text)\n    else:\n        # This also supports a log that is exactly another XML test-report\n        # format whose concrete result elements use *TestResult names.\n        if not parse_tree(log):\n            fallback(log)\n\n    return results",
+ "test_status": {
+  "CreateDatabase(\"SQLite.Classic\")": "pass",
+  "CreateDatabase(\"SQLite.MS\")": "pass",
+  "SampleSelectTest(\"SQLite.Classic\")": "pass",
+  "SampleSelectTest(\"SQLite.MS\")": "pass"
+ },
+ "docker_image": "repolaunch/cs:linq2dblinq2db0f32e403b6874ecbae71f5c3574d5b9e305e082b",
+ "docker_image_layers": {
+  "base_image": "mcr.microsoft.com/dotnet/sdk:10.0",
+  "setup_layer": [
+   "apt update && apt install -y git",
+   "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/linq2db/linq2db.git; git fetch --depth 1 origin 8567781c4a9ec4aff3e2ed0d966b91b8e6b17031; git reset --hard 8567781c4a9ec4aff3e2ed0d966b91b8e6b17031",
+   "dotnet --version ; cat linq2db.playground.slnf ; find Tests/Tests.Playground -maxdepth 2 -type f -print ",
+   "cat Tests/Tests.Playground/Tests.Playground.csproj; sed -n '1,240p' Tests/Tests.Playground/TestTemplate.cs; cat Tests/linq2db.BasicTestProjects.props ",
+   "cp -n UserDataProviders.json.template UserDataProviders.json; ls -l UserDataProviders.json ",
+   "dotnet restore linq2db.playground.slnf -p:Configuration=Testing ",
+   "dotnet build linq2db.playground.slnf -c Testing --no-restore -v minimal ",
+   "dotnet test Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal ",
+   "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal ",
+   "dotnet restore Tests/Tests.Playground/Tests.Playground.csproj -p:Configuration=Testing -p:NuGetAudit=false ",
+   "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing --no-restore ",
+   "dotnet --version ; cat linq2db.playground.slnf ; find Tests/Tests.Playground -maxdepth 2 -type f -print ",
+   "cat Tests/Tests.Playground/Tests.Playground.csproj; sed -n '1,240p' Tests/Tests.Playground/TestTemplate.cs; cat Tests/linq2db.BasicTestProjects.props ",
+   "cp -n UserDataProviders.json.template UserDataProviders.json; ls -l UserDataProviders.json ",
+   "dotnet restore linq2db.playground.slnf -p:Configuration=Testing ",
+   "dotnet build linq2db.playground.slnf -c Testing --no-restore -v minimal ",
+   "dotnet test Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal ",
+   "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal ",
+   "dotnet restore Tests/Tests.Playground/Tests.Playground.csproj -p:Configuration=Testing -p:NuGetAudit=false ",
+   "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing --no-restore ",
+   ".build/bin/Tests.Playground/Testing/net10.0/linq2db.Tests.Playground --help",
+   ".build/bin/Tests.Playground/Testing/net10.0/linq2db.Tests.Playground --output Detailed --no-progress --no-ansi"
+  ],
+  "organize_layer": [
+   "dotnet restore linq2db.playground.slnf -p:Configuration=Testing; dotnet build linq2db.playground.slnf -c Testing --no-restore -v minimal",
+   "rm -rf TestResults/playground; mkdir -p TestResults/playground; .build/bin/Tests.Playground/Testing/net10.0/linq2db.Tests.Playground --output Detailed --no-progress --no-ansi --report-trx --report-trx-filename playground.trx --results-directory TestResults/playground",
+   "cat TestResults/playground/playground.trx",
+   "dotnet restore linq2db.playground.slnf -p:Configuration=Testing; dotnet build linq2db.playground.slnf -c Testing --no-restore -v minimal",
+   "rm -rf TestResults/playground; mkdir -p TestResults/playground; .build/bin/Tests.Playground/Testing/net10.0/linq2db.Tests.Playground --output Detailed --no-progress --no-ansi --report-trx --report-trx-filename playground.trx --results-directory TestResults/playground",
+   "cat TestResults/playground/playground.trx"
+  ],
+  "switch_commit_layer": [
+   "git config --global user.email example@gmail.com",
+   "git config --global user.name haha",
+   "git fetch origin 0f32e403b6874ecbae71f5c3574d5b9e305e082b",
+   "git checkout -b wipcheckoutbackup",
+   "git add -A",
+   "git commit --no-verify -m 'temp'",
+   "git checkout main ; git checkout master",
+   "git reset --hard 0f32e403b6874ecbae71f5c3574d5b9e305e082b",
+   "git cherry-pick --no-commit -Xours wipcheckoutbackup",
+   "git reset",
+   "git branch -D wipcheckoutbackup"
+  ]
+ }
+}

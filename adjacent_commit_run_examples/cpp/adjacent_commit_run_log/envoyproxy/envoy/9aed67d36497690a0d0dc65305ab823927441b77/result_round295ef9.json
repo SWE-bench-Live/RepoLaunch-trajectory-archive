@@ -1,0 +1,74 @@
+{
+ "repo": "envoyproxy/envoy",
+ "base_commit": "9aed67d36497690a0d0dc65305ab823927441b77",
+ "rebuild_cmds": [
+  "cd /testbed && bazel build -c fastbuild --define=wasm=disabled --//bazel:http3=False //test/common/common:base64_test"
+ ],
+ "test_cmds": [
+  "cd /testbed ; HEAPCHECK= bazel-bin/test/common/common/base64_test --gtest_output=json:gtest-results.json"
+ ],
+ "print_cmds": [
+  "cd /testbed ; cat gtest-results.json"
+ ],
+ "log_parser": "def parser(log: str) -> dict[str, str]:\n    import json\n\n    # Find the first decodable JSON object/array that looks like a test report.\n    decoder = json.JSONDecoder()\n    data = None\n    for i, char in enumerate(log):\n        if char not in \"{[\":\n            continue\n        try:\n            candidate, _ = decoder.raw_decode(log, i)\n        except (json.JSONDecodeError, TypeError):\n            continue\n        if isinstance(candidate, dict) and any(\n            key in candidate\n            for key in (\"testsuites\", \"testsuite\", \"testcases\", \"testcase\", \"tests\")\n        ):\n            data = candidate\n            break\n        if isinstance(candidate, list):\n            data = candidate\n            break\n\n    if data is None:\n        return {}\n\n    results: dict[str, str] = {}\n\n    def present(value) -> bool:\n        \"\"\"True for actual failure/skip evidence, but not zero-like counters.\"\"\"\n        if value is None or value is False:\n            return False\n        if isinstance(value, (int, float)):\n            return value != 0\n        if isinstance(value, str):\n            return value.strip().lower() not in {\n                \"\", \"0\", \"false\", \"none\", \"null\", \"no\", \"passed\", \"pass\"\n            }\n        return bool(value)\n\n    fail_words = {\n        \"fail\", \"failed\", \"failure\", \"error\", \"errored\", \"fatal\",\n        \"abort\", \"aborted\", \"timeout\", \"timedout\", \"timed_out\",\n        \"crash\", \"crashed\", \"incomplete\",\n    }\n    skip_words = {\n        \"skip\", \"skipped\", \"suppressed\", \"disabled\", \"notrun\",\n        \"not_run\", \"not run\", \"ignored\", \"pending\", \"excluded\",\n    }\n\n    def status_of(case: dict) -> str:\n        # Structured failure/error records and nonzero counters take priority.\n        if any(present(case.get(key)) for key in (\n            \"failure\", \"failures\", \"error\", \"errors\",\n        )):\n            return \"fail\"\n\n        values = []\n        for key in (\"status\", \"result\", \"outcome\", \"state\"):\n            value = case.get(key)\n            if value is not None:\n                values.append(str(value).strip().lower())\n\n        if any(value in fail_words or any(\n            word in value for word in (\"fail\", \"error\", \"abort\", \"timeout\", \"crash\")\n        ) for value in values):\n            return \"fail\"\n\n        if any(present(case.get(key)) for key in (\n            \"skipped\", \"skip\", \"disabled\", \"ignored\", \"pending\",\n        )):\n            return \"skip\"\n\n        if any(value in skip_words for value in values):\n            return \"skip\"\n\n        name = str(case.get(\"name\", \"\"))\n        if name.startswith(\"DISABLED_\"):\n            return \"skip\"\n\n        return \"pass\"\n\n    child_keys = (\"testsuites\", \"testcases\", \"testcase\", \"testsuite\")\n\n    def walk(node, suite_name: str = \"\", case_context: bool = False) -> None:\n        if isinstance(node, list):\n            for item in node:\n                walk(item, suite_name, case_context)\n            return\n        if not isinstance(node, dict):\n            return\n\n        children = [key for key in child_keys if key in node]\n        name = str(node.get(\"name\") or \"\")\n\n        # Leaf dictionaries reached through testcase-bearing arrays are cases.\n        is_case = case_context and not children and bool(name)\n        if is_case:\n            classname = str(node.get(\"classname\") or node.get(\"className\") or suite_name)\n            full_name = f\"{classname}.{name}\" if classname else name\n            results[full_name] = status_of(node)\n            return\n\n        next_suite = suite_name\n        if name and children:\n            next_suite = name\n\n        for key in children:\n            value = node.get(key)\n            if key in (\"testcase\", \"testcases\"):\n                walk(value, next_suite, True)\n            elif key == \"testsuite\":\n                # GoogleTest uses \"testsuite\" for testcase arrays; nested suite\n                # objects are detected by their own child collections.\n                walk(value, next_suite, True)\n            else:\n                walk(value, next_suite, False)\n\n    walk(data)\n    return results",
+ "test_status": {
+  "Base64Test.EmptyBufferEncode": "pass",
+  "Base64Test.SingleSliceBufferEncode": "pass",
+  "Base64Test.EncodeString": "pass",
+  "Base64Test.Decode": "pass",
+  "Base64Test.DecodeFailure": "pass",
+  "Base64Test.DecodeWithoutPadding": "pass",
+  "Base64Test.MultiSlicesBufferEncode": "pass",
+  "Base64Test.BinaryBufferEncode": "pass",
+  "Base64Test.CompletePadding": "pass",
+  "Base64UrlTest.EncodeString": "pass",
+  "Base64UrlTest.Decode": "pass",
+  "Base64UrlTest.DecodeFailure": "pass"
+ },
+ "docker_image": "repolaunch/cpp:envoyproxyenvoy9aed67d36497690a0d0dc65305ab823927441b77",
+ "docker_image_layers": {
+  "base_image": "mcr.microsoft.com/devcontainers/cpp:1-ubuntu-20.04",
+  "setup_layer": [
+   "apt update && apt install -y git",
+   "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/envoyproxy/envoy.git; git fetch --depth 1 origin 295ef9d9d87c645e2f1cc344c05220f6794036b7; git reset --hard 295ef9d9d87c645e2f1cc344c05220f6794036b7",
+   "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version ; bazel --version ; go version ; java -version ; python3 --version ; id ; uname -m ",
+   "apt-get update ; apt-get install -y --no-install-recommends autoconf automake autotools-dev curl ca-certificates libtool m4 patch python3-pip python3-venv python3-virtualenv unzip zip xz-utils bzip2 git build-essential ninja-build cmake pkg-config file ; curl -fsSL -o /usr/local/bin/bazel \"https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64\" ; chmod +x /usr/local/bin/bazel ; bazel --version ",
+   "git status --short ; git diff --stat ; git diff --name-only ; free -h ; df -h /testbed /root ",
+   "printf '%s\\n' 'build --config=clang' 'build --jobs=8' > user.bazelrc ; bazel test -c fastbuild --define=wasm=disabled --//bazel:http3=False --test_env=HEAPCHECK= --test_output=errors //test/common/common:base64_test ",
+   "curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh ; chmod +x /tmp/llvm.sh ; /tmp/llvm.sh 20 all ; clang-20 --version ; lld-20 --version ; test -f /usr/lib/llvm-20/include/c++/v1/vector ; echo libcxx-present ",
+   "apt-get install -y --no-install-recommends software-properties-common gnupg wget lsb-release ; /tmp/llvm.sh 20 all ; clang-20 --version ; ld.lld-20 --version ; dpkg -l | grep -E 'clang-20|libc\\+\\+-20|libc\\+\\+abi-20|lld-20' ; ls -l /usr/lib/llvm-20/include/c++/v1/vector ",
+   "printf '%s\\n' 'build --repo_env=BAZEL_USE_HOST_SYSROOT=True' 'build --repo_env=BAZEL_LLVM_PATH=/usr/lib/llvm-20' 'build --config=clang-local' 'build --jobs=8' > user.bazelrc ; bazel test -c fastbuild --define=wasm=disabled --//bazel:http3=False --test_env=HEAPCHECK= --test_output=errors //test/common/common:base64_test ",
+   "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version ; bazel --version ; go version ; java -version ; python3 --version ; id ; uname -m ",
+   "apt-get update ; apt-get install -y --no-install-recommends autoconf automake autotools-dev curl ca-certificates libtool m4 patch python3-pip python3-venv python3-virtualenv unzip zip xz-utils bzip2 git build-essential ninja-build cmake pkg-config file ; curl -fsSL -o /usr/local/bin/bazel \"https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64\" ; chmod +x /usr/local/bin/bazel ; bazel --version ",
+   "git status --short ; git diff --stat ; git diff --name-only ; free -h ; df -h /testbed /root ",
+   "printf '%s\\n' 'build --config=clang' 'build --jobs=8' > user.bazelrc ; bazel test -c fastbuild --define=wasm=disabled --//bazel:http3=False --test_env=HEAPCHECK= --test_output=errors //test/common/common:base64_test ",
+   "curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh ; chmod +x /tmp/llvm.sh ; /tmp/llvm.sh 20 all ; clang-20 --version ; lld-20 --version ; test -f /usr/lib/llvm-20/include/c++/v1/vector ; echo libcxx-present ",
+   "apt-get install -y --no-install-recommends software-properties-common gnupg wget lsb-release ; /tmp/llvm.sh 20 all ; clang-20 --version ; ld.lld-20 --version ; dpkg -l | grep -E 'clang-20|libc\\+\\+-20|libc\\+\\+abi-20|lld-20' ; ls -l /usr/lib/llvm-20/include/c++/v1/vector ",
+   "printf '%s\\n' 'build --repo_env=BAZEL_USE_HOST_SYSROOT=True' 'build --repo_env=BAZEL_LLVM_PATH=/usr/lib/llvm-20' 'build --config=clang-local' 'build --jobs=8' > user.bazelrc ; bazel test -c fastbuild --define=wasm=disabled --//bazel:http3=False --test_env=HEAPCHECK= --test_output=errors //test/common/common:base64_test ",
+   "bazel test -c fastbuild --define=wasm=disabled --//bazel:http3=False --test_env=HEAPCHECK= --test_output=all --cache_test_results=no //test/common/common:base64_test"
+  ],
+  "organize_layer": [
+   "cd /testbed && git status --short && git diff --name-only && git diff --stat",
+   "cd /testbed && bazel build -c fastbuild --define=wasm=disabled --//bazel:http3=False //test/common/common:base64_test",
+   "cd /testbed && HEAPCHECK= bazel-bin/test/common/common/base64_test --gtest_output=json:gtest-results.json",
+   "cd /testbed && ls -l gtest-results.json && cat gtest-results.json",
+   "cd /testbed && git status --short && git diff --name-only && git diff --stat",
+   "cd /testbed && bazel build -c fastbuild --define=wasm=disabled --//bazel:http3=False //test/common/common:base64_test",
+   "cd /testbed && HEAPCHECK= bazel-bin/test/common/common/base64_test --gtest_output=json:gtest-results.json",
+   "cd /testbed && ls -l gtest-results.json && cat gtest-results.json"
+  ],
+  "switch_commit_layer": [
+   "git config --global user.email example@gmail.com",
+   "git config --global user.name haha",
+   "git fetch origin 9aed67d36497690a0d0dc65305ab823927441b77",
+   "git checkout -b wipcheckoutbackup",
+   "git add -A",
+   "git commit --no-verify -m 'temp'",
+   "git checkout main ; git checkout master",
+   "git reset --hard 9aed67d36497690a0d0dc65305ab823927441b77",
+   "git cherry-pick --no-commit -Xours wipcheckoutbackup",
+   "git reset",
+   "git branch -D wipcheckoutbackup"
+  ]
+ }
+}

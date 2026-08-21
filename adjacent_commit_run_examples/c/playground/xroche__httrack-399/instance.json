@@ -1,0 +1,62 @@
+{
+  "repo": "xroche/httrack",
+  "pull_number": 399,
+  "instance_id": "xroche__httrack-399",
+  "issue_numbers": [
+    218
+  ],
+  "base_commit": "9070b44a70ea4af12098da3cf99393942c416f62",
+  "patch": "diff --git a/src/htsparse.c b/src/htsparse.c\nindex c4517f399..d8f21cf77 100644\n--- a/src/htsparse.c\n+++ b/src/htsparse.c\n@@ -302,6 +302,21 @@ static HTS_INLINE char html_prevc(const char *html, const char *start) {\n   return html > start ? html[-1] : ' ';\n }\n \n+/* True if [s, s+len) is exactly an HTTP method token (XHR.open's first\n+   argument is a method, not a URL: #218). Case-insensitive. */\n+static int is_http_method(const char *s, size_t len) {\n+  static const char *const methods[] = {\"GET\",    \"POST\",  \"PUT\",\n+                                        \"DELETE\", \"HEAD\",  \"OPTIONS\",\n+                                        \"PATCH\",  \"TRACE\", NULL};\n+  int i;\n+\n+  for (i = 0; methods[i] != NULL; i++) {\n+    if (strlen(methods[i]) == len && strfield(s, methods[i]) == (int) len)\n+      return 1;\n+  }\n+  return 0;\n+}\n+\n /* Main parser */\n int htsparse(htsmoduleStruct * str, htsmoduleStructExtended * stre) {\n   char catbuff[CATBUFF_SIZE];\n@@ -1347,6 +1362,8 @@ int htsparse(htsmoduleStruct * str, htsmoduleStructExtended * stre) {\n                     int can_avoid_quotes = 0;\n                     char quotes_replacement = '\\0';\n                     int ensure_not_mime = 0;\n+                    // .open(method,url): reject an HTTP-method first arg (#218)\n+                    int ensure_not_method = 0;\n                     // @import: the quoted token is the URL; a trailing\n                     // media/supports/layer condition is not part of it\n                     int is_import = 0;\n@@ -1377,6 +1394,7 @@ int htsparse(htsmoduleStruct * str, htsmoduleStructExtended * stre) {\n                           expected = '(';       // parenth\u00e8se\n                           expected_end = \"),\";  // fin: virgule ou parenth\u00e8se\n                           ensure_not_mime = 1;  //* ensure the url is not a mime type */\n+                          ensure_not_method = 1; // xhr.open: don't grab method\n                         }\n                       if (!nc)\n                         if ((nc = strfield(html, \".replace\"))) { // window.replace(\"url\")\n@@ -1462,6 +1480,11 @@ int htsparse(htsmoduleStruct * str, htsmoduleStructExtended * stre) {\n                                     i++;\n                                   }\n                                 }\n+                                // XHR.open's \"GET\" etc. is a method, not a URL\n+                                if (a != NULL && ensure_not_method &&\n+                                    is_http_method(a, (size_t) (c - a + 1))) {\n+                                  a = NULL;\n+                                }\n                                 // Check for bogus links (Vasiliy)\n                                 if (a != NULL) {\n                                   const size_t size = c - a + 1;\n",
+  "test_patch": "diff --git a/tests/01_engine-parse.test b/tests/01_engine-parse.test\nindex a396d6ce3..ee7679e8b 100755\n--- a/tests/01_engine-parse.test\n+++ b/tests/01_engine-parse.test\n@@ -231,4 +231,37 @@ out6=\"$tmp/parse-off0-out\"\n crawl \"$site6/main.css\" \"$out6\"\n found \"off0.css\" \"$out6\"\n \n+# XMLHttpRequest.open(method, url) (#218): the first argument is an HTTP method,\n+# not a URL. Without the fix \"GET\" is captured as a link and fetched (the offline\n+# fixture saves a bare file named GET; a live server mangles it to GET.html).\n+# window.open(url) detection must be unaffected.\n+site7=\"$tmp/xhropen\"\n+mkdir -p \"$site7\"\n+gif \"$site7/winopen.gif\"\n+cat >\"$site7/index.html\" <<EOF\n+<html><body><script>\n+var x = new XMLHttpRequest();\n+x.open(\"GET\", \"ajax_info.txt\");\n+var y = new XMLHttpRequest();\n+y.open(\"Post\", \"submit.cgi\");\n+window.open(\"file://$site7/winopen.gif\");\n+</script></body></html>\n+EOF\n+out7=\"$tmp/xhropen-out\"\n+crawl \"$site7/index.html\" \"$out7\"\n+# negative control: without the fix a file named exactly GET is downloaded\n+notfound \"GET\" \"$out7\"\n+# methods are matched case-insensitively (XHR spec normalizes them): a mixed-case\n+# method is rejected too, so a file named Post must not appear either\n+notfound \"Post\" \"$out7\"\n+# regression guard: window.open(url) is still detected, so its absolute URL is\n+# rewritten to a local link. The rewrite only happens if the parser saw it, so\n+# these two assertions fail if .open detection broke (not a trivial --near save).\n+saved7=$(savedhtml \"$out7\")\n+test -n \"$saved7\" || ! echo \"FAIL: saved xhr page not found\" || exit 1\n+grep -Fq 'window.open(\"winopen.gif\")' \"$saved7\" ||\n+    ! echo \"FAIL #218: window.open(url) no longer detected/rewritten\" || exit 1\n+! grep -Fq 'window.open(\"file://' \"$saved7\" ||\n+    ! echo \"FAIL #218: window.open URL left absolute (not rewritten)\" || exit 1\n+\n exit 0\n",
+  "problem_statement": "XMLHttpRequest interpreted as url\nMaybe there's something I'm doing wrong but this for example, happen a lot with [W3Schools](https://www.w3schools.com/), with pages like [Create an XMLHttpRequest Object Example](https://www.w3schools.com/js/tryit.asp?filename=tryjs_ajax_xmlhttp)\r\n\r\nThe original example:\r\n`xhttp.open(\"GET\", \"ajax_info.txt\");`\r\nand then after WinHTTrack download it:\r\n`xhttp.open(\"GET.html\", \"ajax_info.txt\");`\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/xroche/httrack/commit/02c7f4ebf69a7dbb268a515f0be760c44fbbf716"
+  ],
+  "created_at": "2026-06-19T18:07:21Z",
+  "language": "C",
+  "commit_url": "https://github.com/xroche/httrack/tree/9070b44a70ea4af12098da3cf99393942c416f62",
+  "docker_image_layers": {
+    "base_image": "mcr.microsoft.com/devcontainers/cpp:1-ubuntu-24.04",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/xroche/httrack.git; git fetch --depth 1 origin 9070b44a70ea4af12098da3cf99393942c416f62; git reset --hard 9070b44a70ea4af12098da3cf99393942c416f62",
+      "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; printf '\\nAutotools/dependencies:\\n'; autoconf --version | head -1; automake --version | head -1; libtoolize --version | head -1; pkg-config --modversion zlib openssl 2>&1 || true ",
+      "apt-get update ; apt-get install -y --no-install-recommends build-essential autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev ",
+      "rm -rf build ; ./bootstrap ; mkdir -p build ; cd build ; ../configure CC=gcc CFLAGS=\"-O2 -DNDEBUG\" ",
+      "cd /testbed/build ; make -j\"$(nproc)\" ",
+      "cd /testbed ; cat .gitmodules ; git submodule status ; ls -la src/coucal ",
+      "cd /testbed ; git submodule update --init --recursive ; cd build ; make -j\"$(nproc)\" ",
+      "cd /testbed/build ; make check ",
+      "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; printf '\\nAutotools/dependencies:\\n'; autoconf --version | head -1; automake --version | head -1; libtoolize --version | head -1; pkg-config --modversion zlib openssl 2>&1 || true ",
+      "apt-get update ; apt-get install -y --no-install-recommends build-essential autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev ",
+      "rm -rf build ; ./bootstrap ; mkdir -p build ; cd build ; ../configure CC=gcc CFLAGS=\"-O2 -DNDEBUG\" ",
+      "cd /testbed/build ; make -j\"$(nproc)\" ",
+      "cd /testbed ; cat .gitmodules ; git submodule status ; ls -la src/coucal ",
+      "cd /testbed ; git submodule update --init --recursive ; cd build ; make -j\"$(nproc)\" ",
+      "cd /testbed/build ; make check ",
+      "cd /testbed/build ; make check VERBOSE=1"
+    ]
+  },
+  "setup_cmds": [
+    "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; printf '\\nAutotools/dependencies:\\n'; autoconf --version | head -1; automake --version | head -1; libtoolize --version | head -1; pkg-config --modversion zlib openssl 2>&1 || true  (exit code: 0)",
+    "apt-get update ; apt-get install -y --no-install-recommends build-essential autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev  (exit code: 0)",
+    "rm -rf build ; ./bootstrap ; mkdir -p build ; cd build ; ../configure CC=gcc CFLAGS=\"-O2 -DNDEBUG\"  (exit code: 0)",
+    "cd /testbed/build ; make -j\"$(nproc)\"  (exit code: 2)",
+    "cd /testbed ; cat .gitmodules ; git submodule status ; ls -la src/coucal  (exit code: 0)",
+    "cd /testbed ; git submodule update --init --recursive ; cd build ; make -j\"$(nproc)\"  (exit code: 0)",
+    "cd /testbed/build ; make check  (exit code: 0)",
+    "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; printf '\\nAutotools/dependencies:\\n'; autoconf --version | head -1; automake --version | head -1; libtoolize --version | head -1; pkg-config --modversion zlib openssl 2>&1 || true  (exit code: 0)",
+    "apt-get update ; apt-get install -y --no-install-recommends build-essential autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev  (exit code: 0)",
+    "rm -rf build ; ./bootstrap ; mkdir -p build ; cd build ; ../configure CC=gcc CFLAGS=\"-O2 -DNDEBUG\"  (exit code: 0)",
+    "cd /testbed/build ; make -j\"$(nproc)\"  (exit code: 2)",
+    "cd /testbed ; cat .gitmodules ; git submodule status ; ls -la src/coucal  (exit code: 0)",
+    "cd /testbed ; git submodule update --init --recursive ; cd build ; make -j\"$(nproc)\"  (exit code: 0)",
+    "cd /testbed/build ; make check  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cd /testbed/build ; make check VERBOSE=1"
+  ],
+  "docker_image": "repolaunch/c:xroche__httrack-399_linux"
+}

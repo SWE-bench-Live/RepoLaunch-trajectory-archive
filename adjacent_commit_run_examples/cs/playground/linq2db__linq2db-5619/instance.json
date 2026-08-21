@@ -1,0 +1,75 @@
+{
+  "repo": "linq2db/linq2db",
+  "pull_number": 5619,
+  "instance_id": "linq2db__linq2db-5619",
+  "issue_numbers": [
+    5616
+  ],
+  "base_commit": "8567781c4a9ec4aff3e2ed0d966b91b8e6b17031",
+  "patch": "diff --git a/Source/LinqToDB/Internal/Linq/Builder/MethodChainBuilder.cs b/Source/LinqToDB/Internal/Linq/Builder/MethodChainBuilder.cs\nindex 2fbdd30383..1aab28f9b5 100644\n--- a/Source/LinqToDB/Internal/Linq/Builder/MethodChainBuilder.cs\n+++ b/Source/LinqToDB/Internal/Linq/Builder/MethodChainBuilder.cs\n@@ -216,7 +216,7 @@ public override Expression MakeExpression(Expression path, ProjectFlags flags)\n \n \t\t\t\tExpression result = Placeholder;\n \n-\t\t\t\tif (!_returnType.IsNullableOrReferenceType && flags.IsExpression())\n+\t\t\t\tif (!_returnType.IsNullableOrReferenceType && flags.IsExpression() && !flags.IsForSetProjection())\n \t\t\t\t{\n \t\t\t\t\tresult = Expression.Block(\n \t\t\t\t\t\tExpression.Call(null, MemberHelper.MethodOf(() => CheckNullValue(false, null!)),\n",
+  "test_patch": "diff --git a/Tests/Linq/UserTests/Issue5616Tests.cs b/Tests/Linq/UserTests/Issue5616Tests.cs\nnew file mode 100644\nindex 0000000000..7502ee5d03\n--- /dev/null\n+++ b/Tests/Linq/UserTests/Issue5616Tests.cs\n@@ -0,0 +1,101 @@\n+using System;\n+using System.Collections.Generic;\n+using System.Linq;\n+using System.Linq.Expressions;\n+\n+using LinqToDB;\n+using LinqToDB.Mapping;\n+\n+using NUnit.Framework;\n+\n+using Shouldly;\n+\n+namespace Tests.UserTests\n+{\n+\t[TestFixture]\n+\tpublic class Issue5616Tests : TestBase\n+\t{\n+\t\tsealed class Table1\n+\t\t{\n+\t\t\t[PrimaryKey] public int Id { get; set; }\n+\n+\t\t\tpublic static readonly Table1[] Data =\n+\t\t\t{\n+\t\t\t\tnew() { Id = 1 },\n+\t\t\t\tnew() { Id = 2 },\n+\t\t\t\tnew() { Id = 3 },\n+\t\t\t};\n+\t\t}\n+\n+\t\tsealed class Table2\n+\t\t{\n+\t\t\t[PrimaryKey] public int Id { get; set; }\n+\n+\t\t\tpublic static readonly Table2[] Data =\n+\t\t\t{\n+\t\t\t\tnew() { Id = 10 },\n+\t\t\t\tnew() { Id = 20 },\n+\t\t\t\tnew() { Id = 30 },\n+\t\t\t};\n+\t\t}\n+\n+\t\t[Sql.Extension(\"count_if({predicate})\", IsAggregate = true, ServerSideOnly = true)]\n+\t\tpublic static long CountIf<TSource>(IEnumerable<TSource> src, [ExprParameter] Expression<Func<TSource, bool>> predicate)\n+\t\t{\n+\t\t\tthrow new InvalidOperationException();\n+\t\t}\n+\n+\t\t// A built-in aggregate (Average) in one UNION ALL branch, a constant in the other.\n+\t\t// Issue #5616: building the query threw InvalidCastException\n+\t\t// (SqlPathExpression -> SqlPlaceholderExpression) in VisitSqlReaderIsNullExpression.\n+\t\t[Test]\n+\t\tpublic void Average_InUnionAll([IncludeDataSources(TestProvName.AllSQLite)] string context)\n+\t\t{\n+\t\t\tusing var db = GetDataContext(context);\n+\t\t\tusing var t1 = db.CreateLocalTable(Table1.Data);\n+\t\t\tusing var t2 = db.CreateLocalTable(Table2.Data);\n+\n+\t\t\tvar aggregates =\n+\t\t\t\tfrom tr in t2\n+\t\t\t\tgroup tr by tr.Id into g\n+\t\t\t\tselect new\n+\t\t\t\t{\n+\t\t\t\t\tCount = g.Average(x => x.Id, Sql.AggregateModifier.None)\n+\t\t\t\t};\n+\n+\t\t\tvar query = t1\n+\t\t\t\t.Select(_ => new { Count = 0d })\n+\t\t\t\t.UnionAll(aggregates);\n+\n+\t\t\tvar result = query.ToList();\n+\n+\t\t\t// constant branch: one row per Table1 row; aggregate branch: one row per Table2 group (grouped by PK).\n+\t\t\tresult.Count.ShouldBe(Table1.Data.Length + Table2.Data.Length);\n+\t\t\tresult.Count(x => x.Count == 0d).ShouldBe(Table1.Data.Length);\n+\t\t}\n+\n+\t\t// Same shape with the custom IsAggregate extension from the issue. count_if is not executable\n+\t\t// on the default providers, so this asserts the query builds (the reported failure was at build time).\n+\t\t[Test]\n+\t\tpublic void CustomAggregate_InUnionAll([IncludeDataSources(TestProvName.AllSQLite)] string context)\n+\t\t{\n+\t\t\tusing var db = GetDataContext(context);\n+\n+\t\t\tvar aggregates =\n+\t\t\t\tfrom tr in db.GetTable<Table2>()\n+\t\t\t\tgroup tr by tr.Id into g\n+\t\t\t\tselect new\n+\t\t\t\t{\n+\t\t\t\t\tCount = CountIf(g, x => x.Id > 123)\n+\t\t\t\t};\n+\n+\t\t\tvar query = db.GetTable<Table1>()\n+\t\t\t\t.Select(_ => new { Count = 0L })\n+\t\t\t\t.UnionAll(aggregates);\n+\n+\t\t\tvar sql = query.ToSqlQuery().Sql;\n+\n+\t\t\tsql.ShouldContain(\"count_if\");\n+\t\t}\n+\t}\n+}\n",
+  "problem_statement": "Some aggregate functions are failing inside Unions\n### Description\n\nSome aggregate functions like .Average() or custom extension as in example are failing inside Unions\n\n### Reproduction Steps\n\n```\nvar query1 = db.GetTable<Table1>();\n\nvar query2 =\n    from tr in db.GetTable<Table2>()\n    group tr by tr.Id into g\n    select new\n    {\n        Count = DbExtensions.CountIf(g, x => x.Id > 123)\n        // Count = g.Average(x => x.Id, Sql.AggregateModifier.All)\n    };\n\nvar sql = query1\n    .Select(x => new\n    {\n        Count = 0L // or 0d for .Average\n    })\n    .UnionAll(query2)\n    .ToSqlQuery();\n\nConsole.WriteLine(sql.Sql);\n\n\npublic static class DbExtensions\n{\n    [Sql.Extension(\"count_if({predicate})\", IsAggregate = true, ServerSideOnly = true)]\n    public static long CountIf<TSource>(IEnumerable<TSource> src, [ExprParameter] Expression<Func<TSource, bool>> predicate)\n    {\n        throw new InvalidOperationException();\n    }\n}\n```\n\n### Exception details\n\n```\nUnhandled exception. System.InvalidCastException: Unable to cast object of type 'LinqToDB.Internal.Expressions.SqlPathExpression' to type 'LinqToDB.Internal.Expressions.SqlPlaceholderExpression'.\n   at LinqToDB.Internal.Expressions.ExpressionVisitorBase.VisitSqlReaderIsNullExpression(SqlReaderIsNullExpression node) in /_/Source/LinqToDB/Internal/Expressions/ExpressionVisitorBase.cs:line 104\n```\n\n### Regression?\n\nDid work in 5.4.1.9\n\n### Linq To DB version\n\n6.3.0\n\n### .NET version\n\n10.0.300\n\n### Database\n\n_No response_\n\n### Database provider\n\n_No response_\n\n### Operating system\n\n_No response_\n\n### Configuration\n\n_No response_\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/linq2db/linq2db/commit/de8e60e262e9d21515a0a2d177cc4421dbed2396",
+    "https://github.com/linq2db/linq2db/commit/44b21be08c2e54b7c64e33d441ab89e81c7ae0fa",
+    "https://github.com/linq2db/linq2db/commit/28debaf9d5c08a39c1341528e856ba4b3ad87ba2",
+    "https://github.com/linq2db/linq2db/commit/ac7938461ade7b6c63ef1499488165988e634fa5"
+  ],
+  "created_at": "2026-06-15T18:53:13Z",
+  "language": "C#",
+  "commit_url": "https://github.com/linq2db/linq2db/tree/8567781c4a9ec4aff3e2ed0d966b91b8e6b17031",
+  "docker_image_layers": {
+    "base_image": "mcr.microsoft.com/dotnet/sdk:10.0",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/linq2db/linq2db.git; git fetch --depth 1 origin 8567781c4a9ec4aff3e2ed0d966b91b8e6b17031; git reset --hard 8567781c4a9ec4aff3e2ed0d966b91b8e6b17031",
+      "dotnet --version ; cat linq2db.playground.slnf ; find Tests/Tests.Playground -maxdepth 2 -type f -print ",
+      "cat Tests/Tests.Playground/Tests.Playground.csproj; sed -n '1,240p' Tests/Tests.Playground/TestTemplate.cs; cat Tests/linq2db.BasicTestProjects.props ",
+      "cp -n UserDataProviders.json.template UserDataProviders.json; ls -l UserDataProviders.json ",
+      "dotnet restore linq2db.playground.slnf -p:Configuration=Testing ",
+      "dotnet build linq2db.playground.slnf -c Testing --no-restore -v minimal ",
+      "dotnet test Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal ",
+      "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal ",
+      "dotnet restore Tests/Tests.Playground/Tests.Playground.csproj -p:Configuration=Testing -p:NuGetAudit=false ",
+      "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing --no-restore ",
+      "dotnet --version ; cat linq2db.playground.slnf ; find Tests/Tests.Playground -maxdepth 2 -type f -print ",
+      "cat Tests/Tests.Playground/Tests.Playground.csproj; sed -n '1,240p' Tests/Tests.Playground/TestTemplate.cs; cat Tests/linq2db.BasicTestProjects.props ",
+      "cp -n UserDataProviders.json.template UserDataProviders.json; ls -l UserDataProviders.json ",
+      "dotnet restore linq2db.playground.slnf -p:Configuration=Testing ",
+      "dotnet build linq2db.playground.slnf -c Testing --no-restore -v minimal ",
+      "dotnet test Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal ",
+      "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal ",
+      "dotnet restore Tests/Tests.Playground/Tests.Playground.csproj -p:Configuration=Testing -p:NuGetAudit=false ",
+      "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing --no-restore ",
+      ".build/bin/Tests.Playground/Testing/net10.0/linq2db.Tests.Playground --help",
+      ".build/bin/Tests.Playground/Testing/net10.0/linq2db.Tests.Playground --output Detailed --no-progress --no-ansi"
+    ]
+  },
+  "setup_cmds": [
+    "dotnet --version ; cat linq2db.playground.slnf ; find Tests/Tests.Playground -maxdepth 2 -type f -print  (exit code: 0)",
+    "cat Tests/Tests.Playground/Tests.Playground.csproj; sed -n '1,240p' Tests/Tests.Playground/TestTemplate.cs; cat Tests/linq2db.BasicTestProjects.props  (exit code: 0)",
+    "cp -n UserDataProviders.json.template UserDataProviders.json; ls -l UserDataProviders.json  (exit code: 0)",
+    "dotnet restore linq2db.playground.slnf -p:Configuration=Testing  (exit code: 0)",
+    "dotnet build linq2db.playground.slnf -c Testing --no-restore -v minimal  (exit code: 0)",
+    "dotnet test Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal  (exit code: 1)",
+    "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal  (exit code: 1)",
+    "dotnet restore Tests/Tests.Playground/Tests.Playground.csproj -p:Configuration=Testing -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing --no-restore  (exit code: 0)",
+    "dotnet --version ; cat linq2db.playground.slnf ; find Tests/Tests.Playground -maxdepth 2 -type f -print  (exit code: 0)",
+    "cat Tests/Tests.Playground/Tests.Playground.csproj; sed -n '1,240p' Tests/Tests.Playground/TestTemplate.cs; cat Tests/linq2db.BasicTestProjects.props  (exit code: 0)",
+    "cp -n UserDataProviders.json.template UserDataProviders.json; ls -l UserDataProviders.json  (exit code: 0)",
+    "dotnet restore linq2db.playground.slnf -p:Configuration=Testing  (exit code: 0)",
+    "dotnet build linq2db.playground.slnf -c Testing --no-restore -v minimal  (exit code: 0)",
+    "dotnet test Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal  (exit code: 1)",
+    "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing -v minimal  (exit code: 1)",
+    "dotnet restore Tests/Tests.Playground/Tests.Playground.csproj -p:Configuration=Testing -p:NuGetAudit=false  (exit code: 0)",
+    "dotnet test --project Tests/Tests.Playground/Tests.Playground.csproj -c Testing --no-restore  (exit code: 0)"
+  ],
+  "test_cmds": [
+    ".build/bin/Tests.Playground/Testing/net10.0/linq2db.Tests.Playground --help",
+    ".build/bin/Tests.Playground/Testing/net10.0/linq2db.Tests.Playground --output Detailed --no-progress --no-ansi"
+  ],
+  "docker_image": "repolaunch/cs:linq2db__linq2db-5619_linux"
+}

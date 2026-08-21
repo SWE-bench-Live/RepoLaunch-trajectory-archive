@@ -1,0 +1,60 @@
+{
+  "repo": "bytecodealliance/wasmtime",
+  "pull_number": 14001,
+  "instance_id": "bytecodealliance__wasmtime-14001",
+  "issue_numbers": [
+    13963
+  ],
+  "base_commit": "64bfcc5c5c1c86d605009c963a9046da197ea0e3",
+  "patch": "diff --git a/crates/wasmtime/src/runtime/component/component.rs b/crates/wasmtime/src/runtime/component/component.rs\nindex 7430cc716eb2..c07ba7f685bd 100644\n--- a/crates/wasmtime/src/runtime/component/component.rs\n+++ b/crates/wasmtime/src/runtime/component/component.rs\n@@ -12,6 +12,7 @@ use crate::{\n };\n use crate::{FuncType, ValType};\n use alloc::sync::Arc;\n+use core::fmt;\n use core::ops::Range;\n use core::ptr::NonNull;\n #[cfg(feature = \"std\")]\n@@ -100,6 +101,12 @@ struct ComponentInner {\n     checksum: WasmChecksum,\n }\n \n+impl fmt::Debug for Component {\n+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n+        f.debug_struct(\"Component\").finish_non_exhaustive()\n+    }\n+}\n+\n pub(crate) struct AllCallFuncPointers {\n     pub wasm_call: NonNull<VMWasmCallFunction>,\n     pub array_call: NonNull<VMArrayCallFunction>,\ndiff --git a/crates/wast/src/wast.rs b/crates/wast/src/wast.rs\nindex 6cd40bfc0624..6891956c4bd4 100644\n--- a/crates/wast/src/wast.rs\n+++ b/crates/wast/src/wast.rs\n@@ -66,7 +66,7 @@ enum Results {\n     Component(Vec<component::Val>),\n }\n \n-#[derive(Clone)]\n+#[derive(Clone, Debug)]\n enum ModuleKind {\n     Core(Module),\n     #[cfg(feature = \"component-model\")]\n@@ -415,10 +415,7 @@ impl WastContext {\n     /// This will not register the name within `self.modules`.\n     fn module_definition(&mut self, file: &WasmFile) -> Result<ModuleKind> {\n         let name = match file.module_type {\n-            WasmFileType::Text => file\n-                .binary_filename\n-                .as_ref()\n-                .ok_or_else(|| format_err!(\"cannot compile module that isn't a valid binary\"))?,\n+            WasmFileType::Text => file.binary_filename.as_ref().unwrap_or(&file.filename),\n             WasmFileType::Binary => &file.filename,\n         };\n \n@@ -741,6 +738,11 @@ impl WastContext {\n                 file,\n                 text,\n                 line: _,\n+            }\n+            | AssertMalformed {\n+                file,\n+                text,\n+                line: _,\n             } => {\n                 let err = match self.module_definition(&file) {\n                     Ok(_) => bail!(\"expected module to fail to build\"),\n@@ -748,15 +750,6 @@ impl WastContext {\n                 };\n                 self.match_error_message(&text, err)?;\n             }\n-            AssertMalformed {\n-                file,\n-                text: _,\n-                line: _,\n-            } => {\n-                if let Ok(_) = self.module_definition(&file) {\n-                    bail!(\"expected malformed module to fail to instantiate\");\n-                }\n-            }\n             AssertUnlinkable {\n                 file,\n                 text,\n",
+  "test_patch": "diff --git a/tests/misc_testsuite/no-panic-on-invalid.wast b/tests/misc_testsuite/no-panic-on-invalid.wast\nindex 85dd7c4f55ef..1af80ccc1e19 100644\n--- a/tests/misc_testsuite/no-panic-on-invalid.wast\n+++ b/tests/misc_testsuite/no-panic-on-invalid.wast\n@@ -32,4 +32,4 @@\n     ;; pretend this is the actual function end\n     \"\\0b\"             ;; end\n   )\n-  \"hello\")\n+  \"operators remaining after end\")\n",
+  "problem_statement": "assert_malformed succeeds on well-formed components\nFor example, this WAST test succeeds when I think it should fail:\n```wast\n(assert_malformed\n  (component quote\n    \"(import \\\"f\\\" (func $f))\"\n  )\n  \"nothing wrong\")\n```\n",
+  "hints_text": "I'd expect that component to expand to `(component (import \"f\" (func $f)))` which I thought was valid, but which part are you expecting to be invalid?\nYes, agreed that component should be valid, but then I think the overall WAST test should fail (b/c it says `assert_malformed`), and atm it seems to silently succeed.\n\n",
+  "all_hints_text": "I'd expect that component to expand to `(component (import \"f\" (func $f)))` which I thought was valid, but which part are you expecting to be invalid?\nYes, agreed that component should be valid, but then I think the overall WAST test should fail (b/c it says `assert_malformed`), and atm it seems to silently succeed.\nAh, yes! Should be fixed in https://github.com/bytecodealliance/wasmtime/pull/14001\n\nFWIW `assert_malformed` vs `assert_invalid` are more principled in the wasm-tools crate itself, right now in Wasmtime the two aren't separated out. In that sense component-model tests might want to run both `wasm-tools wast` and `wasmtime wast`. Not a great situation per-se though and we should probably just bring `wasmtime wast` up-to-par with `wasm-tools wast`\n\n",
+  "commit_urls": [
+    "https://github.com/bytecodealliance/wasmtime/commit/08e935d1c38a7c7ba5d306c7e08a790582f70e65"
+  ],
+  "created_at": "2026-07-27T20:56:10Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/bytecodealliance/wasmtime/tree/64bfcc5c5c1c86d605009c963a9046da197ea0e3",
+  "docker_image_layers": {
+    "base_image": "rust:1.90",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/bytecodealliance/wasmtime.git; git fetch --depth 1 origin 64bfcc5c5c1c86d605009c963a9046da197ea0e3; git reset --hard 64bfcc5c5c1c86d605009c963a9046da197ea0e3",
+      "rustc --version; cargo --version; rustup toolchain list; find . -maxdepth 1 -name 'rust-toolchain*' -print -exec cat {} \\;; git submodule status ",
+      "rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy ; rustup default 1.95.0 ; rustup target add wasm32-wasip1 wasm32-wasip2 wasm32-unknown-unknown --toolchain 1.95.0 ",
+      "git submodule update --init --recursive ",
+      "apt-get update ; apt-get install -y build-essential clang libclang-dev cmake ninja-build pkg-config libssl-dev python3 git curl ca-certificates ",
+      "cargo build --locked ",
+      "cargo test --locked ",
+      "rustc --version; cargo --version; rustup toolchain list; find . -maxdepth 1 -name 'rust-toolchain*' -print -exec cat {} \\;; git submodule status ",
+      "rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy ; rustup default 1.95.0 ; rustup target add wasm32-wasip1 wasm32-wasip2 wasm32-unknown-unknown --toolchain 1.95.0 ",
+      "git submodule update --init --recursive ",
+      "apt-get update ; apt-get install -y build-essential clang libclang-dev cmake ninja-build pkg-config libssl-dev python3 git curl ca-certificates ",
+      "cargo build --locked ",
+      "cargo test --locked ",
+      "cargo test --locked -- --nocapture",
+      "cargo test --locked --test wast -- --format pretty"
+    ]
+  },
+  "setup_cmds": [
+    "rustc --version; cargo --version; rustup toolchain list; find . -maxdepth 1 -name 'rust-toolchain*' -print -exec cat {} \\;; git submodule status  (exit code: 0)",
+    "rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy ; rustup default 1.95.0 ; rustup target add wasm32-wasip1 wasm32-wasip2 wasm32-unknown-unknown --toolchain 1.95.0  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "apt-get update ; apt-get install -y build-essential clang libclang-dev cmake ninja-build pkg-config libssl-dev python3 git curl ca-certificates  (exit code: 0)",
+    "cargo build --locked  (exit code: 0)",
+    "cargo test --locked  (exit code: 0)",
+    "rustc --version; cargo --version; rustup toolchain list; find . -maxdepth 1 -name 'rust-toolchain*' -print -exec cat {} \\;; git submodule status  (exit code: 0)",
+    "rustup toolchain install 1.95.0 --profile minimal --component rustfmt,clippy ; rustup default 1.95.0 ; rustup target add wasm32-wasip1 wasm32-wasip2 wasm32-unknown-unknown --toolchain 1.95.0  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "apt-get update ; apt-get install -y build-essential clang libclang-dev cmake ninja-build pkg-config libssl-dev python3 git curl ca-certificates  (exit code: 0)",
+    "cargo build --locked  (exit code: 0)",
+    "cargo test --locked  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo test --locked -- --nocapture",
+    "cargo test --locked --test wast -- --format pretty"
+  ],
+  "docker_image": "repolaunch/rust:bytecodealliance__wasmtime-14001_linux"
+}

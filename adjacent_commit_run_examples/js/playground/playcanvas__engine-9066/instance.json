@@ -1,0 +1,42 @@
+{
+  "repo": "playcanvas/engine",
+  "pull_number": 9066,
+  "instance_id": "playcanvas__engine-9066",
+  "issue_numbers": [
+    9062
+  ],
+  "base_commit": "5159377046e04d99da4edf3435a42ab636e31ac8",
+  "patch": "diff --git a/src/extras/exporters/gltf-exporter.js b/src/extras/exporters/gltf-exporter.js\nindex 56dcf36914f..218b66be619 100644\n--- a/src/extras/exporters/gltf-exporter.js\n+++ b/src/extras/exporters/gltf-exporter.js\n@@ -665,6 +665,9 @@ class GltfExporter extends CoreExporter {\n \n                 this.attachTexture(resources, mat, material, 'normalTexture', 'normalMap', json);\n                 this.attachTexture(resources, mat, material, 'occlusionTexture', 'aoMap', json);\n+                if (material.occlusionTexture && mat.aoIntensity !== 1) {\n+                    material.occlusionTexture.strength = mat.aoIntensity;\n+                }\n                 this.attachTexture(resources, mat, material, 'emissiveTexture', 'emissiveMap', json);\n \n                 return material;\ndiff --git a/src/framework/parsers/glb-parser.js b/src/framework/parsers/glb-parser.js\nindex c9572545367..bf882225664 100644\n--- a/src/framework/parsers/glb-parser.js\n+++ b/src/framework/parsers/glb-parser.js\n@@ -588,7 +588,10 @@ const createMaterial = (gltfMaterial, textures) => {\n         material.aoMapChannel = 'r';\n \n         extractTextureTransform(occlusionTexture, material, ['ao']);\n-        // TODO: support 'strength'\n+\n+        if (occlusionTexture.hasOwnProperty('strength')) {\n+            material.aoIntensity = occlusionTexture.strength;\n+        }\n     }\n \n     if (gltfMaterial.hasOwnProperty('emissiveFactor')) {\n",
+  "test_patch": "diff --git a/test/extras/exporters/gltf-exporter.test.mjs b/test/extras/exporters/gltf-exporter.test.mjs\nnew file mode 100644\nindex 00000000000..b815ab1413c\n--- /dev/null\n+++ b/test/extras/exporters/gltf-exporter.test.mjs\n@@ -0,0 +1,42 @@\n+import { expect } from 'chai';\n+\n+import { GltfExporter } from '../../../src/extras/exporters/gltf-exporter.js';\n+import { StandardMaterial } from '../../../src/scene/materials/standard-material.js';\n+\n+describe('GltfExporter', function () {\n+\n+    const exportMaterial = (aoIntensity) => {\n+        const texture = { name: 'ao' };\n+        const material = new StandardMaterial();\n+        material.aoMap = texture;\n+        material.aoIntensity = aoIntensity;\n+\n+        const json = {};\n+        const resources = {\n+            materials: [material],\n+            textures: [texture]\n+        };\n+\n+        new GltfExporter().writeMaterials(resources, json);\n+\n+        return json.materials[0];\n+    };\n+\n+    it('exports occlusion texture strength', function () {\n+        const material = exportMaterial(0.5);\n+\n+        expect(material.occlusionTexture.strength).to.equal(0.5);\n+    });\n+\n+    it('exports zero occlusion texture strength', function () {\n+        const material = exportMaterial(0);\n+\n+        expect(material.occlusionTexture.strength).to.equal(0);\n+    });\n+\n+    it('omits the default occlusion texture strength', function () {\n+        const material = exportMaterial(1);\n+\n+        expect(material.occlusionTexture).not.to.have.property('strength');\n+    });\n+});\ndiff --git a/test/framework/parsers/glb-parser.test.mjs b/test/framework/parsers/glb-parser.test.mjs\nnew file mode 100644\nindex 00000000000..fa9ab825de5\n--- /dev/null\n+++ b/test/framework/parsers/glb-parser.test.mjs\n@@ -0,0 +1,59 @@\n+import { expect } from 'chai';\n+\n+import { GlbParser } from '../../../src/framework/parsers/glb-parser.js';\n+import { createApp } from '../../app.mjs';\n+import { jsdomSetup, jsdomTeardown } from '../../jsdom.mjs';\n+\n+describe('GlbParser', function () {\n+\n+    let app;\n+\n+    beforeEach(function () {\n+        jsdomSetup();\n+        app = createApp();\n+    });\n+\n+    afterEach(function () {\n+        app?.destroy();\n+        app = null;\n+        jsdomTeardown();\n+    });\n+\n+    const parseMaterial = (occlusionTexture) => {\n+        const gltf = {\n+            asset: { version: '2.0' },\n+            scenes: [],\n+            nodes: [],\n+            materials: [{ occlusionTexture }]\n+        };\n+        const data = new TextEncoder().encode(JSON.stringify(gltf));\n+\n+        return new Promise((resolve, reject) => {\n+            GlbParser.parse('material.gltf', '', data, app.graphicsDevice, app.assets, {}, (err, result) => {\n+                if (err) {\n+                    reject(err);\n+                } else {\n+                    resolve(result.materials[0]);\n+                }\n+            });\n+        });\n+    };\n+\n+    it('imports occlusion texture strength', async function () {\n+        const material = await parseMaterial({ index: 0, strength: 0.5 });\n+\n+        expect(material.aoIntensity).to.equal(0.5);\n+    });\n+\n+    it('imports zero occlusion texture strength', async function () {\n+        const material = await parseMaterial({ index: 0, strength: 0 });\n+\n+        expect(material.aoIntensity).to.equal(0);\n+    });\n+\n+    it('uses the default occlusion texture strength when omitted', async function () {\n+        const material = await parseMaterial({ index: 0 });\n+\n+        expect(material.aoIntensity).to.equal(1);\n+    });\n+});\n",
+  "problem_statement": "glTF occlusion strength not supported\nThis is the relevant text from the specification:\n\n> occlusion : The occlusion texture; it indicates areas that receive less indirect lighting from ambient sources. Direct lighting is not affected. The red channel of the texture encodes the occlusion value, where 0.0 means fully-occluded area (no indirect lighting) and 1.0 means not occluded area (full indirect lighting). Other texture channels (if present) do not affect occlusion.\n> \n> The texture binding for occlusion maps MAY optionally contain a scalar strength value that is used to reduce the occlusion effect. When present, it affects the occlusion value as 1.0 + strength * (occlusionTexture - 1.0).\n\nIt seems Playcanvas ignores the strength constant when rendering the resource.\n\nHere I attach an image of a resource with a 0.5 strength being visualized in the major web engines.\n\n<img width=\"2204\" height=\"981\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/debeb7d2-2ac6-40b6-a422-02c392c7b8a3\" />\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/playcanvas/engine/commit/873eb81ce6381cb5b64c4292054492ea6e4bd429"
+  ],
+  "created_at": "2026-07-17T10:37:44Z",
+  "language": "JavaScript",
+  "commit_url": "https://github.com/playcanvas/engine/tree/5159377046e04d99da4edf3435a42ab636e31ac8",
+  "docker_image_layers": {
+    "base_image": "node:24",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/playcanvas/engine.git; git fetch --depth 1 origin 5159377046e04d99da4edf3435a42ab636e31ac8; git reset --hard 5159377046e04d99da4edf3435a42ab636e31ac8",
+      "npm ci --progress=false --no-fund ",
+      "npm test ",
+      "npm ci --progress=false --no-fund ",
+      "npm test ",
+      "npm test -- --reporter spec"
+    ]
+  },
+  "setup_cmds": [
+    "npm ci --progress=false --no-fund  (exit code: 0)",
+    "npm test  (exit code: 0)",
+    "npm ci --progress=false --no-fund  (exit code: 0)",
+    "npm test  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "npm test -- --reporter spec"
+  ],
+  "docker_image": "repolaunch/js:playcanvas__engine-9066_linux"
+}

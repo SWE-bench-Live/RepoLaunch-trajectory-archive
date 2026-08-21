@@ -1,0 +1,70 @@
+{
+  "repo": "JasperFx/marten",
+  "pull_number": 4970,
+  "instance_id": "JasperFx__marten-4970",
+  "issue_numbers": [
+    4966
+  ],
+  "base_commit": "c402cb46a21c0882e31312a61e74829925d571e9",
+  "patch": "diff --git a/Directory.Packages.props b/Directory.Packages.props\nindex 27b32f0d05..b69b2c65ce 100644\n--- a/Directory.Packages.props\n+++ b/Directory.Packages.props\n@@ -101,14 +101,18 @@\n          failures are loud, dead consumers throw from Post), and teardown catch clauses classify via\n          CancellationExceptions.IsCancellationLike instead of discarding every exception type while a\n          shard CTS is cancelled; jasperfx#505 \u2014 source-gen evolver two-statement fix for the\n-         GetUninitializedObject cast (rides in the bundled JasperFx.Events.SourceGenerator analyzer). -->\n-    <PackageVersion Include=\"JasperFx\" Version=\"2.28.0\" />\n-    <PackageVersion Include=\"JasperFx.Events\" Version=\"2.28.0\" />\n-    <PackageVersion Include=\"JasperFx.Events.SourceGenerator\" Version=\"2.28.0\">\n+         GetUninitializedObject cast (rides in the bundled JasperFx.Events.SourceGenerator analyzer).\n+         JasperFx 2.28.1: jasperfx#528 (marten#4966) \u2014 natural-key discovery now builds an event\n+         mapping for a two-arg static evolve method (static TDoc Apply(TEvent e, TDoc current)), so a\n+         natural key that CHANGES via an update event is written to mt_natural_key_X on live append and\n+         rebuild; previously only the create event's key was ever recorded. -->\n+    <PackageVersion Include=\"JasperFx\" Version=\"2.28.1\" />\n+    <PackageVersion Include=\"JasperFx.Events\" Version=\"2.28.1\" />\n+    <PackageVersion Include=\"JasperFx.Events.SourceGenerator\" Version=\"2.28.1\">\n       <PrivateAssets>all</PrivateAssets>\n       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>\n     </PackageVersion>\n-    <PackageVersion Include=\"JasperFx.SourceGenerator\" Version=\"2.28.0\" />\n+    <PackageVersion Include=\"JasperFx.SourceGenerator\" Version=\"2.28.1\" />\n     <PackageVersion Include=\"Jil\" Version=\"3.0.0-alpha2\" />\n     <PackageVersion Include=\"Lamar\" Version=\"7.1.1\" />\n     <PackageVersion Include=\"Lamar.Microsoft.DependencyInjection\" Version=\"15.0.0\" />\n",
+  "test_patch": "diff --git a/src/DaemonTests/Aggregations/rebuild_projection_with_natural_key_update.cs b/src/DaemonTests/Aggregations/rebuild_projection_with_natural_key_update.cs\nnew file mode 100644\nindex 0000000000..59da28a985\n--- /dev/null\n+++ b/src/DaemonTests/Aggregations/rebuild_projection_with_natural_key_update.cs\n@@ -0,0 +1,101 @@\n+using System;\n+using System.Threading;\n+using System.Threading.Tasks;\n+using DaemonTests.TestingSupport;\n+using JasperFx.Events;\n+using JasperFx.Events.Aggregation;\n+using Marten;\n+using Marten.Testing.Harness;\n+using Shouldly;\n+using Xunit;\n+using Xunit.Abstractions;\n+\n+namespace DaemonTests.Aggregations;\n+\n+public class Bug_4966_natural_key_update_on_projection_rebuild: DaemonContext\n+{\n+    private const string schemaName = \"rebuild_natural_key_update\";\n+\n+    public Bug_4966_natural_key_update_on_projection_rebuild(ITestOutputHelper output) : base(output)\n+    {\n+    }\n+\n+    public sealed record ProductCode(string Value);\n+\n+    public sealed record ProductRegistered(Guid ProductId, string ProductCode);\n+\n+    public sealed record ProductCodeChanged(Guid ProductId, string NewProductCode);\n+\n+    public sealed record Product\n+    {\n+        public Guid Id { get; set; }\n+\n+        [NaturalKey]\n+        public ProductCode Code { get; set; }\n+\n+        [NaturalKeySource]\n+        public static Product Create(ProductRegistered e)\n+        {\n+            return new Product\n+            {\n+                Id = e.ProductId,\n+                Code = new ProductCode(e.ProductCode)\n+            };\n+        }\n+\n+        [NaturalKeySource]\n+        public static Product Apply(ProductCodeChanged e, Product product)\n+        {\n+            return product with\n+            {\n+                Code = new ProductCode(e.NewProductCode)\n+            };\n+        }\n+    }\n+\n+    private static void ConfigureStore(StoreOptions opts)\n+    {\n+        opts.Connection(ConnectionSource.ConnectionString);\n+        opts.DatabaseSchemaName = schemaName;\n+        opts.Events.StreamIdentity = StreamIdentity.AsGuid;\n+        opts.Events.AppendMode = EventAppendMode.Quick;\n+        opts.Projections.Snapshot<Product>(SnapshotLifecycle.Async);\n+    }\n+\n+\n+    [Fact]\n+    public async Task bug_4966_natural_key_should_be_updated_during_rebuild()\n+    {\n+        StoreOptions(ConfigureStore);\n+        await theStore.Storage.ApplyAllConfiguredChangesToDatabaseAsync();\n+        await theStore.Advanced.Clean.DeleteAllDocumentsAsync();\n+        await theStore.Advanced.Clean.DeleteAllEventDataAsync();\n+\n+        var streamId = Guid.NewGuid();\n+        var originalCode = \"PROD-001\";\n+        var newCode = \"PROD-999\";\n+\n+        await using (var session = theStore.LightweightSession())\n+        {\n+            session.Events.StartStream<Product>(streamId, new ProductRegistered(streamId, originalCode));\n+            await session.SaveChangesAsync();\n+        }\n+\n+\n+        await using (var session = theStore.LightweightSession())\n+        {\n+            session.Events.Append(streamId, new ProductCodeChanged(streamId, newCode));\n+            await session.SaveChangesAsync();\n+        }\n+\n+        var daemon = await theStore.BuildProjectionDaemonAsync();\n+        await daemon.RebuildProjectionAsync<Product>(CancellationToken.None);\n+\n+        await using (var session = theStore.LightweightSession())\n+        {\n+            var product = await session.Events.FetchLatest<Product, ProductCode>(new ProductCode(newCode));\n+            product.ShouldNotBeNull();\n+            product.Code.Value.ShouldBe(newCode);\n+        }\n+    }\n+}\n",
+  "problem_statement": "Natural key is not updated when rebuilding a projection\nScenario:\n\nA snapshot with natural key. During projection rebuild, the natural key is set at first, but not updated when the key changes.\n\nRepro test - https://github.com/JasperFx/marten/pull/4967\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/JasperFx/marten/commit/ce77b1aac00c0c53a8b6e496ec76796aa405830a"
+  ],
+  "created_at": "2026-07-17T20:37:15Z",
+  "language": "C#",
+  "commit_url": "https://github.com/JasperFx/marten/tree/c402cb46a21c0882e31312a61e74829925d571e9",
+  "docker_image_layers": {
+    "base_image": "mcr.microsoft.com/dotnet/sdk:10.0",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/JasperFx/marten.git; git fetch --depth 1 origin c402cb46a21c0882e31312a61e74829925d571e9; git reset --hard c402cb46a21c0882e31312a61e74829925d571e9",
+      "dotnet --info; printf '\\nDocker: '; command -v docker || true; printf '\\nPostgreSQL tools: '; command -v psql || true; command -v pg_isready || true ",
+      "apt-get update ; apt-cache policy dotnet-sdk-9.0 postgresql | sed -n '1,80p' ",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib ",
+      "pg_ctlcluster 16 main start; runuser -u postgres -- psql -c \"ALTER USER postgres WITH PASSWORD 'postgres';\"; runuser -u postgres -- psql -tc \"SELECT 1 FROM pg_database WHERE datname='marten_testing'\" | grep -q 1 || runuser -u postgres -- createdb marten_testing; pg_isready -h localhost -p 5432; PGPASSWORD=postgres psql -h localhost -U postgres -d marten_testing -c \"select version();\" ",
+      "dotnet restore src/Marten.slnx --verbosity minimal ",
+      "dotnet build src/Marten.slnx --configuration Release --framework net10.0 --no-restore --verbosity minimal ",
+      "cat src/Marten.SourceGenerator/Marten.SourceGenerator.csproj; grep -n -A35 -B10 'Target Compile' build/build.cs ",
+      "dotnet build src/Marten.slnx --configuration Release --no-restore --verbosity minimal ",
+      "DISABLE_TEST_PARALLELIZATION=true DEFAULT_SERIALIZER=SystemTextJson dotnet test src/CoreTests/CoreTests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"console;verbosity=minimal\" ",
+      "dotnet --info; printf '\\nDocker: '; command -v docker || true; printf '\\nPostgreSQL tools: '; command -v psql || true; command -v pg_isready || true ",
+      "apt-get update ; apt-cache policy dotnet-sdk-9.0 postgresql | sed -n '1,80p' ",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib ",
+      "pg_ctlcluster 16 main start; runuser -u postgres -- psql -c \"ALTER USER postgres WITH PASSWORD 'postgres';\"; runuser -u postgres -- psql -tc \"SELECT 1 FROM pg_database WHERE datname='marten_testing'\" | grep -q 1 || runuser -u postgres -- createdb marten_testing; pg_isready -h localhost -p 5432; PGPASSWORD=postgres psql -h localhost -U postgres -d marten_testing -c \"select version();\" ",
+      "dotnet restore src/Marten.slnx --verbosity minimal ",
+      "dotnet build src/Marten.slnx --configuration Release --framework net10.0 --no-restore --verbosity minimal ",
+      "cat src/Marten.SourceGenerator/Marten.SourceGenerator.csproj; grep -n -A35 -B10 'Target Compile' build/build.cs ",
+      "dotnet build src/Marten.slnx --configuration Release --no-restore --verbosity minimal ",
+      "DISABLE_TEST_PARALLELIZATION=true DEFAULT_SERIALIZER=SystemTextJson dotnet test src/CoreTests/CoreTests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"console;verbosity=minimal\" ",
+      "DISABLE_TEST_PARALLELIZATION=true DEFAULT_SERIALIZER=SystemTextJson dotnet test src/CoreTests/CoreTests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"console;verbosity=detailed\""
+    ]
+  },
+  "setup_cmds": [
+    "dotnet --info; printf '\\nDocker: '; command -v docker || true; printf '\\nPostgreSQL tools: '; command -v psql || true; command -v pg_isready || true  (exit code: 0)",
+    "apt-get update ; apt-cache policy dotnet-sdk-9.0 postgresql | sed -n '1,80p'  (exit code: 0)",
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib  (exit code: 0)",
+    "pg_ctlcluster 16 main start; runuser -u postgres -- psql -c \"ALTER USER postgres WITH PASSWORD 'postgres';\"; runuser -u postgres -- psql -tc \"SELECT 1 FROM pg_database WHERE datname='marten_testing'\" | grep -q 1 || runuser -u postgres -- createdb marten_testing; pg_isready -h localhost -p 5432; PGPASSWORD=postgres psql -h localhost -U postgres -d marten_testing -c \"select version();\"  (exit code: 0)",
+    "dotnet restore src/Marten.slnx --verbosity minimal  (exit code: 0)",
+    "dotnet build src/Marten.slnx --configuration Release --framework net10.0 --no-restore --verbosity minimal  (exit code: 1)",
+    "cat src/Marten.SourceGenerator/Marten.SourceGenerator.csproj; grep -n -A35 -B10 'Target Compile' build/build.cs  (exit code: 0)",
+    "dotnet build src/Marten.slnx --configuration Release --no-restore --verbosity minimal  (exit code: 0)",
+    "DISABLE_TEST_PARALLELIZATION=true DEFAULT_SERIALIZER=SystemTextJson dotnet test src/CoreTests/CoreTests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"console;verbosity=minimal\"  (exit code: 0)",
+    "dotnet --info; printf '\\nDocker: '; command -v docker || true; printf '\\nPostgreSQL tools: '; command -v psql || true; command -v pg_isready || true  (exit code: 0)",
+    "apt-get update ; apt-cache policy dotnet-sdk-9.0 postgresql | sed -n '1,80p'  (exit code: 0)",
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib  (exit code: 0)",
+    "pg_ctlcluster 16 main start; runuser -u postgres -- psql -c \"ALTER USER postgres WITH PASSWORD 'postgres';\"; runuser -u postgres -- psql -tc \"SELECT 1 FROM pg_database WHERE datname='marten_testing'\" | grep -q 1 || runuser -u postgres -- createdb marten_testing; pg_isready -h localhost -p 5432; PGPASSWORD=postgres psql -h localhost -U postgres -d marten_testing -c \"select version();\"  (exit code: 0)",
+    "dotnet restore src/Marten.slnx --verbosity minimal  (exit code: 0)",
+    "dotnet build src/Marten.slnx --configuration Release --framework net10.0 --no-restore --verbosity minimal  (exit code: 1)",
+    "cat src/Marten.SourceGenerator/Marten.SourceGenerator.csproj; grep -n -A35 -B10 'Target Compile' build/build.cs  (exit code: 0)",
+    "dotnet build src/Marten.slnx --configuration Release --no-restore --verbosity minimal  (exit code: 0)",
+    "DISABLE_TEST_PARALLELIZATION=true DEFAULT_SERIALIZER=SystemTextJson dotnet test src/CoreTests/CoreTests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"console;verbosity=minimal\"  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "DISABLE_TEST_PARALLELIZATION=true DEFAULT_SERIALIZER=SystemTextJson dotnet test src/CoreTests/CoreTests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"console;verbosity=detailed\""
+  ],
+  "docker_image": "repolaunch/cs:JasperFx__marten-4970_linux"
+}

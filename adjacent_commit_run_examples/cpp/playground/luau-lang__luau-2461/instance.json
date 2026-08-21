@@ -1,0 +1,66 @@
+{
+  "repo": "luau-lang/luau",
+  "pull_number": 2461,
+  "instance_id": "luau-lang__luau-2461",
+  "issue_numbers": [
+    2460
+  ],
+  "base_commit": "da76666921c332a67b0d73651c7ac5e61f9afb6a",
+  "patch": "diff --git a/Ast/src/Parser.cpp b/Ast/src/Parser.cpp\nindex 0ed188166..1a45f06d3 100644\n--- a/Ast/src/Parser.cpp\n+++ b/Ast/src/Parser.cpp\n@@ -33,6 +33,7 @@ LUAU_FASTFLAGVARIABLE(LuauTableEntriesDontNeedToMatchIndent)\n LUAU_FASTFLAGVARIABLE(LuauCstAttr)\n LUAU_FASTFLAGVARIABLE(LuauStoreConstKeywordBegin)\n LUAU_FASTFLAGVARIABLE(LuauTrackPrefixLocal)\n+LUAU_FASTFLAGVARIABLE(LuauNoDuplicateBinaryPrefix)\n \n // Clip with DebugLuauReportReturnTypeVariadicWithTypeSuffix\n bool luau_telemetry_parsed_return_type_variadic_with_type_suffix = false;\n@@ -3905,6 +3906,14 @@ static ConstantNumberParseResult parseInteger(double& result, const char* data,\n {\n     LUAU_ASSERT(base == 2 || base == 16);\n \n+    if (FFlag::LuauNoDuplicateBinaryPrefix)\n+    {\n+        // Some libc implementations accept an optional 0b prefix for base-2 parsing.\n+        // Binary literals have already had their leading 0b stripped by us.\n+        if (base == 2 && data[0] == '0' && (data[1] == 'b' || data[1] == 'B'))\n+            return ConstantNumberParseResult::Malformed;\n+    }\n+\n     char* end = nullptr;\n     unsigned long long value = strtoull(data, &end, base);\n \n@@ -3956,6 +3965,12 @@ static ConstantNumberParseResult parseInteger64(int64_t& result, const char* dat\n     }\n     else\n     {\n+        if (FFlag::LuauNoDuplicateBinaryPrefix)\n+        {\n+            if (base == 2 && data[0] == '0' && (data[1] == 'b' || data[1] == 'B'))\n+                return ConstantNumberParseResult::Malformed;\n+        }\n+\n         // hex and binary literals represent bit patterns covering the full uint64 range\n         unsigned long long u = strtoull(data, &end, base);\n \n",
+  "test_patch": "diff --git a/tests/Parser.test.cpp b/tests/Parser.test.cpp\nindex c2e52c6fc..ef249b9a0 100644\n--- a/tests/Parser.test.cpp\n+++ b/tests/Parser.test.cpp\n@@ -24,6 +24,8 @@ LUAU_FASTFLAG(DebugLuauUserDefinedClasses)\n LUAU_FASTFLAG(LuauAllowGlobalDeclarationToBeCalledClass)\n LUAU_FASTFLAG(LuauTrackPrefixLocal)\n \n+LUAU_FASTFLAG(LuauNoDuplicateBinaryPrefix)\n+\n // Clip with DebugLuauReportReturnTypeVariadicWithTypeSuffix\n extern bool luau_telemetry_parsed_return_type_variadic_with_type_suffix;\n \n@@ -885,7 +887,10 @@ TEST_CASE_FIXTURE(Fixture, \"parse_numbers_binary\")\n \n TEST_CASE_FIXTURE(Fixture, \"parse_numbers_error\")\n {\n+    ScopedFastFlag sff{FFlag::LuauNoDuplicateBinaryPrefix, true};\n+\n     matchParseError(\"return 0b123\", \"Malformed number\");\n+    matchParseError(\"return 0b0b1\", \"Malformed number\");\n     matchParseError(\"return 123x\", \"Malformed number\");\n     matchParseError(\"return 0xg\", \"Malformed number\");\n     matchParseError(\"return 0x0x123\", \"Malformed number\");\n@@ -897,6 +902,7 @@ TEST_CASE_FIXTURE(Fixture, \"parse_numbers_error\")\n         matchParseError(\"return 0xABCMi\", \"Malformed integer\");\n         matchParseError(\"return 0b250i\", \"Malformed integer\");\n         matchParseError(\"return 0bbbbi\", \"Malformed integer\");\n+        matchParseError(\"return 0b0b1i\", \"Malformed integer\");\n         matchParseError(\"return 123ii\", \"Malformed integer\");\n         matchParseError(\"return 0xABii\", \"Malformed integer\");\n \n",
+  "problem_statement": "Parser: duplicated binary prefixes are accepted on some libc implementations\nOn libc implementations that accept an optional `0b`/`0B` prefix when converting base-2 integers, Luau currently accepts malformed binary literals with a duplicated prefix instead of rejecting them.\n\nFor example, the following forms are accepted on affected systems:\n\n    return 0b0b0   --> 0\n    return 0b0B1   --> 1\n    return 0B0b10i --> 2\n\nThese should all be reported as malformed.\n\nThe relevant parser path strips the leading `0b`/`0B` from binary literals before calling `strtoull(..., 2)`. On libcs that implement C23-style binary-prefix handling for base-2 conversion, the remaining text may itself begin with `0b`/`0B` and still be accepted. As a result, malformed literals such as `0b0b0` are treated as valid input.\n\nThis does not affect the analogous hexadecimal forms:\n\n    return 0x0x0\n    return 0x0X1\n\nThose continue to fail as malformed, because the hex path hands the entire literal (prefix included) to a single `strtoull` call. The `0x`/`0X` prefix is only ever recognized once, right at the start, a second `0x` further into the string is just parsed as ordinary hex digits, and `x` isn't a valid one, so the existing trailing-data check catches it regardless of libc.\n\nUnderscore stripping widens the surface slightly. Because Luau removes internal underscores before numeric conversion, forms such as\n\n    return 0_b0b0\n    return 0b_0b0\n    return 0_b0b0i\n\nalso reach the same conversion path and are accepted on affected libcs.\n\nI reproduced this locally on Arch Linux with glibc 2.43, but all binaries linked against glibc 2.38+ should be affected. I saw the same behavior with both the distro package (`pacman -S luau`) and a self-built copy from the latest commit on master, so it isn't specific to the packaged build. I haven't tested on Windows, MSVC's UCRT doesn't appear to implement the C23 binary-prefix behavior yet, so this is likely Linux/glibc-specific, but I can't confirm that without testing it directly.\n\nReferences\n\n* https://man7.org/linux/man-pages/man3/strtoul.3.html - \u201c ... *The string may begin with an arbitrary amount of white space (as determined by [isspace(3)](https://man7.org/linux/man-pages/man3/isspace.3.html)) followed by a single optional '+' or '-' sign. If base is zero or 16, the string may then include a \"0x\" or \"0X\" prefix, and the number will be read in base 16; **if base is zero or 2, the string may then include a \"0b\" or \"0B\" prefix*** ... \u201d\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/luau-lang/luau/commit/11479f213770dc8fc4af3215ed089e7517989c82",
+    "https://github.com/luau-lang/luau/commit/f223afdbd177b54b664742ff52bee30ba517069d",
+    "https://github.com/luau-lang/luau/commit/e3d7f27e9fed5afb0a4753fad54737bb26c56f60"
+  ],
+  "created_at": "2026-06-24T06:15:41Z",
+  "language": "C++",
+  "commit_url": "https://github.com/luau-lang/luau/tree/da76666921c332a67b0d73651c7ac5e61f9afb6a",
+  "docker_image_layers": {
+    "base_image": "mcr.microsoft.com/devcontainers/cpp:1-ubuntu-22.04",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/luau-lang/luau.git; git fetch --depth 1 origin da76666921c332a67b0d73651c7ac5e61f9afb6a; git reset --hard da76666921c332a67b0d73651c7ac5e61f9afb6a",
+      "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version ",
+      "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc -DLUAU_BUILD_TESTS=ON ",
+      "cmake --build build --parallel ",
+      "cmake --build build --parallel 2 ",
+      "ctest --test-dir build --output-on-failure ",
+      "./build/Luau.UnitTest ; ./build/Luau.Conformance ; ./build/Luau.CLI.Test ",
+      "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version ",
+      "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc -DLUAU_BUILD_TESTS=ON ",
+      "cmake --build build --parallel ",
+      "cmake --build build --parallel 2 ",
+      "ctest --test-dir build --output-on-failure ",
+      "./build/Luau.UnitTest ; ./build/Luau.Conformance ; ./build/Luau.CLI.Test ",
+      "./build/Luau.UnitTest --help",
+      "./build/Luau.UnitTest --list-reporters",
+      "./build/Luau.UnitTest --reporters=junit --no-colors=true; printf '\\nLuau.UnitTest exit status: %s\\n' \"$?\"; ./build/Luau.Conformance --reporters=junit --no-colors=true; printf '\\nLuau.Conformance exit status: %s\\n' \"$?\"; ./build/Luau.CLI.Test --reporters=junit --no-colors=true; printf '\\nLuau.CLI.Test exit status: %s\\n' \"$?\"",
+      "for t in ./build/Luau.UnitTest ./build/Luau.Conformance ./build/Luau.CLI.Test; do echo \"=== $t ===\"; \"$t\" --reporters=junit --no-colors=true | awk '/<testsuite |<failure|<error/{print}'; rc=${PIPESTATUS[0]}; echo \"$t exit status: $rc\"; done"
+    ]
+  },
+  "setup_cmds": [
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc -DLUAU_BUILD_TESTS=ON  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 2  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "./build/Luau.UnitTest ; ./build/Luau.Conformance ; ./build/Luau.CLI.Test  (exit code: 0)",
+    "cl ; gcc --version ; g++ --version ; clang --version ; cmake --version ; ctest --version ; ninja --version  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc -DLUAU_BUILD_TESTS=ON  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 2  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "./build/Luau.UnitTest ; ./build/Luau.Conformance ; ./build/Luau.CLI.Test  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "./build/Luau.UnitTest --help",
+    "./build/Luau.UnitTest --list-reporters",
+    "./build/Luau.UnitTest --reporters=junit --no-colors=true; printf '\\nLuau.UnitTest exit status: %s\\n' \"$?\"; ./build/Luau.Conformance --reporters=junit --no-colors=true; printf '\\nLuau.Conformance exit status: %s\\n' \"$?\"; ./build/Luau.CLI.Test --reporters=junit --no-colors=true; printf '\\nLuau.CLI.Test exit status: %s\\n' \"$?\"",
+    "for t in ./build/Luau.UnitTest ./build/Luau.Conformance ./build/Luau.CLI.Test; do echo \"=== $t ===\"; \"$t\" --reporters=junit --no-colors=true | awk '/<testsuite |<failure|<error/{print}'; rc=${PIPESTATUS[0]}; echo \"$t exit status: $rc\"; done"
+  ],
+  "docker_image": "repolaunch/cpp:luau-lang__luau-2461_linux"
+}

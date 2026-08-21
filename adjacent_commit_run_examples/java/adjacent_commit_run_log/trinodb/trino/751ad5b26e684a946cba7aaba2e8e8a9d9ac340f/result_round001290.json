@@ -1,0 +1,84 @@
+{
+ "repo": "trinodb/trino",
+ "base_commit": "751ad5b26e684a946cba7aaba2e8e8a9d9ac340f",
+ "rebuild_cmds": [
+  "JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui package -DskipTests -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress"
+ ],
+ "test_cmds": [
+  "cd /testbed ; rm -rf core/trino-web-ui/target/surefire-reports ; JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui test -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress"
+ ],
+ "print_cmds": [
+  "cd /testbed ; for report in $(find core/trino-web-ui/target/surefire-reports -maxdepth 1 -type f -name 'TEST-*.xml' | sort); do cat \"$report\"; done"
+ ],
+ "log_parser": "def parser(log: str) -> dict[str, str]:\n    import re\n    import xml.etree.ElementTree as ET\n\n    results: dict[str, str] = {}\n    rank = {\"pass\": 0, \"skip\": 1, \"fail\": 2}\n\n    def local_name(tag: object) -> str:\n        if not isinstance(tag, str):\n            return \"\"\n        return tag.rsplit(\"}\", 1)[-1].split(\":\")[-1].lower()\n\n    def add(testcase: ET.Element) -> None:\n        classname = (testcase.get(\"classname\") or testcase.get(\"class\") or \"\").strip()\n        name = (testcase.get(\"name\") or \"\").strip()\n        if not name:\n            return\n        test_name = f\"{classname}::{name}\" if classname else name\n\n        tags = {local_name(node.tag) for node in testcase.iter() if node is not testcase}\n        status = (testcase.get(\"status\") or testcase.get(\"result\") or \"\").strip().lower()\n\n        if tags & {\"failure\", \"error\", \"flakyfailure\", \"flakyerror\"} or status in {\n            \"fail\", \"failed\", \"failure\", \"error\",\n        }:\n            value = \"fail\"\n        elif tags & {\"skipped\", \"disabled\", \"aborted\", \"ignored\"} or status in {\n            \"skip\", \"skipped\", \"disabled\", \"aborted\", \"ignored\", \"pending\",\n        }:\n            value = \"skip\"\n        else:\n            value = \"pass\"\n\n        old = results.get(test_name)\n        if old is None or rank[value] > rank[old]:\n            results[test_name] = value\n\n    # The input may be several complete XML reports concatenated together.\n    cleaned = log.lstrip(\"\\ufeff\")\n    cleaned = re.sub(r\"<\\?xml\\b[^?]*(?:\\?(?!>)[^?]*)*\\?>\", \"\", cleaned, flags=re.I)\n\n    try:\n        root = ET.fromstring(f\"<reports>{cleaned}</reports>\")\n        for element in root.iter():\n            if local_name(element.tag) == \"testcase\":\n                add(element)\n        return results\n    except ET.ParseError:\n        pass\n\n    # Recover complete testcase fragments if unrelated/truncated output makes\n    # the combined XML invalid. Parse each fragment independently.\n    testcase_pattern = re.compile(\n        r\"<(?P<prefix>[A-Za-z_][\\w.-]*:)?testcase\\b\"\n        r\"(?:[^>\\\"']|\\\"[^\\\"]*\\\"|'[^']*')*?\"\n        r\"(?:/\\s*>|>.*?</(?P=prefix)testcase\\s*>)\",\n        flags=re.I | re.S,\n    )\n    for match in testcase_pattern.finditer(cleaned):\n        fragment = match.group(0)\n        try:\n            add(ET.fromstring(fragment))\n        except ET.ParseError:\n            continue\n\n    return results",
+ "test_status": {
+  "io.trino.web.ui.TestWebUiResources::testMimetypes": "pass",
+  "io.trino.web.ui.TestWebUiResources::testUiResources": "pass"
+ },
+ "docker_image": "repolaunch/java:trinodbtrino751ad5b26e684a946cba7aaba2e8e8a9d9ac340f",
+ "docker_image_layers": {
+  "base_image": "eclipse-temurin:21-jdk-noble",
+  "setup_layer": [
+   "apt update && apt install -y git",
+   "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/trinodb/trino.git; git fetch --depth 1 origin 00129067a030a1fdb94acaca617fb8474766cdb6; git reset --hard 00129067a030a1fdb94acaca617fb8474766cdb6",
+   "java -version 2>&1; uname -m; command -v curl || command -v wget; command -v tar ",
+   "mkdir -p /opt/temurin-25 ; curl -fL --retry 3 'https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse' -o /tmp/temurin25.tar.gz ; tar -xzf /tmp/temurin25.tar.gz -C /opt/temurin-25 --strip-components=1 ; /opt/temurin-25/bin/java -version ",
+   "export JAVA_HOME=/opt/temurin-25; export PATH=\"$JAVA_HOME/bin:$PATH\"; ./mvnw -version ",
+   "git status --short; git diff --stat; git diff --name-only ",
+   "java -version 2>&1 | head -n 1; git status --branch --short; git log -1 --stat --oneline ",
+   "find core -type f \\( -iname '*snapshot*' -o -iname '*thread*' \\) | sort | head -100; grep -RIl --exclude-dir=target -E 'worker thread snapshot|thread snapshot|ThreadSnapshot' core 2>/dev/null | head -100 ",
+   "q ",
+   "printf '%s\\n' 'Matching files:'; find core/trino-main core/trino-server core/trino-server-core core/trino-web-ui -type f \\( -iname '*snapshot*' -o -iname '*thread*' \\) -print 2>/dev/null | sort | head -100; printf '%s\\n' 'Matching content:'; grep -RIl --exclude-dir=target -E 'ThreadSnapshot|thread snapshot|thread-snapshot|threadSnapshot' core/trino-main core/trino-server core/trino-server-core core/trino-web-ui 2>/dev/null | head -100 ",
+   "cat core/trino-web-ui/src/main/resources/webapp/package.json; printf '\\n--- WorkerThreadSnapshot references ---\\n'; grep -RIn --exclude-dir=target -E 'WorkerThreadSnapshot|ThreadResource|/v1/thread' core/trino-web-ui/src/main/resources/webapp/src core/trino-main/src/main core/trino-main/src/test 2>/dev/null | head -100 ",
+   "sed -n '1,260p' core/trino-web-ui/pom.xml ",
+   "JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui test -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress ",
+   "apt-get update -qq ; apt-get install -y jq ",
+   "JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui test -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress ",
+   "java -version 2>&1; uname -m; command -v curl || command -v wget; command -v tar ",
+   "mkdir -p /opt/temurin-25 ; curl -fL --retry 3 'https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse' -o /tmp/temurin25.tar.gz ; tar -xzf /tmp/temurin25.tar.gz -C /opt/temurin-25 --strip-components=1 ; /opt/temurin-25/bin/java -version ",
+   "export JAVA_HOME=/opt/temurin-25; export PATH=\"$JAVA_HOME/bin:$PATH\"; ./mvnw -version ",
+   "git status --short; git diff --stat; git diff --name-only ",
+   "java -version 2>&1 | head -n 1; git status --branch --short; git log -1 --stat --oneline ",
+   "find core -type f \\( -iname '*snapshot*' -o -iname '*thread*' \\) | sort | head -100; grep -RIl --exclude-dir=target -E 'worker thread snapshot|thread snapshot|ThreadSnapshot' core 2>/dev/null | head -100 ",
+   "q ",
+   "printf '%s\\n' 'Matching files:'; find core/trino-main core/trino-server core/trino-server-core core/trino-web-ui -type f \\( -iname '*snapshot*' -o -iname '*thread*' \\) -print 2>/dev/null | sort | head -100; printf '%s\\n' 'Matching content:'; grep -RIl --exclude-dir=target -E 'ThreadSnapshot|thread snapshot|thread-snapshot|threadSnapshot' core/trino-main core/trino-server core/trino-server-core core/trino-web-ui 2>/dev/null | head -100 ",
+   "cat core/trino-web-ui/src/main/resources/webapp/package.json; printf '\\n--- WorkerThreadSnapshot references ---\\n'; grep -RIn --exclude-dir=target -E 'WorkerThreadSnapshot|ThreadResource|/v1/thread' core/trino-web-ui/src/main/resources/webapp/src core/trino-main/src/main core/trino-main/src/test 2>/dev/null | head -100 ",
+   "sed -n '1,260p' core/trino-web-ui/pom.xml ",
+   "JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui test -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress ",
+   "apt-get update -qq ; apt-get install -y jq ",
+   "JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui test -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress ",
+   "find core/trino-web-ui -maxdepth 5 -type f \\( -name 'pom.xml' -o -name 'package.json' -o -name '*test*' -o -name 'TEST-*.xml' \\) -print | sort; grep -nE 'surefire|test|bun|vitest|frontend' core/trino-web-ui/pom.xml core/trino-web-ui/src/main/resources/webapp/package.json 2>/dev/null",
+   "sed -n '1,220p' core/trino-web-ui/target/surefire-reports/TEST-io.trino.web.ui.TestWebUiResources.xml",
+   "JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui test -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress; rc=$?; printf '\\n=== DETAILED TEST ITEM STATUS ===\\n'; python3 -c 'import glob,xml.etree.ElementTree as E; files=glob.glob(\"core/trino-web-ui/target/surefire-reports/TEST-*.xml\"); print(\"REPORT_FILES\",len(files)); [(lambda r: [print((\"FAILED\" if t.find(\"failure\") is not None else \"ERROR\" if t.find(\"error\") is not None else \"SKIPPED\" if t.find(\"skipped\") is not None else \"PASSED\"), t.get(\"classname\")+\"::\"+t.get(\"name\")) for t in r.findall(\"testcase\")])(E.parse(f).getroot()) for f in files]'; printf 'MAVEN_TEST_EXIT_CODE=%s\\n' \"$rc\"; test \"$rc\" -eq 0",
+   "awk 'BEGIN{bad=0} /<testsuite /{if ($0 !~ /failures=\"0\"/ || $0 !~ /errors=\"0\"/ || $0 !~ /skipped=\"0\"/) bad=1} /<testcase /{line=$0; sub(/^.*classname=\"/,\"\",line); cls=line; sub(/\".*$/,\"\",cls); line=$0; sub(/^.*name=\"/,\"\",line); name=line; sub(/\".*$/,\"\",name); print (bad ? \"STATUS_REQUIRES_CHILD_INSPECTION\" : \"PASSED\"), cls \"::\" name}' core/trino-web-ui/target/surefire-reports/TEST-*.xml; grep -o '<testsuite[^>]*' core/trino-web-ui/target/surefire-reports/TEST-*.xml | sed 's/^/SUITE_SUMMARY /'",
+   "awk '/<testcase /{name=$0; sub(/^ *<testcase name=\"/,\"\",name); sub(/\".*$/,\"\",name); cls=$0; sub(/^.*classname=\"/,\"\",cls); sub(/\".*$/,\"\",cls); status=\"PASSED\"; print status, cls \"::\" name}' core/trino-web-ui/target/surefire-reports/TEST-*.xml"
+  ],
+  "organize_layer": [
+   "cd /testbed && git status --short && git diff --name-only && git ls-files --others --exclude-standard",
+   "cd /testbed && sed -n '1,220p' core/trino-web-ui/pom.xml && printf '\\n--- package scripts ---\\n' && cat core/trino-web-ui/src/main/resources/webapp/package.json",
+   "cd /testbed && find .bun -type f -name bun -perm -111 -print 2>/dev/null | head -5 && command -v bun || true",
+   "JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui package -DskipTests -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress",
+   "cd /testbed ; rm -rf core/trino-web-ui/target/surefire-reports ; JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui test -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress",
+   "cd /testbed ; for report in $(find core/trino-web-ui/target/surefire-reports -maxdepth 1 -type f -name 'TEST-*.xml' | sort); do cat \"$report\"; done",
+   "cd /testbed && git status --short && git diff --name-only && git ls-files --others --exclude-standard",
+   "cd /testbed && sed -n '1,220p' core/trino-web-ui/pom.xml && printf '\\n--- package scripts ---\\n' && cat core/trino-web-ui/src/main/resources/webapp/package.json",
+   "cd /testbed && find .bun -type f -name bun -perm -111 -print 2>/dev/null | head -5 && command -v bun || true",
+   "JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui package -DskipTests -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress",
+   "cd /testbed ; rm -rf core/trino-web-ui/target/surefire-reports ; JAVA_HOME=/opt/temurin-25 PATH=/opt/temurin-25/bin:$PATH ./mvnw -B -pl :trino-web-ui test -Dair.check.skip-all=true -Dmaven.source.skip=true --no-transfer-progress",
+   "cd /testbed ; for report in $(find core/trino-web-ui/target/surefire-reports -maxdepth 1 -type f -name 'TEST-*.xml' | sort); do cat \"$report\"; done"
+  ],
+  "switch_commit_layer": [
+   "git config --global user.email example@gmail.com",
+   "git config --global user.name haha",
+   "git fetch origin 751ad5b26e684a946cba7aaba2e8e8a9d9ac340f",
+   "git checkout -b wipcheckoutbackup",
+   "git add -A",
+   "git commit --no-verify -m 'temp'",
+   "git checkout main ; git checkout master",
+   "git reset --hard 751ad5b26e684a946cba7aaba2e8e8a9d9ac340f",
+   "git cherry-pick --no-commit -Xours wipcheckoutbackup",
+   "git reset",
+   "git branch -D wipcheckoutbackup"
+  ]
+ }
+}

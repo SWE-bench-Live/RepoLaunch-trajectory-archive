@@ -1,0 +1,59 @@
+{
+  "repo": "xroche/httrack",
+  "pull_number": 610,
+  "instance_id": "xroche__httrack-610",
+  "issue_numbers": [
+    602
+  ],
+  "base_commit": "18bdc24d150b2693850c3d08df3b63e7a116cae1",
+  "patch": "diff --git a/src/htslib.c b/src/htslib.c\nindex 55899b264..090d18a35 100644\n--- a/src/htslib.c\n+++ b/src/htslib.c\n@@ -65,6 +65,7 @@ Please visit our Website: http://www.httrack.com\n #endif /* _WIN32 */\n #include <stdarg.h>\n \n+#include <ctype.h>\n #include <string.h>\n #include <time.h>\n #include <stdarg.h>\n@@ -3747,6 +3748,20 @@ static int proxy_default_port(const char *arg) {\n   return hts_proxy_is_socks(arg) ? 1080 : 8080;\n }\n \n+// port \"a\" of -P argument \"arg\": digits fitting TCP's 1..65535, else the scheme\n+// default. Not sscanf(\"%d\"): past INT_MAX it wraps to a garbage port (#602)\n+static int parse_proxy_port(const char *a, const char *arg) {\n+  char *end;\n+  long p;\n+\n+  if (!isdigit((unsigned char) *a)) // strtol would eat a sign or leading space\n+    return proxy_default_port(arg);\n+  p = strtol(a, &end, 10);\n+  if (*end != '\\0' || p < 1 || p > 65535) // ERANGE lands out of range too\n+    return proxy_default_port(arg);\n+  return (int) p;\n+}\n+\n void hts_parse_proxy(const char *arg, char *name, size_t name_size, int *port) {\n   const char *authority = strstr(arg, \"://\");\n   const char *a;\n@@ -3762,10 +3777,7 @@ void hts_parse_proxy(const char *arg, char *name, size_t name_size, int *port) {\n   while (a > authority && a[-1] != ':' && a[-1] != '@' && a[-1] != ']')\n     a--;\n   if (a > authority && a[-1] == ':') {\n-    int p = -1;\n-\n-    sscanf(a, \"%d\", &p);\n-    *port = (p > 0) ? p : proxy_default_port(arg);\n+    *port = parse_proxy_port(a, arg);\n     namelen = (size_t) (a - 1 - arg);\n   } else {\n     *port = proxy_default_port(arg);\n",
+  "test_patch": "diff --git a/tests/01_engine-proxyurl.test b/tests/01_engine-proxyurl.test\nindex 41a5329aa..2548a23dc 100755\n--- a/tests/01_engine-proxyurl.test\n+++ b/tests/01_engine-proxyurl.test\n@@ -71,3 +71,23 @@ p 'http://a]b:c@host' 'name=http://a]b:c@host port=8080 host=host kind=http'\n \n # a lone ':' must not underflow the backward scan\n p ':' 'name= port=8080 host= kind=http'\n+\n+# a port is *DIGIT in 1..65535, else the scheme default: sscanf(\"%d\") used to\n+# wrap past INT_MAX and hand back a garbage port (#602)\n+p 'http://host:65535' 'name=http://host port=65535 host=host kind=http'\n+p 'http://host:1' 'name=http://host port=1 host=host kind=http'\n+p 'http://host:65536' 'name=http://host port=8080 host=host kind=http'\n+p 'http://host:2147483648' 'name=http://host port=8080 host=host kind=http'\n+p 'http://host:4294967296' 'name=http://host port=8080 host=host kind=http'\n+p 'http://host:99999999999999' 'name=http://host port=8080 host=host kind=http'\n+# discriminating: this one wrapped to a plausible 80, so range-checking the\n+# sscanf result instead of rejecting the overflow still passes everything above\n+p 'http://host:4294967376' 'name=http://host port=8080 host=host kind=http'\n+p 'http://host:999999999999999999999999999999' 'name=http://host port=8080 host=host kind=http'\n+p 'http://host:0' 'name=http://host port=8080 host=host kind=http'\n+p 'http://host:-1' 'name=http://host port=8080 host=host kind=http'\n+p 'http://host:80x' 'name=http://host port=8080 host=host kind=http'\n+p 'http://host: 80' 'name=http://host port=8080 host=host kind=http'\n+p 'http://host:' 'name=http://host port=8080 host=host kind=http'\n+# the fallback is the scheme's own default, not a hardcoded 8080\n+p 'socks5://host:99999999999999' 'name=socks5://host port=1080 host=host kind=socks'\n",
+  "problem_statement": "An out-of-range -P proxy port parses to a garbage port instead of being rejected\n`hts_parse_proxy` reads the port with `sscanf(a, \"%d\", &p)`. A value past `INT_MAX` is signed-overflow UB, and in practice yields a garbage port rather than being rejected:\n\n```\n$ httrack -#test=proxyurl 'http://host:99999999999999'\nname=http://host port=276447231 host=host kind=http\n```\n\nThe result is also inconsistent, because whether `sscanf` fails or silently wraps depends on the value:\n\n```\n$ httrack -#test=proxyurl 'http://host:4294967296'\nname=http://host port=8080 host=host kind=http     <- sscanf fails, falls back to the default\n```\n\nA port is `*DIGIT` per RFC 3986 but has to fit 1..65535 to mean anything. Parsing it with `strtol` and range-checking (out of range falls back to `proxy_default_port`, as an unparsable port already does) would make both cases behave the same.\n\nLow severity: it needs a malformed `-P` argument, and the damage is a connect to a nonsense port. Found while reviewing #599; not caused by it, and present well before the SOCKS5 work.\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/xroche/httrack/commit/b9b188d83b34330e2e64ebb5eecb6fa13034ef00",
+    "https://github.com/xroche/httrack/commit/87f178e65d6d7b45f7510e88a931ceeca05a273f"
+  ],
+  "created_at": "2026-07-16T16:59:20Z",
+  "language": "C",
+  "commit_url": "https://github.com/xroche/httrack/tree/18bdc24d150b2693850c3d08df3b63e7a116cae1",
+  "docker_image_layers": {
+    "base_image": "mcr.microsoft.com/devcontainers/cpp:1-ubuntu-24.04",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/xroche/httrack.git; git fetch --depth 1 origin 18bdc24d150b2693850c3d08df3b63e7a116cae1; git reset --hard 18bdc24d150b2693850c3d08df3b63e7a116cae1",
+      "cl 2>1; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; printf '\\nSubmodules:\\n'; git submodule status ",
+      "git submodule update --init --recursive ",
+      "apt-get update ; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential clang autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev libbrotli-dev libzstd-dev python3 ca-certificates ",
+      "rm -rf build; sh ./bootstrap ; mkdir -p build ; cd build ; ../configure ",
+      "make -C /testbed/build -j\"$(nproc)\" ",
+      "jobs=$(( $(nproc) * 2 )); [ \"$jobs\" -le 16 ] || jobs=16; make -C /testbed/build check -j\"$jobs\" ",
+      "cl 2>1; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; printf '\\nSubmodules:\\n'; git submodule status ",
+      "git submodule update --init --recursive ",
+      "apt-get update ; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential clang autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev libbrotli-dev libzstd-dev python3 ca-certificates ",
+      "rm -rf build; sh ./bootstrap ; mkdir -p build ; cd build ; ../configure ",
+      "make -C /testbed/build -j\"$(nproc)\" ",
+      "jobs=$(( $(nproc) * 2 )); [ \"$jobs\" -le 16 ] || jobs=16; make -C /testbed/build check -j\"$jobs\" ",
+      "jobs=$(( $(nproc) * 2 )); [ \"$jobs\" -le 16 ] || jobs=16; make -C /testbed/build check -j\"$jobs\""
+    ]
+  },
+  "setup_cmds": [
+    "cl 2>1; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; printf '\\nSubmodules:\\n'; git submodule status  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "apt-get update ; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential clang autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev libbrotli-dev libzstd-dev python3 ca-certificates  (exit code: 0)",
+    "rm -rf build; sh ./bootstrap ; mkdir -p build ; cd build ; ../configure  (exit code: 0)",
+    "make -C /testbed/build -j\"$(nproc)\"  (exit code: 0)",
+    "jobs=$(( $(nproc) * 2 )); [ \"$jobs\" -le 16 ] || jobs=16; make -C /testbed/build check -j\"$jobs\"  (exit code: 0)",
+    "cl 2>1; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; printf '\\nSubmodules:\\n'; git submodule status  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "apt-get update ; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential clang autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev libbrotli-dev libzstd-dev python3 ca-certificates  (exit code: 0)",
+    "rm -rf build; sh ./bootstrap ; mkdir -p build ; cd build ; ../configure  (exit code: 0)",
+    "make -C /testbed/build -j\"$(nproc)\"  (exit code: 0)",
+    "jobs=$(( $(nproc) * 2 )); [ \"$jobs\" -le 16 ] || jobs=16; make -C /testbed/build check -j\"$jobs\"  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "jobs=$(( $(nproc) * 2 )); [ \"$jobs\" -le 16 ] || jobs=16; make -C /testbed/build check -j\"$jobs\""
+  ],
+  "docker_image": "repolaunch/c:xroche__httrack-610_linux"
+}

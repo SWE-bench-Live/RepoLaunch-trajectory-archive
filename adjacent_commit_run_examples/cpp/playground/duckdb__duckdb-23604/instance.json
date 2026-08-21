@@ -1,0 +1,76 @@
+{
+  "repo": "duckdb/duckdb",
+  "pull_number": 23604,
+  "instance_id": "duckdb__duckdb-23604",
+  "issue_numbers": [
+    23603
+  ],
+  "base_commit": "3a3c412af5b55b6d4e33686732a8110b9bf03542",
+  "patch": "diff --git a/src/optimizer/filter_combiner.cpp b/src/optimizer/filter_combiner.cpp\nindex be6f41c95ca8..9f8181c75c7f 100644\n--- a/src/optimizer/filter_combiner.cpp\n+++ b/src/optimizer/filter_combiner.cpp\n@@ -421,7 +421,8 @@ FilterPushdownResult FilterCombiner::TryPushdownPrefixFilter(TableFilterSet &tab\n \t\treturn FilterPushdownResult::NO_PUSHDOWN;\n \t}\n \tauto &func = expr.Cast<BoundFunctionExpression>();\n-\tif (func.Function().GetName() != \"prefix\") {\n+\tauto &function_name = func.Function().GetName();\n+\tif (function_name != \"prefix\" && function_name != \"starts_with\" && function_name != \"^@\") {\n \t\treturn FilterPushdownResult::NO_PUSHDOWN;\n \t}\n \tif (func.GetChildren()[0]->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||\n",
+  "test_patch": "diff --git a/test/optimizer/pushdown/starts_with_pushdown.test b/test/optimizer/pushdown/starts_with_pushdown.test\nnew file mode 100644\nindex 000000000000..3761f8d9132a\n--- /dev/null\n+++ b/test/optimizer/pushdown/starts_with_pushdown.test\n@@ -0,0 +1,21 @@\n+# name: test/optimizer/pushdown/starts_with_pushdown.test\n+# description: Test that starts_with/^@/prefix filters are pushed down as range filters\n+# group: [pushdown]\n+\n+statement ok\n+CREATE TABLE t AS SELECT lpad(i::VARCHAR, 9, '0') AS s FROM range(500000) tbl(i);\n+\n+query II\n+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE starts_with(s, '00049999')\n+----\n+analyzed_plan\t<REGEX>:(?s).*s >= '00049999'.*s < '0004999:'.*Row Groups Scanned: 1 / 5.*\n+\n+query II\n+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE s ^@ '00049999'\n+----\n+analyzed_plan\t<REGEX>:(?s).*s >= '00049999'.*s < '0004999:'.*Row Groups Scanned: 1 / 5.*\n+\n+query II\n+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE prefix(s, '00049999')\n+----\n+analyzed_plan\t<REGEX>:(?s).*s >= '00049999'.*s < '0004999:'.*Row Groups Scanned: 1 / 5.*\n",
+  "problem_statement": "Prefix query doesn't always prune row groups correctly\n### What happens?\n\nSee repro SQL for details, should be straightforward.\n\n### To Reproduce\n\n```sql\nmemory D CREATE TABLE t AS SELECT printf('%010d', r) s FROM range(50_000_000) tbl(r) ORDER BY r;\n\n-- starts_with doesn't prune correctly\nmemory D EXPLAIN ANALYZE SELECT count(*) FROM t WHERE starts_with(s, '004999990');\n\u256d\u2500 Summary \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 Total Time: 0.0289s \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\u256d\u2500 Ungrouped Aggregate \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 1 row                            0\u00b5s \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2512\u250e\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\u256d\u2500 Table Scan \u2500\u2500\u2500\u2500\u2500\u2500\u251a\u2516\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 Table: memory.main.t                 \u2502\n\u2502 Type: Sequential Scan                \u2502\n\u2502 Filters: starts_with(s, '004999990') \u2502\n\u2502 Row Groups Scanned: 407 / 407        \u2502\n\u2502 10 rows                      440.0ms \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\n-- LIKE prunes as expected\nmemory D EXPLAIN ANALYZE SELECT count(*) FROM t WHERE s LIKE '004999990%';\n\u256d\u2500 Summary \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 Total Time: 0.0035s \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\u256d\u2500 Ungrouped Aggregate \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 Aggregates: count_star()                 \u2502\n\u2502 1 row                                0\u00b5s \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2512\u250e\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\u256d\u2500 Table Scan \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u251a\u2516\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 Table: memory.main.t                     \u2502\n\u2502 Type: Sequential Scan                    \u2502\n\u2502 Filters:                                 \u2502\n\u2502 (s >= '004999990') AND (s < '004999991') \u2502\n\u2502 Row Groups Scanned: 1 / 407              \u2502\n\u2502 10 rows                              0\u00b5s \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\n-- prefix operator doesn't prune as well\nmemory D EXPLAIN ANALYZE SELECT count(*) FROM t WHERE s ^@ '004999990';\n\u256d\u2500 Summary \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 Total Time: 0.0618s \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\u256d\u2500 Ungrouped Aggregate \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 1 row                         0\u00b5s \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2512\u250e\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\u256d\u2500 Table Scan \u2500\u2500\u2500\u2500\u251a\u2516\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 Table: memory.main.t              \u2502\n\u2502 Type: Sequential Scan             \u2502\n\u2502 Filters: s ^@ '004999990'         \u2502\n\u2502 Row Groups Scanned: 407 / 407     \u2502\n\u2502 10 rows                   930.0ms \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n```\n\n### OS:\n\nmacos\n\n### DuckDB Version:\n\na81547b43c56c671a7ad1a636f83886713efdd8a\n\n### DuckDB Client:\n\nSQL\n\n### Hardware:\n\n_No response_\n\n### Full Name:\n\ndentiny\n\n### Affiliation:\n\nN/A\n\n### Did you include all relevant configuration (e.g., CPU architecture, Linux distribution) to reproduce the issue?\n\n- [x] Yes, I have\n\n### Did you include all code required to reproduce the issue?\n\n- [x] Yes, I have\n\n### Did you include all relevant data sets for reproducing the issue?\n\nYes\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/duckdb/duckdb/commit/21d7be1b04be81836e9fe983d81e0e8f794c587f",
+    "https://github.com/duckdb/duckdb/commit/39076671bc3324009772abcf86cd4605a8cd7e6f",
+    "https://github.com/duckdb/duckdb/commit/53d9cb266f5921900df95cd052e9a0a9f735172b"
+  ],
+  "created_at": "2026-07-04T07:09:45Z",
+  "language": "C++",
+  "commit_url": "https://github.com/duckdb/duckdb/tree/3a3c412af5b55b6d4e33686732a8110b9bf03542",
+  "docker_image_layers": {
+    "base_image": "mcr.microsoft.com/devcontainers/cpp:1-ubuntu-24.04",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/duckdb/duckdb.git; git fetch --depth 1 origin 3a3c412af5b55b6d4e33686732a8110b9bf03542; git reset --hard 3a3c412af5b55b6d4e33686732a8110b9bf03542",
+      "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; free -h; nproc ",
+      "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 ",
+      "cmake --build build --parallel ",
+      "cmake --build build --parallel 8 > /tmp/duckdb-build.log 2>&1; status=$?; grep -n -m 30 -E 'FAILED:|fatal error:| error:' /tmp/duckdb-build.log || true; tail -n 80 /tmp/duckdb-build.log; printf '\\nBUILD_STATUS=%s\\n' \"$status\" ",
+      "ctest --test-dir build --output-on-failure ",
+      "ls -l build/test/run build/test/unittest 2>/dev/null; file build/test/run build/test/unittest 2>/dev/null; build/test/unittest --list-tests 2>/dev/null | head -n 20 ",
+      "build/test/run --workers=8 ",
+      "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; free -h; nproc ",
+      "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 ",
+      "cmake --build build --parallel ",
+      "cmake --build build --parallel 8 > /tmp/duckdb-build.log 2>&1; status=$?; grep -n -m 30 -E 'FAILED:|fatal error:| error:' /tmp/duckdb-build.log || true; tail -n 80 /tmp/duckdb-build.log; printf '\\nBUILD_STATUS=%s\\n' \"$status\" ",
+      "ctest --test-dir build --output-on-failure ",
+      "ls -l build/test/run build/test/unittest 2>/dev/null; file build/test/run build/test/unittest 2>/dev/null; build/test/unittest --list-tests 2>/dev/null | head -n 20 ",
+      "build/test/run --workers=8 ",
+      "build/test/run --help 2>&1 | sed -n '1,240p'",
+      "build/test/unittest --help 2>&1 | sed -n '1,260p'",
+      "name=\"$(build/test/unittest --list-test-names-only 2>/dev/null | head -n 1)\"; printf 'SELECTED_TEST=%s\\n' \"$name\"; build/test/unittest \"$name\" --reporter junit --durations yes --use-colour no",
+      "build/test/unittest --list-reporters 2>&1",
+      "find build -type f \\( -name 'libduckdb.so' -o -name 'libduckdb.so.*' \\) -print | head -n 10",
+      "name=\"$(build/test/unittest --list-test-names-only 2>/dev/null | grep -v '^ADBC' | head -n 1)\"; printf 'SELECTED_TEST=%s\\n' \"$name\"; DUCKDB_INSTALL_LIB=\"$PWD/build/src/libduckdb.so\" build/test/unittest \"$name\" --reporter xml --durations yes --use-colour no 2>/dev/null",
+      "DUCKDB_INSTALL_LIB=\"$PWD/build/src/libduckdb.so\" build/test/unittest --reporter xml --durations no --use-colour no"
+    ]
+  },
+  "setup_cmds": [
+    "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; free -h; nproc  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 8 > /tmp/duckdb-build.log 2>&1; status=$?; grep -n -m 30 -E 'FAILED:|fatal error:| error:' /tmp/duckdb-build.log || true; tail -n 80 /tmp/duckdb-build.log; printf '\\nBUILD_STATUS=%s\\n' \"$status\"  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "ls -l build/test/run build/test/unittest 2>/dev/null; file build/test/run build/test/unittest 2>/dev/null; build/test/unittest --list-tests 2>/dev/null | head -n 20  (exit code: 0)",
+    "build/test/run --workers=8  (exit code: 0)",
+    "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version; free -h; nproc  (exit code: 0)",
+    "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23  (exit code: 0)",
+    "cmake --build build --parallel  (exit code: 1)",
+    "cmake --build build --parallel 8 > /tmp/duckdb-build.log 2>&1; status=$?; grep -n -m 30 -E 'FAILED:|fatal error:| error:' /tmp/duckdb-build.log || true; tail -n 80 /tmp/duckdb-build.log; printf '\\nBUILD_STATUS=%s\\n' \"$status\"  (exit code: 0)",
+    "ctest --test-dir build --output-on-failure  (exit code: 0)",
+    "ls -l build/test/run build/test/unittest 2>/dev/null; file build/test/run build/test/unittest 2>/dev/null; build/test/unittest --list-tests 2>/dev/null | head -n 20  (exit code: 0)",
+    "build/test/run --workers=8  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "build/test/run --help 2>&1 | sed -n '1,240p'",
+    "build/test/unittest --help 2>&1 | sed -n '1,260p'",
+    "name=\"$(build/test/unittest --list-test-names-only 2>/dev/null | head -n 1)\"; printf 'SELECTED_TEST=%s\\n' \"$name\"; build/test/unittest \"$name\" --reporter junit --durations yes --use-colour no",
+    "build/test/unittest --list-reporters 2>&1",
+    "find build -type f \\( -name 'libduckdb.so' -o -name 'libduckdb.so.*' \\) -print | head -n 10",
+    "name=\"$(build/test/unittest --list-test-names-only 2>/dev/null | grep -v '^ADBC' | head -n 1)\"; printf 'SELECTED_TEST=%s\\n' \"$name\"; DUCKDB_INSTALL_LIB=\"$PWD/build/src/libduckdb.so\" build/test/unittest \"$name\" --reporter xml --durations yes --use-colour no 2>/dev/null",
+    "DUCKDB_INSTALL_LIB=\"$PWD/build/src/libduckdb.so\" build/test/unittest --reporter xml --durations no --use-colour no"
+  ],
+  "docker_image": "repolaunch/cpp:duckdb__duckdb-23604_linux"
+}

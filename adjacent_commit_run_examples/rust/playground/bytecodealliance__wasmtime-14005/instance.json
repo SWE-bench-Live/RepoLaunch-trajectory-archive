@@ -1,0 +1,80 @@
+{
+  "repo": "bytecodealliance/wasmtime",
+  "pull_number": 14005,
+  "instance_id": "bytecodealliance__wasmtime-14005",
+  "issue_numbers": [
+    13960
+  ],
+  "base_commit": "60ad7d1df581b30907e036eeea29ccd0d9595293",
+  "patch": "diff --git a/cranelift/codegen/src/alias_analysis.rs b/cranelift/codegen/src/alias_analysis.rs\nindex aae88ec46a4b..b5bbbc58a24b 100644\n--- a/cranelift/codegen/src/alias_analysis.rs\n+++ b/cranelift/codegen/src/alias_analysis.rs\n@@ -606,6 +606,10 @@ impl<'a> AliasAnalysis<'a> {\n                         // from (and therefore observe) memory before\n                         // storing to it.\n                         && !func.dfg.insts[inst].opcode().can_load()\n+                        // A store with memory fence semantics (such as an\n+                        // atomic store) is observable by other threads, so it\n+                        // can never be eliminated.\n+                        && !has_memory_fence_semantics(func.dfg.insts[last_store].opcode())\n                         // `last_store` must really be a store that\n                         // writes exactly the bytes this store\n                         // overwrites (same region, address, offset,\n",
+  "test_patch": "diff --git a/cranelift/filetests/filetests/alias/not-dead-atomic-store-before-trap.clif b/cranelift/filetests/filetests/alias/not-dead-atomic-store-before-trap.clif\nnew file mode 100644\nindex 000000000000..036fc07e27e1\n--- /dev/null\n+++ b/cranelift/filetests/filetests/alias/not-dead-atomic-store-before-trap.clif\n@@ -0,0 +1,49 @@\n+test optimize precise-output\n+set opt_level=speed\n+target aarch64\n+\n+;; Regression test for issue #13960.\n+\n+;; An `atomic_store` has memory fence semantics, so it is recorded in the\n+;; `last_fence` slot rather than as a region store. A following trapping\n+;; instruction (`udiv`, divide by zero) observes all regions, and so, even\n+;; though a second `atomic_store` to the same location fully overwrites it, the\n+;; first `atomic_store` must survive.\n+function %atomic_store_before_trap(i64, i32, i32, i32) {\n+    region0 = 0 \"R0\"\n+block0(v0: i64, v1: i32, v2: i32, v3: i32):\n+    atomic_store.i32 region0 v1, v0\n+    v4 = udiv.i32 v2, v3\n+    atomic_store.i32 region0 v2, v0\n+    return\n+}\n+\n+; function %atomic_store_before_trap(i64, i32, i32, i32) fast {\n+;     region0 = 0 \"R0\"\n+;\n+; block0(v0: i64, v1: i32, v2: i32, v3: i32):\n+;     atomic_store region0 v1, v0\n+;     v4 = udiv v2, v3\n+;     atomic_store region0 v2, v0\n+;     return\n+; }\n+\n+;; Two consecutive atomic stores to the same location with nothing in between.\n+;; The first must still survive: an atomic store is observable by other threads,\n+;; so it is never a dead store even when directly overwritten.\n+function %atomic_store_then_atomic_store(i64, i32, i32) {\n+    region0 = 0 \"R0\"\n+block0(v0: i64, v1: i32, v2: i32):\n+    atomic_store.i32 region0 v1, v0\n+    atomic_store.i32 region0 v2, v0\n+    return\n+}\n+\n+; function %atomic_store_then_atomic_store(i64, i32, i32) fast {\n+;     region0 = 0 \"R0\"\n+;\n+; block0(v0: i64, v1: i32, v2: i32):\n+;     atomic_store region0 v1, v0\n+;     atomic_store region0 v2, v0\n+;     return\n+; }\n",
+  "problem_statement": "Atomic store erroneously optimized out\nThis input:\n\n```wasm\n(module\n  (memory (export \"mem\") 1 1)\n  (func (export \"f\") (param $d i32) (result i32)\n    (i32.atomic.store (i32.const 0) (i32.const 1))\n    (i32.div_u (i32.const 100) (local.get $d))\n    (i32.atomic.store (i32.const 0) (i32.const 2)))\n  (func (export \"get\") (result i32) (i32.load (i32.const 0)))\n)\n(assert_trap (invoke \"f\" (i32.const 0)) \"integer divide by zero\")\n(assert_return (invoke \"get\") (i32.const 1))\n```\n\nfails with:\n\n```\n$ cargo run wast foo.wat\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s\n     Running `target/debug/wasmtime wast foo.wat`\nError: failed to run script file 'foo.wat'\n\nCaused by:\n    0: failed directive on foo.wat:10\n    1: result 0 didn't match\n    2: expected                  1 / 0x0000000000000001\nactual                    0 / 0x0000000000000000\n\n$ cargo run wast -O opt-level=0 foo.wat\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s\n     Running `target/debug/wasmtime wast -O opt-level=0 foo.wat`\n```\n\nan LLM diagnosis, if helpful, [is here](https://gist.github.com/alexcrichton/47a5c558351f7d15927274ab596ebc7a)\n\ncc @fitzgen \n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/bytecodealliance/wasmtime/commit/bf1335a6c98e21a46749521387b62d9cd7a223c2"
+  ],
+  "created_at": "2026-07-27T23:19:01Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/bytecodealliance/wasmtime/tree/60ad7d1df581b30907e036eeea29ccd0d9595293",
+  "docker_image_layers": {
+    "base_image": "rust:1.90",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/bytecodealliance/wasmtime.git; git fetch --depth 1 origin 60ad7d1df581b30907e036eeea29ccd0d9595293; git reset --hard 60ad7d1df581b30907e036eeea29ccd0d9595293",
+      "rustc --version; cargo --version; rustup --version; git submodule status ",
+      "rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --target wasm32-wasip1 --target wasm32-unknown-unknown ; rustup override set 1.95.0 ",
+      "git submodule update --init ",
+      "printf 'rustc: '; rustc --version; for x in cc c++ cmake pkg-config clang; do printf '%-12s' \"$x:\"; command -v \"$x\" || true; done; pkg-config --modversion openssl 2>/dev/null || true; ldconfig -p 2>/dev/null | grep -m1 libclang || true ",
+      "apt-get update ; apt-get install -y cmake clang libclang-dev llvm-dev libssl-dev build-essential ninja-build python3 ",
+      "cargo build --locked ",
+      "cargo test --locked ",
+      "rustc --version; cargo --version; rustup --version; git submodule status ",
+      "rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --target wasm32-wasip1 --target wasm32-unknown-unknown ; rustup override set 1.95.0 ",
+      "git submodule update --init ",
+      "printf 'rustc: '; rustc --version; for x in cc c++ cmake pkg-config clang; do printf '%-12s' \"$x:\"; command -v \"$x\" || true; done; pkg-config --modversion openssl 2>/dev/null || true; ldconfig -p 2>/dev/null | grep -m1 libclang || true ",
+      "apt-get update ; apt-get install -y cmake clang libclang-dev llvm-dev libssl-dev build-essential ninja-build python3 ",
+      "cargo build --locked ",
+      "cargo test --locked ",
+      "cargo test --locked -- --nocapture",
+      "cargo test --locked --test wast -- --help",
+      "cargo test --locked --test wast -- --format=pretty --color=never"
+    ],
+    "organize_layer": [
+      "cargo build --locked",
+      "cd /testbed && ./ci/run-tests.py --locked -- --format=pretty --color=never 2>&1 | tee test-output.log",
+      "cd /testbed && rustup target add wasm32-wasip2",
+      "cd /testbed && ./ci/run-tests.py --locked -- --format=pretty --color=never 2>&1 | tee test-output.log",
+      "cd /testbed && cat test-output.log",
+      "cd /testbed && grep -E '(\\.\\.\\. (ok|FAILED|ignored)$|^(PASS|FAIL|SKIP) )' test-output.log | sed -n '1,120p'",
+      "cd /testbed && cat test-output.log",
+      "cargo build --locked",
+      "cd /testbed && ./ci/run-tests.py --locked -- --format=pretty --color=never 2>&1 | tee test-output.log",
+      "cd /testbed && rustup target add wasm32-wasip2",
+      "cd /testbed && ./ci/run-tests.py --locked -- --format=pretty --color=never 2>&1 | tee test-output.log",
+      "cd /testbed && cat test-output.log",
+      "cd /testbed && grep -E '(\\.\\.\\. (ok|FAILED|ignored)$|^(PASS|FAIL|SKIP) )' test-output.log | sed -n '1,120p'",
+      "cd /testbed && cat test-output.log"
+    ]
+  },
+  "setup_cmds": [
+    "rustc --version; cargo --version; rustup --version; git submodule status  (exit code: 0)",
+    "rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --target wasm32-wasip1 --target wasm32-unknown-unknown ; rustup override set 1.95.0  (exit code: 0)",
+    "git submodule update --init  (exit code: 0)",
+    "printf 'rustc: '; rustc --version; for x in cc c++ cmake pkg-config clang; do printf '%-12s' \"$x:\"; command -v \"$x\" || true; done; pkg-config --modversion openssl 2>/dev/null || true; ldconfig -p 2>/dev/null | grep -m1 libclang || true  (exit code: 0)",
+    "apt-get update ; apt-get install -y cmake clang libclang-dev llvm-dev libssl-dev build-essential ninja-build python3  (exit code: 0)",
+    "cargo build --locked  (exit code: 0)",
+    "cargo test --locked  (exit code: 0)",
+    "rustc --version; cargo --version; rustup --version; git submodule status  (exit code: 0)",
+    "rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --target wasm32-wasip1 --target wasm32-unknown-unknown ; rustup override set 1.95.0  (exit code: 0)",
+    "git submodule update --init  (exit code: 0)",
+    "printf 'rustc: '; rustc --version; for x in cc c++ cmake pkg-config clang; do printf '%-12s' \"$x:\"; command -v \"$x\" || true; done; pkg-config --modversion openssl 2>/dev/null || true; ldconfig -p 2>/dev/null | grep -m1 libclang || true  (exit code: 0)",
+    "apt-get update ; apt-get install -y cmake clang libclang-dev llvm-dev libssl-dev build-essential ninja-build python3  (exit code: 0)",
+    "cargo build --locked  (exit code: 0)",
+    "cargo test --locked  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cd /testbed ; ./ci/run-tests.py --locked -- --format=pretty --color=never 2>&1 | tee test-output.log"
+  ],
+  "docker_image": "repolaunch/rust:bytecodealliance__wasmtime-14005_linux"
+}

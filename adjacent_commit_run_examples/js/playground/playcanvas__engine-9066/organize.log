@@ -1,0 +1,1899 @@
+2026-08-11 17:10:18,361 - Using language: javascript
+2026-08-11 17:10:18,470 - Loading image repolaunch/js:playcanvas__engine-9066_linux.
+2026-08-11 17:10:21,252 - Repo root in the host cleaned up: /home/v-kenanli/Live-new-tasks/launch/data/js/playground/playcanvas__engine-9066/repo
+2026-08-11 17:10:21,253 - Setting up environment for language: javascript
+2026-08-11 17:10:21,253 - No language-specific server needed
+2026-08-11 17:10:21,326 - ----------Start rebuild conversation----------
+2026-08-11 17:10:31,466 - 
+================================== Ai Message ==================================
+
+Thought: The root project uses npm with a lockfile, and `npm install` incrementally installs only dependency changes while preserving existing packages. The root `build` script efficiently orchestrates all required engine builds through Turbo; tests are not required.
+
+Action: <submit>npm install --progress=false --no-fund ; npm run build</submit>
+
+ -- <step_cost> input tokens: 285080, output tokens: 258, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:10:31,466 - Agent submitted commands: npm install --progress=false --no-fund ; npm run build
+2026-08-11 17:10:31,466 - Automatically verifying submitted commands...
+2026-08-11 17:11:21,001 -  -- <step_cost> input tokens: 1693, output tokens: 5, cost usd: 0.0 </step_cost>
+2026-08-11 17:11:21,001 - Verification PASSED - LLM determined commands executed successfully
+2026-08-11 17:11:21,002 - ----------End rebuild conversation----------
+2026-08-11 17:11:21,273 - ----------Start organize-test conversation----------
+2026-08-11 17:11:33,825 - 
+================================== Ai Message ==================================
+
+I’ll use Mocha’s JSON reporter for per-test structured statuses. Because the standard unit script deliberately excludes post-build bundle tests, I’ll verify whether one Mocha invocation can safely cover both groups or whether two commands are required.
+<command>cd /testbed && sed -n '1,220p' test/bundles/*.test.mjs && grep -R "console\.log" -n test --include='*.test.mjs' | head -20</command>
+
+ -- <step_cost> input tokens: 287108, output tokens: 363, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:11:34,863 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && sed -n '1,220p' test/bundles/*.test.mjs && grep -R "console\.log"  -n test --include='*.test.mjs' | head -20
+import { expect } from 'chai';
+
+import {
+    ESM_TARGETS, UMD_TARGETS,
+    createAppFrom, loadEsm, loadUmdCjs, loadUmdGlobal, setupDom, teardownDom
+} from './helpers.mjs';
+
+// guards the #8836 regression: `pc.app` must stay a live binding on the umd namespace, so that
+// reading the global `pc.app` reflects the app created later. Object.assign in the umd footer
+// froze it to its load-time null; Object.defineProperties (#8837) preserves the getter.
+describe('build / live bindings (pc.app)', function () {
+    this.timeout(30000);
+
+    describe('umd global', function () {
+        UMD_TARGETS.forEach((t) => {
+            it(t.name, function () {
+                const { pc, dom } = loadUmdGlobal(t.path);
+                expect(Object.getOwnPropertyDescriptor(pc, 'app').get, 'app is a live getter').to.be.a('function');
+                expect(pc.app, 'app starts null').to.be.null;
+                const app = createAppFrom(pc, dom.window.document);
+                expect(pc.app, 'app updates after construct').to.equal(app);
+                app.destroy();
+                dom.window.close();
+            });
+        });
+    });
+
+    describe('umd commonjs', function () {
+        UMD_TARGETS.forEach((t) => {
+            it(t.name, function () {
+                const pc = loadUmdCjs(t.path);
+                expect(Object.getOwnPropertyDescriptor(pc, 'app').get, 'app is a live getter').to.be.a('function');
+                expect(pc.app, 'app starts null').to.be.null;
+            });
+        });
+    });
+
+    describe('esm', function () {
+        afterEach(teardownDom);
+
+        ESM_TARGETS.forEach((t) => {
+            it(t.name, async function () {
+                setupDom();
+                const pc = await loadEsm(t.path);
+                const app = createAppFrom(pc, global.document);
+                expect(pc.app, 'app updates after construct').to.equal(app);
+                app.destroy();
+            });
+        });
+    });
+});
+
+// guards the #8839 follow-up: #8837 made every umd export getter-only, silently breaking
+// consumers that reassign members of the global `pc` (e.g. the editor's classic-script worker
+// overriding pc.createScript). exports must stay writable while keeping their live binding.
+describe('build / overridable exports (#8839)', function () {
+    this.timeout(30000);
+
+    describe('umd global', function () {
+        UMD_TARGETS.forEach((t) => {
+            it(t.name, function () {
+                const { pc, dom } = loadUmdGlobal(t.path);
+                expect(Object.getOwnPropertyDescriptor(pc, 'createScript').set, 'export has a setter').to.be.a('function');
+                const stub = function stub() {};
+                pc.createScript = stub;
+                expect(pc.createScript, 'override takes effect').to.equal(stub);
+                // overriding one member must not break another member's live binding
+                const app = createAppFrom(pc, dom.window.document);
+                expect(pc.app, 'live binding survives override').to.equal(app);
+                app.destroy();
+                dom.window.close();
+            });
+        });
+    });
+
+    describe('umd commonjs', function () {
+        UMD_TARGETS.forEach((t) => {
+            it(t.name, function () {
+                const pc = loadUmdCjs(t.path);
+                expect(Object.getOwnPropertyDescriptor(pc, 'createScript').set, 'export has a setter').to.be.a('function');
+                const stub = function stub() {};
+                pc.createScript = stub;
+                expect(pc.createScript, 'override takes effect').to.equal(stub);
+            });
+        });
+    });
+});
+
+// the spot-checks above prove the two real-world break cases (#8836 `app`, #8839 `createScript`)
+// end to end; this generalises the underlying invariant to the whole surface: every umd export
+// must be a live (get) and overridable (set) accessor, so a regression hitting any export — not
+// just those two — is caught.
+describe('build / all umd exports are live + overridable', function () {
+    this.timeout(30000);
+
+    UMD_TARGETS.forEach((t) => {
+        it(t.name, function () {
+            const { pc, dom } = loadUmdGlobal(t.path);
+            const broken = Object.keys(pc).filter((k) => {
+                const d = Object.getOwnPropertyDescriptor(pc, k);
+                return typeof d.get !== 'function' || typeof d.set !== 'function';
+            });
+            expect(broken, `exports not live+overridable: ${broken.slice(0, 5).join(', ')}`).to.be.empty;
+            dom.window.close();
+        });
+    });
+});
+import { expect } from 'chai';
+
+import {
+    ESM_TARGETS, EXPECTED_EXPORTS, SOURCE_INDEX, UMD_TARGETS,
+    exportNames, loadEsm, loadUmdGlobal
+} from './helpers.mjs';
+
+describe('build / exports', function () {
+    this.timeout(30000);
+
+    let source;
+
+    before(async function () {
+        source = exportNames(await loadEsm(SOURCE_INDEX));
+    });
+
+    describe('expected exports present', function () {
+        UMD_TARGETS.forEach((t) => {
+            it(t.name, function () {
+                const { pc, dom } = loadUmdGlobal(t.path);
+                EXPECTED_EXPORTS.forEach(n => expect(pc, n).to.have.property(n));
+                dom.window.close();
+            });
+        });
+
+        ESM_TARGETS.forEach((t) => {
+            it(t.name, async function () {
+                const ns = await loadEsm(t.path);
+                EXPECTED_EXPORTS.forEach(n => expect(ns, n).to.have.property(n));
+            });
+        });
+    });
+
+    describe('export parity with src/index.js', function () {
+        UMD_TARGETS.forEach((t) => {
+            it(t.name, function () {
+                const { pc, dom } = loadUmdGlobal(t.path);
+                expect(exportNames(pc)).to.deep.equal(source);
+                dom.window.close();
+            });
+        });
+
+        ESM_TARGETS.forEach((t) => {
+            it(t.name, async function () {
+                expect(exportNames(await loadEsm(t.path))).to.deep.equal(source);
+            });
+        });
+    });
+});
+import { expect } from 'chai';
+
+import {
+    ESM_TARGETS, UMD_TARGETS,
+    createAppFrom, loadEsm, loadUmdGlobal, setupDom, teardownDom
+} from './helpers.mjs';
+
+// the built bundle can actually boot an application with the null graphics device
+describe('build / smoke', function () {
+    this.timeout(30000);
+
+    const assertApp = (pc, app) => {
+        expect(app.root, 'root entity').to.be.instanceOf(pc.Entity);
+        expect(app.scene, 'scene').to.be.instanceOf(pc.Scene);
+        expect(app.assets, 'asset registry').to.be.instanceOf(pc.AssetRegistry);
+    };
+
+    describe('umd global', function () {
+        UMD_TARGETS.forEach((t) => {
+            it(t.name, function () {
+                const { pc, dom } = loadUmdGlobal(t.path);
+                const app = createAppFrom(pc, dom.window.document);
+                assertApp(pc, app);
+                app.destroy();
+                dom.window.close();
+            });
+        });
+    });
+
+    describe('esm', function () {
+        afterEach(teardownDom);
+
+        ESM_TARGETS.forEach((t) => {
+            it(t.name, async function () {
+                setupDom();
+                const pc = await loadEsm(t.path);
+                const app = createAppFrom(pc, global.document);
+                assertApp(pc, app);
+                app.destroy();
+            });
+        });
+    });
+});
+test/core/math/mat3.test.mjs:113:            console.log(JSON.stringify(m.data));
+test/core/math/quat.test.mjs:626:                console.log(`Failed Quat [${x}, ${y}, ${z}, ${w}] -> [${nq.x}, ${nq.y}, ${nq.z}, ${nq.w}] != [${q.x}, ${q.y}, ${q.z}, ${q.w}]`);
+
+root@ee6992e33cf1:/testbed $
+
+exit code: 0
+
+2026-08-11 17:11:42,288 - 
+================================== Ai Message ==================================
+
+A single recursive Mocha invocation can include the normally separated bundle tests; I’ll run it with the shared fixtures, the larger bundle timeout, and JSON output redirected to a report file.
+<command>cd /testbed && mkdir -p reports && npx mocha --ignore "test/assets/scripts/*.js" --recursive --require test/fixtures.mjs --timeout 30000 --reporter json > reports/mocha-results.json</command>
+
+ -- <step_cost> input tokens: 289029, output tokens: 246, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:12:24,898 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && mkdir -p reports && npx mocha --ignore "test/assets/scripts/*.js"  --recursive --require test/fixtures.mjs --timeout 30000 --reporter json > reportts/mocha-results.json
+ASSERT FAILED:  BatchManager has not been created and is required for correct functionality.
+Failed to load resource [/test/assets/someurl.glb-container]: 404 404
+addComponent: ignoring unknown option 'asset' passed to the 'animation' component - check for a typo.
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Element.drawOrder larger than max size of: 16777215
+ASSERT FAILED:  Screen priority must be between 0 and 127, got 128
+ASSERT FAILED:  Screen priority must be between 0 and 127, got 255
+ASSERT FAILED:  Screen priority must be between 0 and 127, got 1000
+ASSERT FAILED:  Screen priority must be between 0 and 127, got -1
+ASSERT FAILED:  Screen priority must be between 0 and 127, got -100
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Elements will not get any input events because this.system.app.elementInput is not created
+Failed to load resource [/test/assets/sprites/red-material.json-material]: Cannot read properties of null (reading 'aoMap') TypeError: Cannot read properties of null (reading 'aoMap')
+    at MaterialHandler._bindAndAssignAssets (file:///testbed/src/framework/handlers/material.js:182:55)
+    at MaterialHandler.patch (file:///testbed/src/framework/handlers/material.js:84:14)
+    at ResourceLoader.patch (file:///testbed/src/framework/handlers/loader.js:308:21)
+    at _opened (file:///testbed/src/framework/asset/asset-registry.js:426:26)
+    at Array._loaded (file:///testbed/src/framework/asset/asset-registry.js:475:17)
+    at ResourceLoader._onSuccess (file:///testbed/src/framework/handlers/loader.js:257:35)
+    at file:///testbed/src/framework/handlers/loader.js:190:30
+    at Object.callback (file:///testbed/src/framework/parsers/material/json-standard-material.js:38:17)
+    at Http._onSuccess (file:///testbed/src/platform/net/http.js:613:21)
+    at Http._onReadyStateChange (file:///testbed/src/platform/net/http.js:575:26)
+    at xhr.onreadystatechange (file:///testbed/src/platform/net/http.js:485:18)
+    at XMLHttpRequest.invokeTheCallbackFunction (/testbed/node_modules/jsdom/lib/generated/idl/EventHandlerNonNull.js:14:28)
+    at XMLHttpRequest.<anonymous> (/testbed/node_modules/jsdom/lib/jsdom/living/helpers/create-event-accessor.js:57:32)
+    at innerInvokeEventListeners (/testbed/node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:360:16)
+    at invokeEventListeners (/testbed/node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:296:3)
+    at XMLHttpRequestImpl._dispatch (/testbed/node_modules/jsdom/lib/jsdom/living/events/EventTarget-impl.js:243:9)
+    at fireAnEvent (/testbed/node_modules/jsdom/lib/jsdom/living/helpers/events.js:18:36)
+    at readyStateChange (/testbed/node_modules/jsdom/lib/jsdom/living/xhr/XMLHttpRequest-impl.js:1034:3)
+    at /testbed/node_modules/jsdom/lib/jsdom/living/xhr/XMLHttpRequest-impl.js:858:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+Could not load img: "http://localhost:3210/test/assets/sprites/red-atlas.json"
+Could not load img: "http://localhost:3210/test/assets/sprites/red-atlas.json?retry=1786439525653"
+Could not load img: "http://localhost:3210/test/assets/sprites/red-atlas.json?retry=1786439526077"
+Could not load img: "http://localhost:3210/test/assets/sprites/red-atlas.json?retry=1786439526899"
+Character ' ' is missing from the font Arial
+Could not load img: "http://localhost:3210/test/assets/sprites/red-atlas.json?retry=1786439528562"
+Markup error: found unclosed tag='color'
+GSplatAssetLoader: Retrying load for http://example.com/chunk.json (attempt 1/2)
+GSplatAssetLoader: Retrying load for http://example.com/chunk.json (attempt 2/2)
+GSplatAssetLoader: Failed to load http://example.com/chunk.json after 2 retries: simulated error
+GSplatAssetLoader: Retrying load for http://example.com/chunk.json (attempt 1/2)
+GSplatAssetLoader: Retrying load for http://example.com/chunk.json (attempt 2/2)
+GSplatAssetLoader: Retrying load for http://example.com/chunk.json (attempt 1/2)
+GSplatAssetLoader: Retrying load for http://example.com/chunk.json (attempt 2/2)
+GSplatAssetLoader: Failed to load http://example.com/chunk.json after 2 retries: simulated error
+GSplatAssetLoader: Retrying load for http://example.com/chunk.json (attempt 1/2)
+GSplatAssetLoader: Retrying load for http://example.com/chunk.json (attempt 2/2)
+GSplatAssetLoader: Failed to load http://example.com/chunk.json after 2 retries: simulated error
+JointComponent: invalid joint type 'bogus'
+Could not load img: "http://localhost:3210/test/assets/sprites/red-atlas.json?retry=1786439531795"
+DEPRECATED: pc.AppBase#loadSceneHierarchy is deprecated. Use pc.AppBase#scenes and pc.SceneRegistry#loadSceneHierarchy instead.
+script 'loadedLater' is not found, awaiting it to be added to registry
+script 'loadedLater' is not found, awaiting it to be added to registry
+script 'loadedLater' is not found, awaiting it to be added to registry
+script 'loadedLater' is not found, awaiting it to be added to registry
+script 'loadedLater' is not found, awaiting it to be added to registry
+ASSERT FAILED:  The application can be started only one time.
+The Script class "TestScript" must have a static "scriptName" property: `TestScript.scriptName = "testScript";`. This will be an error in future versions of PlayCanvas.
+The Script class "" must have a static "scriptName" property: `.scriptName = "";`. This will be an error in future versions of PlayCanvas.
+The script class could not be added to entity 'Untitled' because its name could not be resolved. Add a static "scriptName" property to the class.
+addComponent: Entity already has 'anim' component
+addComponent: Entity already has 'animation' component
+addComponent: Entity already has 'audiolistener' component
+addComponent: Entity already has 'button' component
+addComponent: Entity already has 'camera' component
+addComponent: Entity already has 'collision' component
+addComponent: Entity already has 'element' component
+addComponent: Entity already has 'joint' component
+addComponent: Entity already has 'layoutchild' component
+addComponent: Entity already has 'layoutgroup' component
+addComponent: Entity already has 'light' component
+addComponent: Entity already has 'model' component
+addComponent: Entity already has 'particlesystem' component
+addComponent: Entity already has 'render' component
+addComponent: Entity already has 'rigidbody' component
+addComponent: Entity already has 'screen' component
+addComponent: Entity already has 'scrollview' component
+addComponent: Entity already has 'scrollbar' component
+addComponent: Entity already has 'script' component
+addComponent: Entity already has 'sound' component
+addComponent: Entity already has 'sprite' component
+addComponent: Entity already has 'zone' component
+I18n.removeData: failed to parse localization data: Cannot read properties of null (reading 'parse') TypeError: Cannot read properties of null (reading 'parse')
+    at I18n.removeData (file:///testbed/src/framework/i18n/i18n.js:350:35)
+    at I18n._onAssetUnload (file:///testbed/src/framework/i18n/i18n.js:448:18)
+    at Asset.fire (file:///testbed/src/core/event-handler.js:312:26)
+    at Asset.unload (file:///testbed/src/framework/asset/asset.js:600:14)
+    at Application.destroy (file:///testbed/src/framework/app-base.js:1950:23)
+    at Context.<anonymous> (file:///testbed/test/framework/i18n/i18n.test.mjs:19:14)
+    at callFn (/testbed/node_modules/mocha/lib/runnable.js:366:21)
+    at Runnable.run (/testbed/node_modules/mocha/lib/runnable.js:354:5)
+    at next (/testbed/node_modules/mocha/lib/runner.js:551:10)
+    at Immediate._onImmediate (/testbed/node_modules/mocha/lib/runner.js:612:5)
+    at process.processImmediate (node:internal/timers:534:21)
+I18n.removeData: failed to parse localization data: Cannot read properties of null (reading 'parse') TypeError: Cannot read properties of null (reading 'parse')
+    at I18n.removeData (file:///testbed/src/framework/i18n/i18n.js:350:35)
+    at I18n._onAssetUnload (file:///testbed/src/framework/i18n/i18n.js:448:18)
+    at Asset.fire (file:///testbed/src/core/event-handler.js:312:26)
+    at Asset.unload (file:///testbed/src/framework/asset/asset.js:600:14)
+    at Application.destroy (file:///testbed/src/framework/app-base.js:1950:23)
+    at Context.<anonymous> (file:///testbed/test/framework/i18n/i18n.test.mjs:19:14)
+    at callFn (/testbed/node_modules/mocha/lib/runnable.js:366:21)
+    at Runnable.run (/testbed/node_modules/mocha/lib/runnable.js:354:5)
+    at next (/testbed/node_modules/mocha/lib/runner.js:551:10)
+    at Immediate._onImmediate (/testbed/node_modules/mocha/lib/runner.js:612:5)
+    at process.processImmediate (node:internal/timers:534:21)
+I18n.removeData: failed to parse localization data: Cannot read properties of null (reading 'parse') TypeError: Cannot read properties of null (reading 'parse')
+    at I18n.removeData (file:///testbed/src/framework/i18n/i18n.js:350:35)
+    at I18n._onAssetUnload (file:///testbed/src/framework/i18n/i18n.js:448:18)
+    at Asset.fire (file:///testbed/src/core/event-handler.js:312:26)
+    at Asset.unload (file:///testbed/src/framework/asset/asset.js:600:14)
+    at Application.destroy (file:///testbed/src/framework/app-base.js:1950:23)
+    at Context.<anonymous> (file:///testbed/test/framework/i18n/i18n.test.mjs:19:14)
+    at callFn (/testbed/node_modules/mocha/lib/runnable.js:366:21)
+    at Runnable.run (/testbed/node_modules/mocha/lib/runnable.js:354:5)
+    at next (/testbed/node_modules/mocha/lib/runner.js:551:10)
+    at Immediate._onImmediate (/testbed/node_modules/mocha/lib/runner.js:612:5)
+    at process.processImmediate (node:internal/timers:534:21)
+script class '' has no name and cannot be added to the script registry.
+script class 'class extends Script {}' has no name and cannot be registered. Add a static "scriptName" property or pass an explicit name.
+script name 'destroy' is reserved and cannot be added to the script registry.
+Texture#copy: a source texture must be provided.
+Texture#copy: source and destination formats must match (source 'test', destination 'test').
+Texture#copy: sourceMipLevel 3 is out of range (source has 3 levels).
+Texture#copy: destMipLevel 3 is out of range (destination has 3 levels).
+Texture#copy: copy region is out of bounds (source 4x4, destination 4x4).
+Texture#copy: copy region is out of bounds (source 4x4, destination 4x4).
+Texture#copy: copy region is out of bounds (source 4x4, destination 4x4).
+Texture#copy: copying compressed textures is not supported.
+Texture#copy: copying 3D (volume) textures is not supported.
+
+root@ee6992e33cf1:/testbed $
+
+exit code: 0
+
+2026-08-11 17:12:30,788 - 
+================================== Ai Message ==================================
+
+The test run passed, but the observed shell transcript indicates the report path may have been written as `reportts/...`; I’ll locate and validate the generated JSON before choosing the exact reproducible commands.
+<command>cd /testbed && find reports reportts -maxdepth 2 -type f -name 'mocha-results.json' -print 2>/dev/null && python3 -c "import json,glob; p=glob.glob('report*/mocha-results.json'); print([(x,json.load(open(x))['stats']) for x in p])"</command>
+
+ -- <step_cost> input tokens: 292323, output tokens: 151, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:12:31,850 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && find reports reportts -maxdepth 2 -type f -name 'mocha-results.jsoon' -print 2>/dev/null && python3 -c "import json,glob; p=glob.glob('report*/mochha-results.json'); print([(x,json.load(open(x))['stats']) for x in p])"
+reports/mocha-results.json
+
+root@ee6992e33cf1:/testbed $
+
+exit code: 1
+
+2026-08-11 17:12:37,401 - 
+================================== Ai Message ==================================
+
+The report exists at the intended path. I’ll now print its complete structured contents as required, which will also make it the parser input.
+<command>cd /testbed && cat reports/mocha-results.json</command>
+
+ -- <step_cost> input tokens: 292551, output tokens: 86, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:12:44,346 - 
+================================ Human Message =================================
+
+Observation:
+cd /testbed && cat reports/mocha-results.json
+Server started at http://localhost:3210
+Powered by PlayCanvas 2.21.0-beta.15 5159377
+Powered by PlayCanvas 2.21.0-beta.15 5159377
+Powered by PlayCanvas 2.21.0-beta.15 5159377
+Powered by PlayCanvas 2.21.0-beta.15 5159377
+Powered by PlayCanvas 2.21.0-beta.15 5159377
+Powered by PlayCanvas 2.21.0-beta.15 5159377
+Powered by PlayCanvas 2.21.0-beta.15 5159377
+{"0":1,"1":4,"2":7,"3":2,"4":5,"5":8,"6":3,"7":6,"8":9}
+AssetListLoader: Load function called multiple times.
+GET: /test/assets/someurl.glb - Error 404. Retrying in 2 ms
+GET: /test/assets/someurl.glb - Error 404. Retrying in 4 ms
+Error loading Texture from: '/test/assets/sprites/red-atlas.json' - Retrying in 200ms...
+Error loading Texture from: '/test/assets/sprites/red-atlas.json' - Retrying in 400ms...
+Error loading Texture from: '/test/assets/sprites/red-atlas.json' - Retrying in 800ms...
+Error loading Texture from: '/test/assets/sprites/red-atlas.json' - Retrying in 1600ms...
+Error loading Texture from: '/test/assets/sprites/red-atlas.json' - Retrying in 3200ms...
+4dcef484-1a3a-43a1-b8d1-adc8d80fedb0 initialize postInitializeReporter
+GET: blob:nodedata:454ba74d-87d1-4d62-8760-38e52d3e8834 - Error 0. Retrying in 2 ms
+GET: blob:nodedata:454ba74d-87d1-4d62-8760-38e52d3e8834 - Error 0. Retrying in 4 ms
+GET: blob:nodedata:454ba74d-87d1-4d62-8760-38e52d3e8834 - Error 0. Retrying in 8 ms
+GET: blob:nodedata:b5340b93-6fb2-44d5-bb56-808ee434e212 - Error 0. Retrying in 2 ms
+GET: blob:nodedata:454ba74d-87d1-4d62-8760-38e52d3e8834 - Error 0. Retrying in 16 ms
+GET: blob:nodedata:b5340b93-6fb2-44d5-bb56-808ee434e212 - Error 0. Retrying in 4 ms
+GET: blob:nodedata:b5340b93-6fb2-44d5-bb56-808ee434e212 - Error 0. Retrying in 8 ms
+GET: blob:nodedata:454ba74d-87d1-4d62-8760-38e52d3e8834 - Error 0. Retrying in 32 ms
+GET: blob:nodedata:b5340b93-6fb2-44d5-bb56-808ee434e212 - Error 0. Retrying in 16 ms
+GET: blob:nodedata:b5340b93-6fb2-44d5-bb56-808ee434e212 - Error 0. Retrying in 32 ms
+GET: /someurl.json - Error 404. Retrying in 2 ms
+GET: /someurl.json - Error 404. Retrying in 4 ms
+GET: /someurl.json - Error 404. Retrying in 2 ms
+GET: /someurl.json - Error 404. Retrying in 4 ms
+GET: /someurl.json - Error 404. Retrying in 8 ms
+GET: /someurl.json - Error 404. Retrying in 16 ms
+GET: /someurl.json - Error 404. Retrying in 32 ms
+GET: /someurl.json - Error 0. Retrying in 2 ms
+GET: /someurl.json - Error 0. Retrying in 4 ms
+{
+  "stats": {
+    "suites": 661,
+    "tests": 2087,
+    "passes": 2085,
+    "pending": 2,
+    "failures": 0,
+    "start": "2026-08-11T09:11:46.175Z",
+    "end": "2026-08-11T09:12:24.488Z",
+    "duration": 38313
+  },
+  "tests": [
+    {
+      "title": "rel umd",
+      "fullTitle": "build / live bindings (pc.app) umd global rel umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 467,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "dbg umd",
+      "fullTitle": "build / live bindings (pc.app) umd global dbg umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 540,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "prf umd",
+      "fullTitle": "build / live bindings (pc.app) umd global prf umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 266,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "min umd",
+      "fullTitle": "build / live bindings (pc.app) umd global min umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 242,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "rel umd",
+      "fullTitle": "build / live bindings (pc.app) umd commonjs rel umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 261,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "dbg umd",
+      "fullTitle": "build / live bindings (pc.app) umd commonjs dbg umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 483,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "prf umd",
+      "fullTitle": "build / live bindings (pc.app) umd commonjs prf umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 256,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "min umd",
+      "fullTitle": "build / live bindings (pc.app) umd commonjs min umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 169,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "rel esm bundle",
+      "fullTitle": "build / live bindings (pc.app) esm rel esm bundle",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 179,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "dbg esm bundle",
+      "fullTitle": "build / live bindings (pc.app) esm dbg esm bundle",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 501,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "prf esm bundle",
+      "fullTitle": "build / live bindings (pc.app) esm prf esm bundle",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 235,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "min esm bundle",
+      "fullTitle": "build / live bindings (pc.app) esm min esm bundle",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 217,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "rel esm tree",
+      "fullTitle": "build / live bindings (pc.app) esm rel esm tree",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 1013,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "dbg esm tree",
+      "fullTitle": "build / live bindings (pc.app) esm dbg esm tree",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 937,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "prf esm tree",
+      "fullTitle": "build / live bindings (pc.app) esm prf esm tree",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 639,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "rel umd",
+      "fullTitle": "build / overridable exports (#8839) umd global rel umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 94,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "dbg umd",
+      "fullTitle": "build / overridable exports (#8839) umd global dbg umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 294,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "prf umd",
+      "fullTitle": "build / overridable exports (#8839) umd global prf umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 111,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "min umd",
+      "fullTitle": "build / overridable exports (#8839) umd global min umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 86,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "rel umd",
+      "fullTitle": "build / overridable exports (#8839) umd commonjs rel umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 251,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "dbg umd",
+      "fullTitle": "build / overridable exports (#8839) umd commonjs dbg umd",
+      "file": "/testbed/test/bundles/bindings.test.mjs",
+      "duration": 426,
+      "currentRetry": 0,
+      "speed": "slow",
+      "err": {}
+    },
+    {
+      "title": "prf umd",
+      "fullTitle": "build / overridable exports (#8839) umd commo....stripped due to length....
+ntRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "removes the node from its parent, unparenting it",
+      "fullTitle": "GraphNode #remove removes the node from its parent, unparenting it",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 1,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "removes a child node",
+      "fullTitle": "GraphNode #removeChild() removes a child node",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 1,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "reparents a child node",
+      "fullTitle": "GraphNode #reparent() reparents a child node",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "leaves rotation unchanged for a zero rotation (number inputs)",
+      "fullTitle": "GraphNode #rotate() leaves rotation unchanged for a zero rotation (number inputs)",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "leaves rotation unchanged for a zero rotation (vector input)",
+      "fullTitle": "GraphNode #rotate() leaves rotation unchanged for a zero rotation (vector input)",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 1,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "accumulates rotations in a node",
+      "fullTitle": "GraphNode #rotate() accumulates rotations in a node",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "accumulates rotations in a hierarchy",
+      "fullTitle": "GraphNode #rotate() accumulates rotations in a hierarchy",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "leaves rotation unchanged for a zero rotation (number inputs)",
+      "fullTitle": "GraphNode #rotateLocal() leaves rotation unchanged for a zero rotation (number inputs)",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 1,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "leaves rotation unchanged for a zero rotation (vector input)",
+      "fullTitle": "GraphNode #rotateLocal() leaves rotation unchanged for a zero rotation (vector input)",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "accumulates rotations in a node",
+      "fullTitle": "GraphNode #rotateLocal() accumulates rotations in a node",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "accumulates rotations in a hierarchy",
+      "fullTitle": "GraphNode #rotateLocal() accumulates rotations in a hierarchy",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 1,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "translates hierarchical nodes with number arguments",
+      "fullTitle": "GraphNode #translate() translates hierarchical nodes with number arguments",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "translates hierarchical nodes with a vector argument",
+      "fullTitle": "GraphNode #translate() translates hierarchical nodes with a vector argument",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "GraphNode: translateLocal in hierarchy",
+      "fullTitle": "GraphNode #translateLocal() GraphNode: translateLocal in hierarchy",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 1,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "setPositionAndRotation is the same as setPosition and setRotation",
+      "fullTitle": "GraphNode #setPositionAndRotation() setPositionAndRotation is the same as setPosition and setRotation",
+      "file": "/testbed/test/scene/graph-node.test.mjs",
+      "duration": 1,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "starts with dirtyVersion 0 and AUTO update mode",
+      "fullTitle": "GSplatPlacement dirty state starts with dirtyVersion 0 and AUTO update mode",
+      "file": "/testbed/test/scene/gsplat-unified/gsplat-placement.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "markDirty increments dirtyVersion",
+      "fullTitle": "GSplatPlacement dirty state markDirty increments dirtyVersion",
+      "file": "/testbed/test/scene/gsplat-unified/gsplat-placement.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "WORKBUFFER_UPDATE_ONCE bumps dirtyVersion without changing the stored mode",
+      "fullTitle": "GSplatPlacement dirty state WORKBUFFER_UPDATE_ONCE bumps dirtyVersion without changing the stored mode",
+      "file": "/testbed/test/scene/gsplat-unified/gsplat-placement.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "WORKBUFFER_UPDATE_ALWAYS sets the mode without bumping dirtyVersion",
+      "fullTitle": "GSplatPlacement dirty state WORKBUFFER_UPDATE_ALWAYS sets the mode without bumping dirtyVersion",
+      "file": "/testbed/test/scene/gsplat-unified/gsplat-placement.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "setting workBufferModifier bumps dirtyVersion",
+      "fullTitle": "GSplatPlacement dirty state setting workBufferModifier bumps dirtyVersion",
+      "file": "/testbed/test/scene/gsplat-unified/gsplat-placement.test.mjs",
+      "duration": 1,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "should create a new instance",
+      "fullTitle": "Material #constructor() should create a new instance",
+      "file": "/testbed/test/scene/materials/shader-material.test.mjs",
+      "duration": 0,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "should clone a material",
+      "fullTitle": "Material #clone() should clone a material",
+      "file": "/testbed/test/scene/materials/shader-material.test.mjs",
+      "duration": 1,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "should copy a material",
+      "fullTitle": "Material #copy() should copy a material",
+      "file": "/testbed/test/scene/materials/shader-material.test.mjs",
+      "duration": 2,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "should create a new instance",
+      "fullTitle": "StandardMaterial #constructor() should create a new instance",
+      "file": "/testbed/test/scene/materials/standard-material.test.mjs",
+      "duration": 7,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "should clone a material",
+      "fullTitle": "StandardMaterial #clone() should clone a material",
+      "file": "/testbed/test/scene/materials/standard-material.test.mjs",
+      "duration": 6,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    },
+    {
+      "title": "should copy a material",
+      "fullTitle": "StandardMaterial #copy() should copy a material",
+      "file": "/testbed/test/scene/materials/standard-material.test.mjs",
+      "duration": 4,
+      "currentRetry": 0,
+      "speed": "fast",
+      "err": {}
+    }
+  ]
+}
+
+root@ee6992e33cf1:/testbed $
+
+exit code: 0
+
+2026-08-11 17:12:54,061 - 
+================================== Ai Message ==================================
+
+The report contains test-generated stdout before the Mocha JSON object, but the structured object is complete and includes explicit `passes`, `failures`, and `pending` arrays. I’ll validate a parser that isolates that object, parses it with `json.loads`, and uses file plus full title as a collision-resistant test identifier.
+<python>def parser(log: str) -> dict[str, str]:
+    import json
+
+    marker = '{\n  "stats":'
+    start = log.find(marker)
+    if start < 0:
+        marker = '{"stats":'
+        start = log.find(marker)
+    if start < 0:
+        return {}
+
+    data = json.loads(log[start:])
+    result: dict[str, str] = {}
+
+    def add(items: list[dict], status: str) -> None:
+        for test in items:
+            file = test.get("file", "")
+            if file.startswith("/testbed/"):
+                file = file[len("/testbed/"):]
+            name = test.get("fullTitle") or test.get("title", "")
+            key = f"{file}::{name}" if file else name
+            result[key] = status
+
+    add(data.get("passes", []), "pass")
+    add(data.get("failures", []), "fail")
+    add(data.get("pending", []), "skip")
+    return result</python>
+
+ -- <step_cost> input tokens: 297577, output tokens: 451, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:12:54,088 - 
+================================ Human Message =================================
+
+Observation:
+
+Below is the execution result of your Python script:
+{
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global rel umd": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global dbg umd": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global prf umd": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global min umd": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs rel umd": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs dbg umd": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs prf umd": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs min umd": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm rel esm bundle": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm dbg esm bundle": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm prf esm bundle": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm min esm bundle": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm rel esm tree": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm dbg esm tree": "pass",
+ "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm prf esm tree": "pass",
+ "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global rel umd": "pass",
+ "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global dbg umd": "pass",
+ "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global prf umd": "pass",
+ "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global min umd": "pass",
+ "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs rel umd": "pass",
+ "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs dbg umd": "pass",
+ "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs prf umd": "pass",
+ "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs min umd": "pass",
+ "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable rel umd": "pass",
+ "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable dbg umd": "pass",
+ "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable prf umd": "pass",
+ "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable min umd": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present rel umd": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present dbg umd": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present prf umd": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present min umd": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present rel esm bundle": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present dbg esm bundle": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present prf esm bundle": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present min esm bundle": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present rel esm tree": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present dbg esm tree": "pass",
+ "test/bundles/exports.test.mjs::build / exports expected exports present prf esm tree": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js rel umd": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js dbg umd": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js prf umd": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js min umd": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js rel esm bundle": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js dbg esm bundle": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js prf esm bundle": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js min esm bundle": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js rel esm tree": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js dbg esm tree": "pass",
+ "test/bundles/exports.test.mjs::build / exports export parity with src/index.js prf esm tree": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke umd global rel umd": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke umd global dbg umd": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke umd global prf umd": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke umd global min umd": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke esm rel esm bundle": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke esm dbg esm bundle": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke esm prf esm bundle": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke esm min esm bundle": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke esm rel esm tree": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke esm dbg esm tree": "pass",
+ "test/bundles/smoke.test.mjs::build / smoke esm prf esm tree": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #constructor creates allocator with given capacity": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #constructor creates allocator with zero capacity": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #constructor creates allocator with default capacity": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #allocate() allocates a block with correct offset and size": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #allocate() allocates multiple blocks sequentially": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #allocate() returns null when no space is available": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #allocate() returns null when no block fits": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #allocate() allocates perfect-fit block": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #free() frees a single block": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #free() merges with left free neighbor": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #free() merges with right free neighbor": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #free() merges with both neighbors": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #free() creates fragmentation when freeing middle block": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #grow() extends capacity": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #grow() extends existing tail free block": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #grow() creates new free block when tail is allocated": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #grow() ignores growth to same or smaller capacity": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #grow() grows from zero": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction compacts fragmented blocks to start": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction handles already-compacted allocator": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction handles fully allocated allocator": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction compacts multiple gaps": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - incremental moves blocks incrementally": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - incremental does nothing when no fragmentation": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() frees and allocates in one call": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() triggers grow and defrag when space runs out": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() handles empty frees and allocates": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() handles only frees": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #fragmentation returns 0 for no free space": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #fragmentation returns 0 for single free region": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator #fragmentation returns 0.5 for two free regions": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator pool reuse reuses MemBlock instances from pool": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator stress test with buffer validation maintains buffer integrity through allocations, frees, and defrags": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator stress test with buffer validation handles many allocations and frees without corruption": "pass",
+ "test/core/block-allocator.test.mjs::BlockAllocator stress test with buffer validation updateAllocation stress test with grow": "pass",
+ "test/core/core.test.mjs::core #extend combines two objects": "pass",
+ "test/core/core.test.mjs::core #extend combines two arrays": "pass",
+ "test/core/core.test.mjs::core #extend combines and object and an array": "pass",
+ "test/core/core.test.mjs::core #extend deep combines two objects": "pass",
+ "test/core/core.test.mjs::core #extend deep combines two objects and does not copy references": "pass",
+ "test/core/event-handler.test.mjs::EventHandler #hasEvent returns true if the event is registered": "pass",
+ "test/core/event-handler.test.mjs::EventHandler #hasEvent returns false if the event is not registered": "pass",
+ "test/core/event-handler.test.mjs::EventHandler #on calls handler on fire": "pass",
+ "test/core/event-handler.test.mjs::EventHandler #on calls handler with up to 8 arguments on fire": "pass",
+ "test/core/event-handler.test.mjs::EventHandler #once unregisters itself after the first fire": "pass",
+ "test/core/event-handler.test.mjs::EventHandler #off unregisters event handler with specified callback and scope": "pass",
+ "test/core/event-handler.test.mjs::EventHandler #off unregisters event handler with specified callback": "pass",
+ "test/core/event-handler.test.mjs::EventHandler #off unregisters all event handlers": "pass",
+ "test/core/guid.test.mjs::guid #create returns a string": "pass",
+ "test/core/guid.test.mjs::guid #create returns a string of length 36": "pass",
+ "test/core/guid.test.mjs::guid #create returns different values each time": "pass",
+ "test/core/hash.test.mjs::hashCode returns 0 for the empty string": "pass",
+ "test/core/hash.test.mjs::hashCode returns the same hash for the same string": "pass",
+ "test/core/hash.test.mjs::hashCode returns different hashes for different strings": "pass",
+ "test/core/hash.test.mjs::[1, 2, 3] returns the same hash for the same arrays": "pass",
+ "test/core/hash.test.mjs::[1, 2, 3] returns different hashes for different arrays": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #constructor creates an empty list": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #clear removes all values": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #has returns true if the key exists": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #has returns false if the key does not exist": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #push adds an key-value pair to the list": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #get returns the value for the key": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #get returns null if the key does not exist": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #list returns list in order": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #remove removes the key": "pass",
+ "test/core/indexed-list.test.mjs::IndexedList #remove does not affect surrounding keys": "pass",
+ "test/core/math/bit-packing.test.mjs::BitPacking #set sets bits": "pass",
+ "test/core/math/bit-packing.test.mjs::BitPacking #get gets bits": "pass",
+ "test/core/math/bit-packing.test.mjs::BitPacking #any any": "pass",
+ "test/core/math/bit-packing.test.mjs::BitPacking #all all": "pass",
+ "test/core/math/color.test.mjs::Color #constructor supports zero arguments": "pass",
+ "test/core/math/color.test.mjs::Color #constructor supports number arguments": "pass",
+ "test/core/math/color.test.mjs::Color #constructor supports a 3 element array argument": "pass",
+ "test/core/math/color.test.mjs::Color #constructor supports a 4 element array argument": "pass",
+ "test/core/math/color.test.mjs::Color #clone clones a color": "pass",
+ "test/core/math/color.test.mjs::Color #clone ensures that an instance of a subclass keeps its class prototype": "pass",
+ "test/core/math/color.test.mjs::Color #copy copies a color": "pass",
+ "test/core/math/color.test.mjs::Color #equals returns true if colors are equal": "pass",
+ "test/core/math/color.test.mjs::Color #equals returns false if colors are not equal": "pass",
+ "test/core/math/color.test.mjs::Color #fromString parses a lower case hex string": "pass",
+ "test/core/math/color.test.mjs::Color #fromString parses a lower case hex string with alpha": "pass",
+ "test/core/math/color.test.mjs::Color #fromString parses a upper case hex string with alpha": "pass",
+ "test/core/math/color.test.mjs::Color #lerp linearly interpolates between two colors with alpha of 0": "pass",
+ "test/core/math/color.test.mjs::Color #lerp linearly interpolates between two colors with alpha of 0.5": "pass",
+ "test/core/math/color.test.mjs::Color #lerp linearly interpolates between two colors with alpha of 1": "pass",
+ "test/core/math/color.test.mjs::Color #set sets a color": "pass",
+ "test/core/math/color.test.mjs::Color #fromArray sets a color from an array": "pass",
+ "test/core/math/color.test.mjs::Color #fromArray sets a color from an array with an offset": "pass",
+ "test/core/math/color.test.mjs::Color #toString returns a string representation of black (no alpha)": "pass",
+ "test/core/math/color.test.mjs::Color #toString returns a string representation of white (no alpha)": "pass",
+ "test/core/math/color.test.mjs::Color #toString returns a string representation of an arbitrary color (no alpha)": "pass",
+ "test/core/math/color.test.mjs::Color #toString returns a string representation of an arbitrary color (with single digit alpha)": "pass",
+ "test/core/math/color.test.mjs::Color #toString returns a string representation of an arbitrary color (with double digit alpha)": "pass",
+ "test/core/math/color.test.mjs::Color #toArray returns an array of 4 values": "pass",
+ "test/core/math/color.test.mjs::Color #toArray returns an array of 3 values": "pass",
+ "test/core/math/color.test.mjs::Color #toArray returns an array of 3 values with an offset and target array": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #constructor supports zero arguments": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #constructor supports one number argument": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #constructor supports one array argument": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #type is CURVE_SMOOTHSTEP by default": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #type can be set to CURVE_LINEAR": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #type can be set to CURVE_SMOOTHSTEP": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #type can be set to CURVE_SPLINE": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #type can be set to CURVE_STEP": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #type sets the type property of all curves in the curve set": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #clone() clones a simple curve set": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #clone() clones a complex curve set": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #clone() ensures that an instance of a subclass keeps its class prototype": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #get() returns the curve at the given index": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #add() appends a new curve and returns it": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #add() appends an empty curve when no data is supplied": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #add() makes the new curve adopt the curve set type": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #remove() removes and returns the curve at the given index": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #remove() removes a curve by reference": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #remove() returns null when the index is out of range": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #remove() returns null when the curve is not in the set": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #clearKeys() clears the keys of every curve but keeps the curves": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #clear() removes all curves from the set": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #value() returns the optional array parameter": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #value() fills a supplied array with interpolated values based on the specified time (linear)": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #value() fills a supplied array with interpolated values based on the specified time (smoothstep)": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #value() fills a supplied array with interpolated values based on the specified time (spline)": "pass",
+ "test/core/math/curve-set.test.mjs::CurveSet #value() fills a supplied array with interpolated values based on the specified time (step)": "pass",
+ "test/core/math/curve.test.mjs::Curve #constructor supports zero arguments": "pass",
+ "test/core/math/curve.test.mjs::Curve #constructor supports array argument already sorted by time": "pass",
+ "test/core/math/curve.test.mjs::Curve #constructor supports array argument not sorted by time": "pass",
+ "test/core/math/curve.test.mjs::Curve #add adds a new key to an empty curve": "pass",
+ "test/core/math/curve.test.mjs::Curve #add inserts a new key to a curve with existing keys at the correct index": "pass",
+ "test/core/math/curve.test.mjs::Curve #remove removes and returns the key at the given index": "pass",
+ "test/core/math/curve.test.mjs::Curve #remove returns null when the index is out of range": "pass",
+ "test/core/math/curve.test.mjs::Curve #clear removes all keys from the curve": "pass",
+ "test/core/math/curve.test.mjs::Curve #clear is a no-op on an empty curve": "pass",
+ "test/core/math/curve.test.mjs::Curve #clone clones an empty curve": "pass",
+ "test/core/math/curve.test.mjs::Curve #clone clones a curve with keys": "pass",
+ "test/core/math/curve.test.mjs::Curve #clone ensures that an instance of a subclass keeps its class prototype": "pass",
+ "test/core/math/curve.test.mjs::Curve #get returns the key at the given index": "pass",
+ "test/core/math/curve.test.mjs::Curve #get returns undefined if the index is out of range": "pass",
+ "test/core/math/curve.test.mjs::Curve #quantize returns the interpolated values at the given intervals (CURVE_LINEAR)": "pass",
+ "test/core/math/curve.test.mjs::Curve #quantize returns the interpolated values at the given intervals (CURVE_SMOOTHSTEP)": "pass",
+ "test/core/math/curve.test.mjs::Curve #quantize returns the interpolated values at the given intervals (CURVE_SPLINE})": "pass",
+ "test/core/math/curve.test.mjs::Curve #quantize returns the interpolated values at the given intervals (CURVE_STEP)": "pass",
+ "test/core/math/curve.test.mjs::Curve #value returns the interpolated value at the given time (CURVE_LINEAR)": "pass",
+ "test/core/math/curve.test.mjs::Curve #value returns the interpolated value at the given time (CURVE_SMOOTHSTEP)": "pass",
+ "test/core/math/curve.test.mjs::Curve #value returns the interpolated value at the given time (CURVE_SPLINE})": "pass",
+ "test/core/math/curve.test.mjs::Curve #value returns the interpolated value at the given time (CURVE_STEP)": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #data is a Float32Array of length 9": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #data is initialized to the identity matrix": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #equals returns true for the same matrix": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #equals returns false for different matrices": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #clone clones correctly": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #copy copies correctly": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #set sets the matrix correctly": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #isIdentity is true for the identity matrix": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #isIdentity is false for a non-identity matrix": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #setIdentity sets the matrix to the identity matrix": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #transpose transposes the identity matrix to the identity matrix": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #transpose transposes a non-identity matrix correctly": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #transpose transposes a non-identity matrix correctly given a source matrix": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #setFromMat4 sets the matrix correctly": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #invertMat4 inverts the matrix correctly": "pass",
+ "test/core/math/mat3.test.mjs::Mat3 #transformVector transforms a vector correctly": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #data is a Float32Array of length 16": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #constructor() creates an identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #add() adds one matrix to another in place": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #add() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #add2() adds two matrices together and writes result to a third matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #add2() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #clone() clones a matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #clone() ensures that an instance of a subclass keeps its class prototype": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #copy() copies a matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #copy() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #equals() checks for equality": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getEulerAngles() gets euler angles from an identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getEulerAngles() gets euler angles from an identity matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getEulerAngles() gets a 90 rotation around x": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getEulerAngles() gets a -45 rotation around x": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getEulerAngles() gets a -45 rotation around y": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getEulerAngles() gets a -45 rotation around z": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getScale() gets scale from an identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getScale() gets scale from an identity matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getScale() gets scale from a scaled matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getScale() gets scale from a scaled matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getTranslation() gets translation from an identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getTranslation() gets translation from an identity matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getTranslation() gets translation from a translated matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getTranslation() gets translation from a translated matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getX() gets x axis from a matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getX() gets x axis from a matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getY() gets y axis from a matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getY() gets y axis from a matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getZ() gets z axis from a matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #getZ() gets z axis from a matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #invert() inverts an identity matrix to the identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #invert() inverts a translation matrix to the inverse translation matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #invert() inverts a translation matrix to the inverse translation matrix given a source matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #invert() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #isIdentity() returns true for an identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #isIdentity() returns false for a non-identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul() sets the identity when multiplying the identity by the identity (I * I = I)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul() leaves matrix unchanged when multiplying by the identity ( A * I = A )": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul() sets a matrix to the right hand side when left hand side is identity ( I * A = A )": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul() multiplies an arbitrary matrix with another in place": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul2() sets the identity when multiplying the identity by the identity (I * I = I)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul2() leaves matrix unchanged when multiplying by the identity ( A * I = A )": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul2() sets a matrix to the right hand side when left hand side is identity ( I * A = A )": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul2() multiplies two arbitrary matrices together and writes result to a third": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mul2() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mulAffine2() sets the identity when multiplying the identity by the identity (I * I = I)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mulAffine2() leaves matrix unchanged when multiplying by the identity ( A * I = A )": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mulAffine2() sets a matrix to the right hand side when left hand side is identity ( I * A = A )": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mulAffine2() multiplies two arbitrary matrices together and writes result to a third": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #mulAffine2() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #set() sets a matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #set() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setFromAxisAngle() sets the identity matrix when passing a zero angle": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setFromAxisAngle() sets an approximation of the identity matrix when passing a multiple of 360": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setFromAxisAngle() set a rotation matrix of 90 around the x axis": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setFromAxisAngle() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setFromEulerAngles() sets the identity matrix when zeros are passed": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setFromEulerAngles() set a rotation matrix from arbitrary euler angles": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setFromEulerAngles() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setIdentity() sets an identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setIdentity() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setLookAt() sets the identity matrix when eye is at origin looking down negative z": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setLookAt() sets matrix translation to eye position": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setLookAt() sets matrix from arbitrary inputs": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setLookAt() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setOrtho() sets a normalized orthographic matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setOrtho() sets a non-normalized orthographic matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setPerspective() sets a perspective matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setScale() sets an identity matrix when ones are passed in": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setScale() sets a scale matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setScale() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setTranslate() sets an identity matrix when zeros are passed in": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setTranslate() sets a translation matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setTranslate() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setTRS() sets a matrix from identity translation, rotation and scale": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setTRS() sets a matrix from translation, rotation and scale": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #setTRS() returns this": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #toString() returns a string representation of a matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformPoint() leaves point unchanged when transforming by the identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformPoint() leaves point unchanged when transforming by the identity matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformPoint() transforms a point by a 90 degree rotation around the z axis": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformPoint() transforms a point by a 90 degree rotation around the z axis (input and output vectors are the same)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformPoint() takes translation component of a matrix into account": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformVec4() leaves vector unchanged when transforming by the identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformVec4() leaves vector unchanged when transforming by the identity matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformVec4() transforms a vector by a 90 degree rotation around the z axis": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformVec4() transforms a vector by a 90 degree rotation around the z axis (input and output vectors are the same)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformVector() leaves vector unchanged when transforming by the identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformVector() leaves vector unchanged when transforming by the identity matrix (no allocation)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformVector() transforms a vector by a 90 degree rotation around the z axis": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformVector() transforms a vector by a 90 degree rotation around the z axis (input and output vectors are the same)": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transformVector() ignores the translation component of a matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transpose() transposes the identity matrix to the identity matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transpose() flips a matrix along its top-left to bottom-right diagonal": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transpose() flips a matrix along its top-left to bottom-right diagonal given a source matrix": "pass",
+ "test/core/math/mat4.test.mjs::Mat4 #transpose() returns this": "pass",
+ "test/core/math/math.test.mjs::math #DEG_TO_RAD converts degrees to radians": "pass",
+ "test/core/math/math.test.mjs::math #RAD_TO_DEG converts radians to degrees": "pass",
+ "test/core/math/math.test.mjs::math #between returns true if value is between min and max inclusive": "pass",
+ "test/core/math/math.test.mjs::math #between returns false if value is not between min and max inclusive": "pass",
+ "test/core/math/math.test.mjs::math #between returns false if value is between min and max exclusive": "pass",
+ "test/core/math/math.test.mjs::math #between returns false if value is not between min and max exclusive": "pass",
+ "test/core/math/math.test.mjs::math #bytesToInt24 packs 3 unsigned bytes into a 24-bit unsigned int": "pass",
+ "test/core/math/math.test.mjs::math #bytesToInt24 packs an array of 3 unsigned bytes into a 24-bit unsigned int": "pass",
+ "test/core/math/math.test.mjs::math #bytesToInt24 returns 0 when all supplied bytes are 0": "pass",
+ "test/core/math/math.test.mjs::math #bytesToInt24 returns 2 ^ 24 - 1 when all supplied bytes are 255": "pass",
+ "test/core/math/math.test.mjs::math #bytesToInt32 packs 4 unsigned bytes into a 32-bit unsigned int": "pass",
+ "test/core/math/math.test.mjs::math #bytesToInt32 packs an array of 4 unsigned bytes into a 32-bit unsigned int": "pass",
+ "test/core/math/math.test.mjs::math #bytesToInt32 returns 0 when all supplied bytes are 0": "pass",
+ "test/core/math/math.test.mjs::math #bytesToInt32 returns 2 ^ 32 - 1 when all supplied bytes are 255": "pass",
+ "test/core/math/math.test.mjs::math #clamp returns the value when it is between min and max": "pass",
+ "test/core/math/math.test.mjs::math #clamp returns the minimum value when it is less than min": "pass",
+ "test/core/math/math.test.mjs::math #clamp returns the maximum value when it is greater than max": "pass",
+ "test/core/math/math.test.mjs::math #intToBytes24 converts an integer to a 3-element byte array": "pass",
+ "test/core/math/math.test.mjs::math #intToBytes32 converts an integer to a 4-element byte array": "pass",
+ "test/core/math/math.test.mjs::math #lerp returns a when alpha is 0": "pass",
+ "test/core/math/math.test.mjs::math #lerp returns b when alpha is 1": "pass",
+ "test/core/math/math.test.mjs::math #lerp returns a + alpha * (b - a) when alpha is 0.5": "pass",
+ "test/core/math/math.test.mjs::math #lerpAngle returns 0 when a is 0 and b is 360 and alpha is 0": "pass",
+ "test/core/math/math.test.mjs::math #lerpAngle returns 0 when a is 0 and b is 360 and alpha is 0.5": "pass",
+ "test/core/math/math.test.mjs::math #lerpAngle returns 0 when a is 0 and b is 360 and alpha is 1": "pass",
+ "test/core/math/math.test.mjs::math #lerpAngle returns 0 when a is -90 and b is 90 and alpha is 0.5": "pass",
+ "test/core/math/math.test.mjs::math #lerpAngle returns 180 when a is 90 and b is2790 and alpha is 0.5": "pass",
+ "test/core/math/math.test.mjs::math #lerpAngle crosses the 360 to 0 degree boundary correctly (anticlockwise)": "pass",
+ "test/core/math/math.test.mjs::math #lerpAngle crosses the 360 to 0 degree boundary correctly (clockwise)": "pass",
+ "test/core/math/math.test.mjs::math #nextPowerOfTwo returns the next power of two": "pass",
+ "test/core/math/math.test.mjs::math #nearestPowerOfTwo returns the nearest power of two": "pass",
+ "test/core/math/math.test.mjs::math #powerOfTwo returns true when the value is a power of two": "pass",
+ "test/core/math/math.test.mjs::math #powerOfTwo returns false when the value is not a power of two": "pass",
+ "test/core/math/math.test.mjs::math #random returns a random number between 0 and 1": "pass",
+ "test/core/math/math.test.mjs::math #roundUp rounds a number up to the nearest multiple": "pass",
+ "test/core/math/math.test.mjs::math #roundUp returns number unchanged for multiples of 0": "pass",
+ "test/core/math/math.test.mjs::math #smootherstep returns 0 when x equals min": "pass",
+ "test/core/math/math.test.mjs::math #smootherstep returns 0.5 when x is midway between min and max": "pass",
+ "test/core/math/math.test.mjs::math #smootherstep returns 1 when x equals max": "pass",
+ "test/core/math/math.test.mjs::math #smoothstep returns 0 when x equals a": "pass",
+ "test/core/math/math.test.mjs::math #smoothstep returns 0.5 when x is midway between a and b": "pass",
+ "test/core/math/math.test.mjs::math #smoothstep returns 1 when x equals b": "pass",
+ "test/core/math/quat.test.mjs::Quat #constructor() supports zero arguments": "pass",
+ "test/core/math/quat.test.mjs::Quat #constructor() supports number arguments": "pass",
+ "test/core/math/quat.test.mjs::Quat #constructor() supports a 4 element array argument": "pass",
+ "test/core/math/quat.test.mjs::Quat #clone() clones a quaternion": "pass",
+ "test/core/math/quat.test.mjs::Quat #clone() ensures that an instance of a subclass keeps its class prototype": "pass",
+ "test/core/math/quat.test.mjs::Quat #copy() copies a quaternion": "pass",
+ "test/core/math/quat.test.mjs::Quat #copy() returns this": "pass",
+ "test/core/math/quat.test.mjs::Quat #dot() returns 1 for the identity quaternion": "pass",
+ "test/core/math/quat.test.mjs::Quat #dot() returns the dot product of two quaternions": "pass",
+ "test/core/math/quat.test.mjs::Quat #equals() checks for equality of the same quaternion": "pass",
+ "test/core/math/quat.test.mjs::Quat #equals() checks for equality of two different quaternions with the same values": "pass",
+ "test/core/math/quat.test.mjs::Quat #equals() checks for equality of two different quaternions with different values": "pass",
+ "test/core/math/quat.test.mjs::Quat #equals() checks for equality of different quaternions that are close enough": "pass",
+ "test/core/math/quat.test.mjs::Quat #getAxisAngle() returns the x axis and 0 angle for an identity quaternion": "pass",
+ "test/core/math/quat.test.mjs::Quat #getAxisAngle() returns what is set with setFromAxisAngle": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() returns zeroes for an identity quaternion": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() returns zeroes for an identity quaternion (no allocation)": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() extracts a 180\u00b0 turn around x axis": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() extracts a 180\u00b0 turn around y axis": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() extracts a 180\u00b0 turn around z axis": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() extracts a 90\u00b0 turn around z axis": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() extracts a 90\u00b0 turn around y axis": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() extracts a -90\u00b0 turn around x axis": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() extracts a -90\u00b0 turn around y axis": "pass",
+ "test/core/math/quat.test.mjs::Quat #getEulerAngles() extracts a -90\u00b0 turn around z axis": "pass",
+ "test/core/math/quat.test.mjs::Quat #invert() leaves the identity quaternion unchanged": "pass",
+ "test/core/math/quat.test.mjs::Quat #invert() leaves the quaternion unchanged if applied twice": "pass",
+ "test/core/math/quat.test.mjs::Quat #invert() returns this": "pass",
+ "test/core/math/quat.test.mjs::Quat #length() returns 1 for the identity quaternion": "pass",
+ "test/core/math/quat.test.mjs::Quat #length() returns the correct length for a non-identity quaternion": "pass",
+ "test/core/math/quat.test.mj
+...result truncated due to length...
+
+Please judge whether:
+(1) Your Python script extracts the statuses of all testcases and 
+(2) Your script and test command have made best effort to reveal the status of each unit testcase under a test suite / set if there's test suite / set. The testcase names in your output should be split to the finest granularity.
+If not successful, please adjust your test command, run your new test command in container, and adjust your Python script to extract test status.
+If successful, please submit.
+
+2026-08-11 17:13:05,299 - 
+================================== Ai Message ==================================
+
+The parser successfully extracted the finest-granularity status for all 2,087 Mocha test cases: 2,085 passed, 2 skipped, and 0 failed.
+<submit>
+    <test_command>mkdir -p reports ; npx mocha --ignore "test/assets/scripts/*.js" --recursive --require test/fixtures.mjs --timeout 30000 --reporter json > reports/mocha-results.json</test_command>
+    <print_command>cat reports/mocha-results.json</print_command>
+    <parser>parsing success</parser>
+</submit>
+
+ -- <step_cost> input tokens: 308723, output tokens: 448, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:13:05,302 - ----------End organize-test conversation----------
+2026-08-11 17:13:05,550 - Rerunning test command: mkdir -p reports ; npx mocha --ignore "test/assets/scripts/*.js" --recursive --require test/fixtures.mjs --timeout 30000 --reporter json > reports/mocha-results.json
+2026-08-11 17:13:48,814 - Running print command: cat reports/mocha-results.json
+2026-08-11 17:14:00,690 - ----------Start parse log conversation----------
+2026-08-11 17:14:18,005 - 
+================================== Ai Message ==================================
+
+Thought: The draft correctly targets Mocha’s JSON reporter and likely extracts all 2,087 tests from the top-level `passes`, `failures`, and `pending` arrays. However, it is brittle: it requires an exact whitespace-specific `"stats"` marker, parses through the entire remaining log so trailing output breaks `json.loads`, can select the wrong JSON object, ignores the canonical `tests` array, assumes status collections always contain lists of dictionaries, and lets later statuses overwrite failures. The improved parser should locate and validate a complete Mocha report with `JSONDecoder.raw_decode`, tolerate prefix/suffix noise and compact/pretty JSON, classify every entry in `tests` using the status arrays, treat errors as failures, normalize paths portably, and enforce fail > skip > pass precedence.
+
+Action: <analyze>The output contains noisy application logs and unrelated JSON before one standard Mocha JSON reporter object. The draft succeeds on this sample when the report is complete and no text follows it, but its exact marker and json.loads(log[start:]) are fragile. A robust implementation should: (1) find candidate objects by a flexible stats-key pattern; (2) decode only one balanced JSON value via raw_decode so trailing logs are harmless; (3) validate candidates by requiring a dict with a tests list and report-like stats/status arrays; (4) use passes/failures/pending membership plus the complete tests array so every test is emitted; (5) recognize pending/skipped flags and nonempty err/error data, with all error forms mapped to fail; (6) normalize /testbed/ and Windows-style paths; (7) use fullTitle before title and file-qualified keys; and (8) resolve conflicts with fail taking precedence over skip and pass.</analyze>
+
+ -- <step_cost> input tokens: 290722, output tokens: 657, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:14:18,005 - 
+================================ Human Message =================================
+
+Observation:
+Analysis completed: The output contains noisy application logs and unrelated JSON before one standard Mocha JSON reporter object. The draft succeeds on this sample when the report is complete and no text follows it, but its exact marker and json.loads(log[start:]) are fragile. A robust implementation should: (1) find candidate objects by a flexible stats-key pattern; (2) decode only one balanced JSON value via raw_decode so trailing logs are harmless; (3) validate candidates by requiring a dict with a tests list and report-like stats/status arrays; (4) use passes/failures/pending membership plus the complete tests array so every test is emitted; (5) recognize pending/skipped flags and nonempty err/error data, with all error forms mapped to fail; (6) normalize /testbed/ and Windows-style paths; (7) use fullTitle before title and file-qualified keys; and (8) resolve conflicts with fail taking precedence over skip and pass.
+
+Now try to write the parser.
+2026-08-11 17:14:47,052 - 
+================================== Ai Message ==================================
+
+Thought: I’ll implement a focused Mocha JSON parser that safely decodes the report from noisy output, uses the complete `tests` list, applies authoritative status arrays with failure precedence, and falls back to per-test state/error fields when needed.
+
+Action: <python>def parser(log: str) -> dict[str, str]:
+    import json
+    import re
+
+    decoder = json.JSONDecoder()
+    reports = []
+
+    # Mocha's JSON reporter emits "stats" first. raw_decode consumes only the
+    # JSON value, so unrelated output before or after the report is harmless.
+    for match in re.finditer(r'\{\s*"stats"\s*:', log):
+        try:
+            data, _ = decoder.raw_decode(log, match.start())
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("stats"), dict)
+            and isinstance(data.get("tests"), list)
+            and any(key in data for key in ("passes", "failures", "pending"))
+        ):
+            reports.append((len(data["tests"]), match.start(), data))
+
+    if not reports:
+        return {}
+
+    # Prefer the most complete report; if tied, prefer the latest one.
+    data = max(reports, key=lambda item: (item[0], item[1]))[2]
+    result: dict[str, str] = {}
+    priority = {"pass": 0, "skip": 1, "fail": 2}
+
+    def test_key(test) -> str:
+        if not isinstance(test, dict):
+            return ""
+
+        name = test.get("fullTitle") or test.get("title")
+        if not isinstance(name, str) or not name.strip():
+            return ""
+        name = name.strip()
+
+        file = test.get("file")
+        if not isinstance(file, str) or not file.strip():
+            return name
+
+        file = file.strip().replace("\\", "/")
+        marker = "/testbed/"
+        index = file.lower().find(marker)
+        if index >= 0:
+            file = file[index + len(marker):]
+        else:
+            file = re.sub(r"^\./", "", file)
+            file = file.lstrip("/")
+
+        return f"{file}::{name}" if file else name
+
+    def add(test, status: str) -> None:
+        key = test_key(test)
+        if not key:
+            return
+        old = result.get(key)
+        if old is None or priority[status] >= priority[old]:
+            result[key] = status
+
+    def has_error(test) -> bool:
+        if not isinstance(test, dict):
+            return False
+        for field in ("err", "error", "failure"):
+            value = test.get(field)
+            if value not in (None, "", {}, []):
+                return True
+        return False
+
+    # Start from the complete test collection so no test is omitted if one of
+    # Mocha's status arrays is absent or malformed.
+    for test in data["tests"]:
+        if not isinstance(test, dict):
+            continue
+
+        state = str(test.get("state", "")).lower()
+        if (
+            test.get("pending") is True
+            or test.get("skipped") is True
+            or test.get("skip") is True
+            or state in ("pending", "skipped", "skip", "disabled", "todo")
+        ):
+            status = "skip"
+        elif (
+            has_error(test)
+            or state in ("failed", "failure", "error", "errored")
+        ):
+            status = "fail"
+        else:
+            status = "pass"
+        add(test, status)
+
+    # Reporter collections are authoritative. Apply them in increasing
+    # precedence so failures always win over skips and passes.
+    for field, status in (
+        ("passes", "pass"),
+        ("pending", "skip"),
+        ("skipped", "skip"),
+        ("failures", "fail"),
+        ("errors", "fail"),
+    ):
+        items = data.get(field, [])
+        if isinstance(items, list):
+            for test in items:
+                add(test, status)
+
+    return result</python>
+
+ -- <step_cost> input tokens: 291294, output tokens: 1553, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:14:47,180 - 
+================================ Human Message =================================
+
+Observation:
+Test results for improved parser:
+{
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global min umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs min umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm rel esm bundle": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm dbg esm bundle": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm prf esm bundle": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm min esm bundle": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm rel esm tree": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm dbg esm tree": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm prf esm tree": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global min umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs min umd": "pass",
+  "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable min umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present rel umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present dbg umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present prf umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present min umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present rel esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present dbg esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present prf esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present min esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present rel esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present dbg esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present prf esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js rel umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js dbg umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js prf umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js min umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js rel esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js dbg esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js prf esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js min esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js rel esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js dbg esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js prf esm tree": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke umd global rel umd": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke umd global dbg umd": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke umd global prf umd": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke umd global min umd": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm rel esm bundle": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm dbg esm bundle": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm prf esm bundle": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm min esm bundle": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm rel esm tree": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm dbg esm tree": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm prf esm tree": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #constructor creates allocator with given capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #constructor creates allocator with zero capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #constructor creates allocator with default capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() allocates a block with correct offset and size": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() allocates multiple blocks sequentially": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() returns null when no space is available": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() returns null when no block fits": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() allocates perfect-fit block": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() frees a single block": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() merges with left free neighbor": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() merges with right free neighbor": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() merges with both neighbors": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() creates fragmentation when freeing middle block": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() extends capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() extends existing tail free block": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() creates new free block when tail is allocated": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() ignores growth to same or smaller capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() grows from zero": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction compacts fragmented blocks to start": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction handles already-compacted allocator": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction handles fully allocated allocator": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction compacts multiple gaps": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - incremental moves blocks incrementally": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - incremental does nothing when no fragmentation": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() frees and allocates in one call": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() triggers grow and defrag when space runs out": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() handles empty frees and allocates": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() handles only frees": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #fragmentation returns 0 for no free space": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #fragmentation returns 0 for single free region": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #fragmentation returns 0.5 for two free regions": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator pool reuse reuses MemBlock instances from pool": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator stress test with buffer validation maintains buffer integrity through allocations, frees, and defrags": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator stress test with buffer validation handles many allocations and frees without corruption": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator stress test with buffer validation updateAllocation stress test with grow": "pass",
+  "test/core/core.test.mjs::core #extend combines two objects": "pass",
+  "test/core/core.test.mjs::core #extend combines two arrays": "pass",
+  "test/core/core.test.mjs::core #extend combines and object and an array": "pass",
+  "test/core/core.test.mjs::core #extend deep combines two obj
+...result truncated due to length...
+
+Comparison with original parser:
+- Original parser found: 2079 test cases
+- Improved parser found: 2079 test cases
+- Difference: 0 test cases
+
+Please analyze if this is an improvement and submit if satisfied.
+2026-08-11 17:15:06,473 - 
+================================== Ai Message ==================================
+
+Thought: The parser is structurally more robust, but it still returns only 2,079 dictionary entries for 2,087 reported tests because eight tests share the same file/full-title key and are overwritten. To satisfy “every test case,” duplicate identifiers must receive deterministic occurrence suffixes while preserving authoritative statuses.
+
+Action: <python>def parser(log: str) -> dict[str, str]:
+    import json
+    import re
+    from collections import Counter
+
+    decoder = json.JSONDecoder()
+    candidates = []
+
+    # Decode complete JSON values only, tolerating unrelated output on either
+    # side of the Mocha report.
+    for match in re.finditer(r'\{\s*"stats"\s*:', log):
+        try:
+            data, _ = decoder.raw_decode(log, match.start())
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("stats"), dict)
+            and isinstance(data.get("tests"), list)
+            and any(isinstance(data.get(k), list)
+                    for k in ("passes", "failures", "pending"))
+        ):
+            candidates.append((len(data["tests"]), match.start(), data))
+
+    if not candidates:
+        return {}
+
+    # Prefer the largest complete report, then the latest if multiple runs
+    # with the same number of tests are present.
+    data = max(candidates, key=lambda item: (item[0], item[1]))[2]
+
+    def parts(test):
+        if not isinstance(test, dict):
+            return "", ""
+
+        name = test.get("fullTitle") or test.get("title")
+        if not isinstance(name, str) or not name.strip():
+            return "", ""
+        name = name.strip()
+
+        file = test.get("file")
+        if not isinstance(file, str) or not file.strip():
+            return "", name
+
+        file = file.strip().replace("\\", "/")
+        match = re.search(r"(?:^|/)testbed/(.*)$", file, re.IGNORECASE)
+        if match:
+            file = match.group(1)
+        else:
+            file = re.sub(r"^\./", "", file).lstrip("/")
+
+        return file, name
+
+    def base_key(test):
+        file, name = parts(test)
+        if not name:
+            return ""
+        return f"{file}::{name}" if file else name
+
+    # Status lists are authoritative. Counts are occurrence-aware because
+    # separate Mocha tests can legitimately have identical file/fullTitle.
+    failed = Counter(base_key(t) for t in data.get("failures", [])
+                     if base_key(t))
+    failed.update(base_key(t) for t in data.get("errors", [])
+                  if base_key(t))
+    skipped = Counter(base_key(t) for t in data.get("pending", [])
+                      if base_key(t))
+    skipped.update(base_key(t) for t in data.get("skipped", [])
+                   if base_key(t))
+    passed = Counter(base_key(t) for t in data.get("passes", [])
+                     if base_key(t))
+
+    def has_error(test):
+        if not isinstance(test, dict):
+            return False
+        return any(
+            test.get(field) not in (None, "", {}, [])
+            for field in ("err", "error", "failure")
+        )
+
+    tests = [t for t in data["tests"] if base_key(t)]
+    totals = Counter(base_key(t) for t in tests)
+    seen = Counter()
+    result: dict[str, str] = {}
+
+    for test in tests:
+        key = base_key(test)
+        seen[key] += 1
+
+        # Consume authoritative occurrence counts in precedence order.
+        if failed[key]:
+            status = "fail"
+            failed[key] -= 1
+        elif skipped[key]:
+            status = "skip"
+            skipped[key] -= 1
+        elif passed[key]:
+            status = "pass"
+            passed[key] -= 1
+        else:
+            state = str(test.get("state", "")).lower()
+            if has_error(test) or state in {
+                "failed", "failure", "error", "errored"
+            }:
+                status = "fail"
+            elif (
+                test.get("pending") is True
+                or test.get("skipped") is True
+                or test.get("skip") is True
+                or state in {
+                    "pending", "skipped", "skip", "disabled", "todo"
+                }
+            ):
+                status = "skip"
+            else:
+                status = "pass"
+
+        # Keep the familiar key for unique tests. Number every occurrence of
+        # a duplicated identifier so no test case is silently overwritten.
+        output_key = (
+            key if totals[key] == 1
+            else f"{key} [occurrence {seen[key]}]"
+        )
+        result[output_key] = status
+
+    return result</python>
+
+ -- <step_cost> input tokens: 294956, output tokens: 1434, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:15:06,541 - 
+================================ Human Message =================================
+
+Observation:
+Test results for improved parser:
+{
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd global min umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) umd commonjs min umd": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm rel esm bundle": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm dbg esm bundle": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm prf esm bundle": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm min esm bundle": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm rel esm tree": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm dbg esm tree": "pass",
+  "test/bundles/bindings.test.mjs::build / live bindings (pc.app) esm prf esm tree": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd global min umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / overridable exports (#8839) umd commonjs min umd": "pass",
+  "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable rel umd": "pass",
+  "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable dbg umd": "pass",
+  "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable prf umd": "pass",
+  "test/bundles/bindings.test.mjs::build / all umd exports are live + overridable min umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present rel umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present dbg umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present prf umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present min umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present rel esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present dbg esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present prf esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present min esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present rel esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present dbg esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports expected exports present prf esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js rel umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js dbg umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js prf umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js min umd": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js rel esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js dbg esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js prf esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js min esm bundle": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js rel esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js dbg esm tree": "pass",
+  "test/bundles/exports.test.mjs::build / exports export parity with src/index.js prf esm tree": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke umd global rel umd": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke umd global dbg umd": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke umd global prf umd": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke umd global min umd": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm rel esm bundle": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm dbg esm bundle": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm prf esm bundle": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm min esm bundle": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm rel esm tree": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm dbg esm tree": "pass",
+  "test/bundles/smoke.test.mjs::build / smoke esm prf esm tree": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #constructor creates allocator with given capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #constructor creates allocator with zero capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #constructor creates allocator with default capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() allocates a block with correct offset and size": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() allocates multiple blocks sequentially": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() returns null when no space is available": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() returns null when no block fits": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #allocate() allocates perfect-fit block": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() frees a single block": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() merges with left free neighbor": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() merges with right free neighbor": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() merges with both neighbors": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #free() creates fragmentation when freeing middle block": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() extends capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() extends existing tail free block": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() creates new free block when tail is allocated": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() ignores growth to same or smaller capacity": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #grow() grows from zero": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction compacts fragmented blocks to start": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction handles already-compacted allocator": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction handles fully allocated allocator": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - full compaction compacts multiple gaps": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - incremental moves blocks incrementally": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #defrag() - incremental does nothing when no fragmentation": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() frees and allocates in one call": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() triggers grow and defrag when space runs out": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() handles empty frees and allocates": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #updateAllocation() handles only frees": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #fragmentation returns 0 for no free space": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #fragmentation returns 0 for single free region": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator #fragmentation returns 0.5 for two free regions": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator pool reuse reuses MemBlock instances from pool": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator stress test with buffer validation maintains buffer integrity through allocations, frees, and defrags": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator stress test with buffer validation handles many allocations and frees without corruption": "pass",
+  "test/core/block-allocator.test.mjs::BlockAllocator stress test with buffer validation updateAllocation stress test with grow": "pass",
+  "test/core/core.test.mjs::core #extend combines two objects": "pass",
+  "test/core/core.test.mjs::core #extend combines two arrays": "pass",
+  "test/core/core.test.mjs::core #extend combines and object and an array": "pass",
+  "test/core/core.test.mjs::core #extend deep combines two obj
+...result truncated due to length...
+
+Comparison with original parser:
+- Original parser found: 2079 test cases
+- Improved parser found: 2087 test cases
+- Difference: 8 test cases
+
+Please analyze if this is an improvement and submit if satisfied.
+2026-08-11 17:15:13,272 - 
+================================== Ai Message ==================================
+
+Thought: The improved parser now preserves all 2,087 reported tests, including eight duplicate file/full-title occurrences that the draft silently overwrote. It also safely handles noisy prefixes/suffixes, compact or pretty JSON, multiple report candidates, path variations, malformed optional collections, per-test errors, and status precedence. The output statuses remain restricted to pass, fail, and skip, so it is ready.
+
+Action: <submit>final parser is ready and tested</submit>
+
+ -- <step_cost> input tokens: 298769, output tokens: 112, cost usd: 0.0 </step_cost>
+
+2026-08-11 17:15:13,273 - ----------End parse log conversation----------
+2026-08-11 17:15:13,911 - Duration: 4 minutes
+2026-08-11 17:15:13,911 - Setup completed successfully, now commit into swebench image.
+2026-08-11 17:15:27,387 - Image repolaunch/js:playcanvas__engine-9066_linux committed successfully.
+2026-08-11 17:15:27,405 - Test output saved to: data/js/playground/playcanvas__engine-9066/test_status.log
+2026-08-11 17:15:37,423 - Result saved to: data/js/playground/playcanvas__engine-9066/result.json

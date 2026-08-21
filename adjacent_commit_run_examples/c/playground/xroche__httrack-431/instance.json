@@ -1,0 +1,66 @@
+{
+  "repo": "xroche/httrack",
+  "pull_number": 431,
+  "instance_id": "xroche__httrack-431",
+  "issue_numbers": [
+    143
+  ],
+  "base_commit": "fb8827718e813db306ce42e75aef1128e8661b1d",
+  "patch": "diff --git a/src/htsfilters.c b/src/htsfilters.c\nindex 721a3fae1..53d7f3272 100644\n--- a/src/htsfilters.c\n+++ b/src/htsfilters.c\n@@ -76,7 +76,8 @@ int fa_strjoker(int type, char **filters, int nfil, const char *nom, LLint * siz\n     }\n     if (size)\n       sz = *size;\n-    if (strjoker(nom, filters[i] + filteroffs, &sz, size_flag)) {       // reconnu\n+    /* size unknown (scan time): no size pointer => size tests stay neutral */\n+    if (strjoker(nom, filters[i] + filteroffs, size ? &sz : NULL, size_flag)) {\n       if (size)\n         if (sz != *size)\n           sizelimit = sz;\n",
+  "test_patch": "diff --git a/src/htsselftest.c b/src/htsselftest.c\nindex 5d28f5975..c7c0287d0 100644\n--- a/src/htsselftest.c\n+++ b/src/htsselftest.c\n@@ -524,6 +524,30 @@ static int st_filter(httrackp *opt, int argc, char **argv) {\n   return 0;\n }\n \n+/* Size-aware filter verdict via fa_strjoker: a negative <size> means the size\n+   is still unknown (scan time), so a size rule like -*.jpg*[<10] must stay\n+   neutral. */\n+static int st_filtersize(httrackp *opt, int argc, char **argv) {\n+  LLint sz;\n+  int size_flag = 0, verdict, known;\n+\n+  (void) opt;\n+  if (argc < 3) {\n+    fprintf(stderr, \"filtersize: needs <size> <string> <filter> [filter...]\\n\");\n+    return 1;\n+  }\n+  known = (argv[0][0] != '-'); /* \"-1\"/\"-\" => size unknown */\n+  sz = known ? (LLint) strtoll(argv[0], NULL, 10) : -1;\n+  verdict = fa_strjoker(0, &argv[2], argc - 2, argv[1], known ? &sz : NULL,\n+                        known ? &size_flag : NULL, NULL);\n+  printf(\"verdict=%s size_flag=%d\\n\",\n+         verdict > 0   ? \"allowed\"\n+         : verdict < 0 ? \"forbidden\"\n+                       : \"unknown\",\n+         size_flag);\n+  return 0;\n+}\n+\n static int st_simplify(httrackp *opt, int argc, char **argv) {\n   (void) opt;\n   if (argc < 1) {\n@@ -1038,6 +1062,9 @@ static const struct selftest_entry {\n } selftests[] = {\n     {\"filter\", \"<pattern> <string>\", \"match a string against a wildcard filter\",\n      st_filter},\n+    {\"filtersize\", \"<size> <string> <filter>...\",\n+     \"size-aware filter verdict (negative size = unknown/scan time)\",\n+     st_filtersize},\n     {\"simplify\", \"<path>\", \"collapse ./ and ../ in a path\", st_simplify},\n     {\"mime\", \"<filename>\", \"MIME type for a filename\", st_mime},\n     {\"charset\", \"<charset> <string>\",\ndiff --git a/tests/01_engine-filter.test b/tests/01_engine-filter.test\nindex 803290e6c..ed259dbea 100755\n--- a/tests/01_engine-filter.test\n+++ b/tests/01_engine-filter.test\n@@ -71,3 +71,24 @@ nomatch '*[\\[\\]]' '[' # not matched, despite the docs\n match '*[\\[\\]]' ']'   # only via the empty class-match + trailing ']'\n match '*[\\[\\]]' '[]'  # one of {'[','\\'} then the trailing ']'\n nomatch '*[\\[\\]]' '[]x'\n+\n+# Size-based rules (-#test=filtersize <size> <string> <filter...>): a negative size\n+# means the size is still unknown (scan time). A size exclusion must stay neutral\n+# then, so the file is fetched and only cancelled once its size is known (#143).\n+fsize() {\n+    local want=\"$1\"\n+    shift\n+    test \"$(httrack -O /dev/null -#test=filtersize \"$@\")\" == \"$want\" || exit 1\n+}\n+fsize 'verdict=allowed size_flag=0' -1 foo.jpg -* '+*.jpg' '-*.jpg*[<10]'   # scan time: keep\n+fsize 'verdict=forbidden size_flag=1' 5 foo.jpg -* '+*.jpg' '-*.jpg*[<10]'  # <10KB: cancel\n+fsize 'verdict=allowed size_flag=1' 20 foo.jpg -* '+*.jpg' '-*.jpg*[<10]'   # >=10KB: keep\n+fsize 'verdict=forbidden size_flag=0' -1 foo.txt -* '+*.jpg' '-*.jpg*[<10]' # not a jpg\n+\n+# [name]/[file]/[path] never span '?' mid-string; a trailing query is still\n+# tolerated by the global '?' rule (same as plain *.aspx), not the class (#144).\n+nomatch '*[path]/end' 'a?b/end'\n+nomatch '*[file]end' 'foo?xend'\n+nomatch '*[name]X' 'abc?X'\n+match '*[file]' 'foo?x=1' # trailing query: tolerated, as for *.aspx\n+match '*.aspx' 'page.aspx?y=2'\n",
+  "problem_statement": "Scan rules based on size not working as expected\nIt seems that scan rules based on size are not handled correctly in version 3.49.2 (name of installation file is httrack_x64-3.49.2.exe). Summary of issue:\r\nScenario:\r\nWeb Address in the WinHTTrack project is an URL of an HTML file which includes links to JPG files of different sizes, some smaller and some larger than 10 kB.\r\nScan Rules:\r\n-* +*.jpg -*.jpg*[<10]\r\nResult:\r\nUnexpectedly, no JPG files are downloaded at all. Debug output for each JPG file:\r\n\u201e\u2026(wizard) explicit forbidden (-*.jpg*[<10]) link:\u2026\u201c\r\nFor detailed description of the issue, see attachment.\r\n[Scan rules based on size not working as expected.pdf](https://github.com/xroche/httrack/files/1050733/Scan.rules.based.on.size.not.working.as.expected.pdf)\r\n\r\n\r\n\n",
+  "hints_text": "\n\n",
+  "all_hints_text": "\n\n",
+  "commit_urls": [
+    "https://github.com/xroche/httrack/commit/0edf5e3cde1c1710c83f4f159a7e6f00972f27f8"
+  ],
+  "created_at": "2026-06-26T19:11:51Z",
+  "language": "C",
+  "commit_url": "https://github.com/xroche/httrack/tree/fb8827718e813db306ce42e75aef1128e8661b1d",
+  "docker_image_layers": {
+    "base_image": "mcr.microsoft.com/devcontainers/cpp:1-ubuntu-24.04",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/xroche/httrack.git; git fetch --depth 1 origin fb8827718e813db306ce42e75aef1128e8661b1d; git reset --hard fb8827718e813db306ce42e75aef1128e8661b1d",
+      "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version ",
+      "dpkg-query -W -f='${Package} ${Status} ${Version}\\n' build-essential autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev 2>/dev/null; printf '\\nSubmodules:\\n'; git submodule status ",
+      "apt-get update ; apt-get install -y --no-install-recommends autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev ",
+      "git submodule update --init --recursive ",
+      "rm -rf build ; sh ./bootstrap ; mkdir -p build ; cd build ; ../configure CC=gcc CFLAGS='-O2 -DNDEBUG' ",
+      "make -C build -j\"$(nproc)\" ",
+      "pwd; make -j\"$(nproc)\" ",
+      "make check ",
+      "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version ",
+      "dpkg-query -W -f='${Package} ${Status} ${Version}\\n' build-essential autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev 2>/dev/null; printf '\\nSubmodules:\\n'; git submodule status ",
+      "apt-get update ; apt-get install -y --no-install-recommends autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev ",
+      "git submodule update --init --recursive ",
+      "rm -rf build ; sh ./bootstrap ; mkdir -p build ; cd build ; ../configure CC=gcc CFLAGS='-O2 -DNDEBUG' ",
+      "make -C build -j\"$(nproc)\" ",
+      "pwd; make -j\"$(nproc)\" ",
+      "make check ",
+      "make check"
+    ]
+  },
+  "setup_cmds": [
+    "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version  (exit code: 0)",
+    "dpkg-query -W -f='${Package} ${Status} ${Version}\\n' build-essential autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev 2>/dev/null; printf '\\nSubmodules:\\n'; git submodule status  (exit code: 0)",
+    "apt-get update ; apt-get install -y --no-install-recommends autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "rm -rf build ; sh ./bootstrap ; mkdir -p build ; cd build ; ../configure CC=gcc CFLAGS='-O2 -DNDEBUG'  (exit code: 0)",
+    "make -C build -j\"$(nproc)\"  (exit code: 2)",
+    "pwd; make -j\"$(nproc)\"  (exit code: 0)",
+    "make check  (exit code: 0)",
+    "cl 2>1 || true; gcc --version; g++ --version; clang --version; cmake --version; ctest --version; ninja --version  (exit code: 0)",
+    "dpkg-query -W -f='${Package} ${Status} ${Version}\\n' build-essential autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev 2>/dev/null; printf '\\nSubmodules:\\n'; git submodule status  (exit code: 0)",
+    "apt-get update ; apt-get install -y --no-install-recommends autoconf automake libtool autoconf-archive zlib1g-dev libssl-dev  (exit code: 0)",
+    "git submodule update --init --recursive  (exit code: 0)",
+    "rm -rf build ; sh ./bootstrap ; mkdir -p build ; cd build ; ../configure CC=gcc CFLAGS='-O2 -DNDEBUG'  (exit code: 0)",
+    "make -C build -j\"$(nproc)\"  (exit code: 2)",
+    "pwd; make -j\"$(nproc)\"  (exit code: 0)",
+    "make check  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "make check"
+  ],
+  "docker_image": "repolaunch/c:xroche__httrack-431_linux"
+}

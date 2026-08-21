@@ -1,0 +1,58 @@
+{
+  "repo": "rust-lang/rust-analyzer",
+  "pull_number": 22822,
+  "instance_id": "rust-lang__rust-analyzer-22822",
+  "issue_numbers": [
+    22806
+  ],
+  "base_commit": "51cb2bc2fd0542ed15560e158f738520e91f21de",
+  "patch": "diff --git a/crates/hir-def/src/item_scope.rs b/crates/hir-def/src/item_scope.rs\nindex 16283a2cb372..ac1d2fd2a466 100644\n--- a/crates/hir-def/src/item_scope.rs\n+++ b/crates/hir-def/src/item_scope.rs\n@@ -483,8 +483,11 @@ impl ItemScope {\n     }\n \n     pub(crate) fn remove_from_value_ns(&mut self, name: &Name, def: ModuleDefId) {\n-        let entry = self.values.shift_remove(name);\n-        assert!(entry.is_some_and(|entry| entry.def == def))\n+        // predicate needed since a different item with the same name may be registered instead,\n+        // leading to `shift_remove` removing the wrong item.\n+        if self.values.get(name).is_some_and(|entry| entry.def == def) {\n+            let _ = self.values.shift_remove(name);\n+        }\n     }\n \n     pub(crate) fn get_legacy_macro(&self, name: &Name) -> Option<&[MacroId]> {\n",
+  "test_patch": "diff --git a/crates/hir-def/src/nameres/tests/macros.rs b/crates/hir-def/src/nameres/tests/macros.rs\nindex e9cb0f1dd357..75ec72801131 100644\n--- a/crates/hir-def/src/nameres/tests/macros.rs\n+++ b/crates/hir-def/src/nameres/tests/macros.rs\n@@ -1755,3 +1755,18 @@ enum MyEnum {}\n         \"#]],\n     );\n }\n+\n+#[test]\n+fn regression_22806() {\n+    compute_crate_def_map(\n+        r#\"\n+#![crate_type = \"proc-macro\"]\n+\n+fn foo() {}\n+\n+#[proc_macro]\n+fn foo() {}\n+    \"#,\n+        |_| (),\n+    )\n+}\n",
+  "problem_statement": "panic: `assertion failed: entry.is_some_and(|entry| entry.def == def)` proc macro fn redefinition\n```rust\n#![crate_type = \"proc-macro\"]\nfn subspan() {}\n#[proc_macro]\nfn subspan() {}\n```\n\nRUSTFLAGS=\"\"  ~/.rustup/toolchains/master/bin/rust-analyzer highlight < code.rs\n\n```\nthread 'main' (3923240) panicked at src/tools/rust-analyzer/crates/hir-def/src/item_scope.rs:487:9:\nassertion failed: entry.is_some_and(|entry| entry.def == def)\nstack backtrace:\n   0:     0x7f1cdce0a566 - <<std[7a677e1801b0b374]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[8947f86082328bb0]::fmt::Display>::fmt\n   1:     0x7f1cdd40ec88 - core[8947f86082328bb0]::fmt::write\n   2:     0x7f1cdce1f9dc - <std[7a677e1801b0b374]::sys::stdio::unix::Stderr as core[8947f86082328bb0]::io::write::Write>::write_fmt\n   3:     0x7f1cdcdde8ea - std[7a677e1801b0b374]::panicking::default_hook::{closure#0}\n   4:     0x7f1cdcdfcc83 - std[7a677e1801b0b374]::panicking::default_hook\n   5:     0x7f1cdcdfd0eb - std[7a677e1801b0b374]::panicking::panic_with_hook\n   6:     0x7f1cdcdde9d4 - std[7a677e1801b0b374]::panicking::panic_handler::{closure#0}\n   7:     0x7f1cdcdd2e89 - std[7a677e1801b0b374]::sys::backtrace::__rust_end_short_backtrace::<std[7a677e1801b0b374]::panicking::panic_handler::{closure#0}, !>\n   8:     0x7f1cdcde02fd - __rustc[3266c8557f45551c]::rust_begin_unwind\n   9:     0x7f1cd9b5c47c - core[8947f86082328bb0]::panicking::panic_fmt\n  10:     0x7f1cd9f907b2 - core[8947f86082328bb0]::panicking::panic\n  11:     0x5638fc06e358 - <hir_def[d4d7874b73d21e36]::item_scope::ItemScope>::remove_from_value_ns\n  12:     0x5638fbfcbe1c - <hir_def[d4d7874b73d21e36]::nameres::collector::ModCollector>::collect::{closure#3}\n  13:     0x5638fc06035e - <hir_def[d4d7874b73d21e36]::nameres::collector::ModCollector>::collect\n  14:     0x5638fc0c3a35 - hir_def[d4d7874b73d21e36]::nameres::collector::collect_defs\n  15:     0x5638fc0fd038 - <hir_def[d4d7874b73d21e36]::nameres::_::crate_local_def_map_Configuration_ as salsa[f6baacb4446d11cc]::function::Configuration>::execute\n  16:     0x5638fbfeb415 - <salsa[f6baacb4446d11cc]::function::IngredientImpl<hir_def[d4d7874b73d21e36]::nameres::_::crate_local_def_map_Configuration_>>::execute\n  17:     0x5638fbfe8b91 - <salsa[f6baacb4446d11cc]::function::IngredientImpl<hir_def[d4d7874b73d21e36]::nameres::_::crate_local_def_map_Configuration_>>::fetch\n  18:     0x5638fbf3e911 - <salsa[f6baacb4446d11cc]::attach::Attached>::attach::<dyn base_db[e7983c07c0bf84a9]::SourceDatabase, &hir_def[d4d7874b73d21e36]::nameres::DefMapPair, hir_def[d4d7874b73d21e36]::nameres::crate_local_def_map::{closure#0}>\n  19:     0x5638fbefa3c7 - <hir[7d9bbb24bae6c127]::semantics::source_to_def::SourceToDefCtx>::file_to_def\n  20:     0x5638fbed74c4 - <hir[7d9bbb24bae6c127]::semantics::SemanticsImpl>::file_to_module_defs\n  21:     0x5638fbee4b56 - <hir[7d9bbb24bae6c127]::semantics::SemanticsImpl>::attach_first_edition_opt\n  22:     0x5638fc876f2c - ide[6233e951667d8107]::syntax_highlighting::html::highlight_as_html_with_config\n  23:     0x5638fc7dde4c - <ide[6233e951667d8107]::Analysis>::highlight_as_html\n  24:     0x5638fd22c932 - <rust_analyzer[9f47c25af0fec260]::cli::flags::Highlight>::run\n  25:     0x5638fd4cc0f4 - rust_analyzer[9193986eb7972329]::main\n  26:     0x5638fd4627d3 - std[7a677e1801b0b374]::sys::backtrace::__rust_begin_short_backtrace::<fn() -> core[8947f86082328bb0]::result::Result<std[7a677e1801b0b374]::process::ExitCode, anyhow[6c3359fcb7bf7f47]::Error>, core[8947f86082328bb0]::result::Result<std[7a677e1801b0b374]::process::ExitCode, anyhow[6c3359fcb7bf7f47]::Error>>\n  27:     0x5638fd4c5142 - std[7a677e1801b0b374]::rt::lang_start::<core[8947f86082328bb0]::result::Result<std[7a677e1801b0b374]::process::ExitCode, anyhow[6c3359fcb7bf7f47]::Error>>::{closure#0}\n  28:     0x7f1cde56b599 - std[7a677e1801b0b374]::rt::lang_start_internal\n  29:     0x5638fd4e5238 - main\n  30:     0x7f1cd7e27741 - <unknown>\n  31:     0x7f1cd7e27879 - __libc_start_main\n  32:     0x5638fbdd6709 - <unknown>\n  33:                0x0 - <unknown>\n```\n\n\n`rust-analyzer 1.99.0-nightly (da80ed0 2026-07-14)`\n\n\n\n<!-- TRIAGEBOT_START -->\n\n<!-- TRIAGEBOT_ASSIGN_START -->\n\n<!-- TRIAGEBOT_ASSIGN_END -->\n<!-- TRIAGEBOT_END -->\n",
+  "hints_text": "@rustbot claim\n\n",
+  "all_hints_text": "@rustbot claim\n\n",
+  "commit_urls": [
+    "https://github.com/rust-lang/rust-analyzer/commit/7cd274cba5bc73b06bc650c41117983aec420c45"
+  ],
+  "created_at": "2026-07-15T20:29:05Z",
+  "language": "Rust",
+  "commit_url": "https://github.com/rust-lang/rust-analyzer/tree/51cb2bc2fd0542ed15560e158f738520e91f21de",
+  "docker_image_layers": {
+    "base_image": "rust:1.90",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/rust-lang/rust-analyzer.git; git fetch --depth 1 origin 51cb2bc2fd0542ed15560e158f738520e91f21de; git reset --hard 51cb2bc2fd0542ed15560e158f738520e91f21de",
+      "rustc --version && cargo --version && rustup toolchain list && rustup component list --installed ",
+      "rustup toolchain install 1.95.0 --profile minimal --component rust-src --component rustfmt ; rustup override set 1.95.0 ",
+      "cargo build ",
+      "cargo test ",
+      "rustup toolchain install stable --profile minimal --component rustfmt --component rust-src ",
+      "cargo test ",
+      "rustc --version && cargo --version && rustup toolchain list && rustup component list --installed ",
+      "rustup toolchain install 1.95.0 --profile minimal --component rust-src --component rustfmt ; rustup override set 1.95.0 ",
+      "cargo build ",
+      "cargo test ",
+      "rustup toolchain install stable --profile minimal --component rustfmt --component rust-src ",
+      "cargo test ",
+      "cargo +stable test -- --nocapture"
+    ]
+  },
+  "setup_cmds": [
+    "rustc --version && cargo --version && rustup toolchain list && rustup component list --installed  (exit code: 0)",
+    "rustup toolchain install 1.95.0 --profile minimal --component rust-src --component rustfmt ; rustup override set 1.95.0  (exit code: 0)",
+    "cargo build  (exit code: 0)",
+    "cargo test  (exit code: 101)",
+    "rustup toolchain install stable --profile minimal --component rustfmt --component rust-src  (exit code: 0)",
+    "cargo test  (exit code: 0)",
+    "rustc --version && cargo --version && rustup toolchain list && rustup component list --installed  (exit code: 0)",
+    "rustup toolchain install 1.95.0 --profile minimal --component rust-src --component rustfmt ; rustup override set 1.95.0  (exit code: 0)",
+    "cargo build  (exit code: 0)",
+    "cargo test  (exit code: 101)",
+    "rustup toolchain install stable --profile minimal --component rustfmt --component rust-src  (exit code: 0)",
+    "cargo test  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "cargo +stable test -- --nocapture"
+  ],
+  "docker_image": "repolaunch/rust:rust-lang__rust-analyzer-22822_linux"
+}

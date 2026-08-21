@@ -1,0 +1,65 @@
+{
+ "repo": "Kinnara/ModernWpf",
+ "base_commit": "9feeb65053da54c5cb26e25e5c732b288a07ce8b",
+ "rebuild_cmds": [
+  "dotnet restore test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj ; dotnet build test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --no-restore"
+ ],
+ "test_cmds": [
+  "rm -f tools-net10.trx ; dotnet test test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"trx;LogFileName=tools-net10.trx\" --logger \"console;verbosity=detailed\" --results-directory ."
+ ],
+ "print_cmds": [
+  "cat tools-net10.trx"
+ ],
+ "log_parser": "def parser(log: str) -> dict[str, str]:\n    import re\n    import xml.etree.ElementTree as ET\n\n    def local_name(tag: str) -> str:\n        return tag.rsplit(\"}\", 1)[-1].lower()\n\n    # Tolerate a BOM, surrounding console output, and no XML declaration.\n    match = re.search(\n        r\"<(?:[A-Za-z_][\\w.-]*:)?TestRun\\b[\\s\\S]*?\"\n        r\"</(?:[A-Za-z_][\\w.-]*:)?TestRun\\s*>\",\n        log,\n        re.IGNORECASE,\n    )\n    if not match:\n        return {}\n\n    try:\n        root = ET.fromstring(match.group(0))\n    except (ET.ParseError, ValueError):\n        return {}\n\n    names_by_test_id: dict[str, str] = {}\n    names_by_execution_id: dict[str, str] = {}\n\n    # Build fully qualified names from TRX test definitions.\n    for definition in root.iter():\n        if local_name(definition.tag) != \"unittest\":\n            continue\n\n        method = next(\n            (\n                child\n                for child in definition.iter()\n                if local_name(child.tag) == \"testmethod\"\n            ),\n            None,\n        )\n        definition_name = (definition.get(\"name\") or \"\").strip()\n\n        if method is None:\n            full_name = definition_name\n        else:\n            class_name = (method.get(\"className\") or \"\").strip()\n            method_name = (method.get(\"name\") or definition_name).strip()\n            full_name = (\n                f\"{class_name}.{method_name}\"\n                if class_name and method_name\n                else method_name or class_name or definition_name\n            )\n\n        if not full_name:\n            continue\n\n        test_id = (definition.get(\"id\") or \"\").strip()\n        if test_id:\n            names_by_test_id[test_id] = full_name\n\n        for child in definition.iter():\n            if local_name(child.tag) == \"execution\":\n                execution_id = (child.get(\"id\") or \"\").strip()\n                if execution_id:\n                    names_by_execution_id[execution_id] = full_name\n\n    pass_outcomes = {\"pass\", \"passed\", \"success\", \"succeeded\"}\n    skip_outcomes = {\n        \"skip\",\n        \"skipped\",\n        \"ignored\",\n        \"disabled\",\n        \"pending\",\n        \"notexecuted\",\n        \"notrun\",\n        \"inconclusive\",\n    }\n    severity = {\"pass\": 0, \"skip\": 1, \"fail\": 2}\n    results: dict[str, str] = {}\n\n    for result in root.iter():\n        if not local_name(result.tag).endswith(\"testresult\"):\n            continue\n\n        test_id = (result.get(\"testId\") or result.get(\"testid\") or \"\").strip()\n        execution_id = (\n            result.get(\"executionId\") or result.get(\"executionid\") or \"\"\n        ).strip()\n\n        name = (\n            names_by_execution_id.get(execution_id)\n            or names_by_test_id.get(test_id)\n            or (\n                result.get(\"testName\")\n                or result.get(\"testname\")\n                or result.get(\"name\")\n                or \"\"\n            ).strip()\n            or execution_id\n            or test_id\n        )\n        if not name:\n            continue\n\n        outcome = re.sub(\n            r\"[\\s_-]+\", \"\", result.get(\"outcome\") or \"\"\n        ).lower()\n\n        if outcome in pass_outcomes:\n            status = \"pass\"\n        elif outcome in skip_outcomes:\n            status = \"skip\"\n        else:\n            status = \"fail\"\n\n        # If retries share a name, retain the most severe observed result.\n        previous = results.get(name)\n        if previous is None or severity[status] > severity[previous]:\n            results[name] = status\n\n    return results",
+ "test_status": {
+  "ModernWpf.Tools.Tests.DependencyPropertyGeneratorTests.CheckModeReportsStaleGeneratedFiles": "pass",
+  "ModernWpf.Tools.Tests.DependencyPropertyGeneratorTests.GeneratesMetadataOptionsCallbacksCoerceAndSetterGuard": "pass",
+  "ModernWpf.Tools.Tests.DependencyPropertyGeneratorTests.GeneratesReadOnlyTemplateSettingProperty": "pass",
+  "ModernWpf.Tools.Tests.PowerShellSampleTests.RunnerBuildsSupportedTargetsAndProvidesNonInteractiveValidation": "pass",
+  "ModernWpf.Tools.Tests.DependencyPropertyGeneratorTests.GeneratesAttachedAndAddOwnerProperties": "pass",
+  "ModernWpf.Tools.Tests.DependencyPropertyGeneratorTests.GeneratesExplicitRegistrationNameForNoWrapperProperties": "pass",
+  "ModernWpf.Tools.Tests.DependencyPropertyGeneratorTests.GeneratesCustomSetterAndChangedBodies": "pass"
+ },
+ "docker_image": "repolaunch/cs:kinnaramodernwpf9feeb65053da54c5cb26e25e5c732b288a07ce8b",
+ "docker_image_layers": {
+  "base_image": "mcr.microsoft.com/dotnet/sdk:10.0",
+  "setup_layer": [
+   "apt update && apt install -y git",
+   "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/Kinnara/ModernWpf.git; git fetch --depth 1 origin fc4f6c750b072393c1698be8d3ce426a7162b0a7; git reset --hard fc4f6c750b072393c1698be8d3ce426a7162b0a7",
+   "dotnet --info && dotnet sln ModernWpf.sln list ",
+   "cat test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj && printf '\\n--- generator project ---\\n' && cat tools/ModernWpf.DependencyPropertyGenerator/ModernWpf.DependencyPropertyGenerator.csproj ",
+   "dotnet restore test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj ",
+   "dotnet build test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --no-restore ",
+   "dotnet test test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --framework net10.0 --no-build --no-restore ",
+   "dotnet --info && dotnet sln ModernWpf.sln list ",
+   "cat test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj && printf '\\n--- generator project ---\\n' && cat tools/ModernWpf.DependencyPropertyGenerator/ModernWpf.DependencyPropertyGenerator.csproj ",
+   "dotnet restore test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj ",
+   "dotnet build test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --no-restore ",
+   "dotnet test test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --framework net10.0 --no-build --no-restore ",
+   "dotnet test test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"console;verbosity=detailed\""
+  ],
+  "organize_layer": [
+   "cd /testbed && cat test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj && printf '\\n--- generator ---\\n' && cat tools/ModernWpf.DependencyPropertyGenerator/ModernWpf.DependencyPropertyGenerator.csproj",
+   "dotnet restore test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj ; dotnet build test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --no-restore",
+   "cd /testbed && rm -f tools-net10.trx && dotnet test test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"trx;LogFileName=tools-net10.trx\" --logger \"console;verbosity=detailed\" --results-directory .",
+   "cd /testbed && cat tools-net10.trx",
+   "cd /testbed && cat test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj && printf '\\n--- generator ---\\n' && cat tools/ModernWpf.DependencyPropertyGenerator/ModernWpf.DependencyPropertyGenerator.csproj",
+   "dotnet restore test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj ; dotnet build test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --no-restore",
+   "cd /testbed && rm -f tools-net10.trx && dotnet test test/ModernWpf.Tools.Tests/ModernWpf.Tools.Tests.csproj --configuration Release --framework net10.0 --no-build --no-restore --logger \"trx;LogFileName=tools-net10.trx\" --logger \"console;verbosity=detailed\" --results-directory .",
+   "cd /testbed && cat tools-net10.trx"
+  ],
+  "switch_commit_layer": [
+   "git config --global user.email example@gmail.com",
+   "git config --global user.name haha",
+   "git fetch origin 9feeb65053da54c5cb26e25e5c732b288a07ce8b",
+   "git checkout -b wipcheckoutbackup",
+   "git add -A",
+   "git commit --no-verify -m 'temp'",
+   "git checkout main ; git checkout master",
+   "git reset --hard 9feeb65053da54c5cb26e25e5c732b288a07ce8b",
+   "git cherry-pick --no-commit -Xours wipcheckoutbackup",
+   "git reset",
+   "git branch -D wipcheckoutbackup"
+  ]
+ }
+}
