@@ -8,6 +8,7 @@ The trajectory demos could potentially benefit analysis for agentic workflow imp
 
 - [`linux_tasks/`](./linux_tasks/) — RepoLaunch trajectories for eight
   programming languages on Linux. Generated with `launch <config_path>`.
+- [`android_tasks/`](./android_tasks/) — RepoLaunch trajectories on Android dev containers. Generated with `launch <config_path>`.
 - [`windows_tasks/`](./windows_tasks/) — RepoLaunch trajectories for nine
   programming languages on Windows. Generated with `launch <config_path>`.
 - [`adjacent_commit_run_examples/`](./adjacent_commit_run_examples/) —
