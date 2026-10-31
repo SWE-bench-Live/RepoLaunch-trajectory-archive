@@ -1,0 +1,69 @@
+{
+  "repo": "apache/lucene",
+  "instance_id": "apache__lucene-11760",
+  "base_commit": "0ea8035612344e861bbdeaffca2255e5e1480a6a",
+  "patch": "diff --git a/lucene/queries/src/java/org/apache/lucene/queries/intervals/IntervalBuilder.java b/lucene/queries/src/java/org/apache/lucene/queries/intervals/IntervalBuilder.java\nindex b6e1727616c6..e76be6f9e609 100644\n--- a/lucene/queries/src/java/org/apache/lucene/queries/intervals/IntervalBuilder.java\n+++ b/lucene/queries/src/java/org/apache/lucene/queries/intervals/IntervalBuilder.java\n@@ -242,6 +242,8 @@ private static List<IntervalsSource> analyzeGraph(TokenStream source) throws IOE\n         @Override\n         public IntervalIterator intervals(String field, LeafReaderContext ctx) {\n           return new IntervalIterator() {\n+            boolean exhausted = false;\n+\n             @Override\n             public int start() {\n               return NO_MORE_INTERVALS;\n@@ -269,16 +271,18 @@ public float matchCost() {\n \n             @Override\n             public int docID() {\n-              return NO_MORE_DOCS;\n+              return exhausted ? NO_MORE_DOCS : -1;\n             }\n \n             @Override\n             public int nextDoc() {\n+              exhausted = true;\n               return NO_MORE_DOCS;\n             }\n \n             @Override\n             public int advance(int target) {\n+              exhausted = true;\n               return NO_MORE_DOCS;\n             }\n \n",
+  "test_patch": "diff --git a/lucene/queries/src/test/org/apache/lucene/queries/intervals/TestIntervalBuilder.java b/lucene/queries/src/test/org/apache/lucene/queries/intervals/TestIntervalBuilder.java\nindex 3b6f63d98f56..b74670a51bcf 100644\n--- a/lucene/queries/src/test/org/apache/lucene/queries/intervals/TestIntervalBuilder.java\n+++ b/lucene/queries/src/test/org/apache/lucene/queries/intervals/TestIntervalBuilder.java\n@@ -41,8 +41,16 @@\n \n import java.io.IOException;\n import org.apache.lucene.analysis.CachingTokenFilter;\n+import org.apache.lucene.document.Document;\n+import org.apache.lucene.document.Field;\n+import org.apache.lucene.index.DirectoryReader;\n+import org.apache.lucene.index.IndexReader;\n+import org.apache.lucene.index.LeafReaderContext;\n+import org.apache.lucene.search.DocIdSetIterator;\n+import org.apache.lucene.store.Directory;\n import org.apache.lucene.tests.analysis.CannedTokenStream;\n import org.apache.lucene.tests.analysis.Token;\n+import org.apache.lucene.tests.index.RandomIndexWriter;\n import org.apache.lucene.tests.util.LuceneTestCase;\n \n public class TestIntervalBuilder extends LuceneTestCase {\n@@ -213,4 +221,34 @@ public void testGraphTerminatesOnGap() throws IOException {\n             Intervals.extend(Intervals.term(\"term5\"), 1, 0));\n     assertEquals(expected, source);\n   }\n+\n+  public void testEmptyIntervals() throws IOException {\n+    CannedTokenStream ts = new CannedTokenStream();\n+    IntervalsSource source = IntervalBuilder.analyzeText(new CachingTokenFilter(ts), -1, true);\n+\n+    Directory directory = newDirectory();\n+    RandomIndexWriter w = new RandomIndexWriter(random(), directory);\n+    Document doc = new Document();\n+    doc.add(newStringField(\"field\", \"value\", Field.Store.NO));\n+    w.addDocument(doc);\n+    w.close();\n+    IndexReader reader = DirectoryReader.open(directory);\n+    LeafReaderContext ctx = reader.leaves().get(0);\n+\n+    {\n+      IntervalIterator it = source.intervals(\"field\", ctx);\n+      assertEquals(-1, it.docID());\n+      it.nextDoc();\n+      assertEquals(DocIdSetIterator.NO_MORE_DOCS, it.docID());\n+    }\n+    {\n+      IntervalIterator it = source.intervals(\"field\", ctx);\n+      assertEquals(-1, it.docID());\n+      it.advance(1);\n+      assertEquals(DocIdSetIterator.NO_MORE_DOCS, it.docID());\n+    }\n+\n+    reader.close();\n+    directory.close();\n+  }\n }\n",
+  "problem_statement": "IntervalBuilder.NO_INTERVALS returns wrong docId when unpositioned\n### Description\n\nDocIdSetIterators should return -1 when they are unpositioned, but \r\nIntervalBuilder.NO_INTERVALS always returns NO_MORE_DOCS.  This\r\ncan lead to exceptions when an empty interval query (for example, a\r\ntext string made entirely of stopwords) is combined in a conjunction.\n\n### Version and environment details\n\n_No response_\n",
+  "hints_text": "",
+  "created_at": "2022-09-09 14:36:21",
+  "version": "11760",
+  "FAIL_TO_PASS": [
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testEmptyIntervals"
+  ],
+  "PASS_TO_PASS": [
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testUnordered",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testGraphSynonyms",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testGraphTerminatesOnGap",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testPhrase",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testPhraseWithStopword",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testSimpleSynonyms",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testOrdered",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testEmptyTokenStream",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testSimpleTerm",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testSimpleSynonymsWithGap",
+    "org.apache.lucene.queries.intervals.TestIntervalBuilder > testGraphSynonymsWithGaps"
+  ],
+  "language": "Java",
+  "commit_url": "https://github.com/apache/lucene/tree/0ea8035612344e861bbdeaffca2255e5e1480a6a",
+  "docker_image_layers": {
+    "base_image": "eclipse-temurin:17-jdk-noble",
+    "setup_layer": [
+      "apt update && apt install -y git",
+      "git config --global --add safe.directory /testbed; git init /testbed; cd /testbed; git remote add origin https://github.com/apache/lucene.git; git fetch --depth 1 origin 0ea8035612344e861bbdeaffca2255e5e1480a6a; git reset --hard 0ea8035612344e861bbdeaffca2255e5e1480a6a",
+      "java -version &amp;&amp; ./gradlew --version ",
+      "java -version; ./gradlew --version ",
+      "git status --short; git diff --stat ",
+      "./gradlew test --no-daemon --max-workers=2 -Ptests.jvms=1 ",
+      "java -version &amp;&amp; ./gradlew --version ",
+      "java -version; ./gradlew --version ",
+      "git status --short; git diff --stat ",
+      "./gradlew test --no-daemon --max-workers=2 -Ptests.jvms=1 ",
+      "./gradlew test --no-daemon --max-workers=2 -Ptests.jvms=1 --info",
+      "python3 -c 'import glob,xml.etree.ElementTree as E,collections; c=collections.Counter(); files=glob.glob(\"**/build/test-results/test/TEST-*.xml\",recursive=True); [(lambda r:[(lambda s:(c.update([s]),print(f\"{s} {t.get(chr(99)+chr(108)+chr(97)+chr(115)+chr(115)+chr(110)+chr(97)+chr(109)+chr(101),r.get(chr(110)+chr(97)+chr(109)+chr(101),chr(63)))}::{t.get(chr(110)+chr(97)+chr(109)+chr(101),chr(63))}\")))(chr(70)+chr(65)+chr(73)+chr(76)+chr(69)+chr(68) if t.find(chr(102)+chr(97)+chr(105)+chr(108)+chr(117)+chr(114)+chr(101)) is not None or t.find(chr(101)+chr(114)+chr(114)+chr(111)+chr(114)) is not None else chr(83)+chr(75)+chr(73)+chr(80)+chr(80)+chr(69)+chr(68) if t.find(chr(115)+chr(107)+chr(105)+chr(112)+chr(112)+chr(101)+chr(100)) is not None else chr(80)+chr(65)+chr(83)+chr(83)+chr(69)+chr(68)) for t in r.findall(chr(116)+chr(101)+chr(115)+chr(116)+chr(99)+chr(97)+chr(115)+chr(101))])(E.parse(f).getroot()) for f in files]; print(\"REPORT_FILES\",len(files)); print(\"TOTALS\",dict(c))'",
+      "f=$(find . -path '*/build/test-results/test/TEST-*.xml' -type f | head -n 1); printf 'FILE %s\\n' \"$f\"; head -n 20 \"$f\"; command -v perl || true",
+      "find . -path '*/build/test-results/test/TEST-*.xml' -type f -print0 | sort -z | xargs -0 perl -0777 -ne 'while (m{&lt;testcase\\s+([^&gt;]*?)(?:\\s*/&gt;|&gt;(.*?)&lt;/testcase&gt;)}sg) { my ($a,$b)=($1,$2//q{}); my ($n)=$a=~/\\bname=\"([^\"]*)\"/; my ($c)=$a=~/\\bclassname=\"([^\"]*)\"/; my $s=$b=~m{&lt;(?:failure|error)\\b}s ? \"FAILED\" : $b=~m{&lt;skipped\\b}s ? \"SKIPPED\" : \"PASSED\"; $count{$s}++; print \"$s $c\\::$n\\n\"; } END { print \"TOTALS PASSED=$count{PASSED} SKIPPED=$count{SKIPPED} FAILED=$count{FAILED}\\n\"; }'",
+      "find . -path '*/build/test-results/test/TEST-*.xml' -type f -print0 | sort -z | xargs -0 -r perl -0777 -ne 'while (m{<testcase\\s+([^>]*?)(?:\\s*/>|>(.*?)</testcase>)}sg) { my ($a,$b)=($1,$2//q{}); my ($n)=$a=~/\\bname=\"([^\"]*)\"/; my ($c)=$a=~/\\bclassname=\"([^\"]*)\"/; my $s=$b=~m{<(?:failure|error)\\b}s ? \"FAILED\" : $b=~m{<skipped\\b}s ? \"SKIPPED\" : \"PASSED\"; $count{$s}++; print \"$s $c\\::$n\\n\"; } END { print \"TOTALS PASSED=\".($count{PASSED}//0).\" SKIPPED=\".($count{SKIPPED}//0).\" FAILED=\".($count{FAILED}//0).\"\\n\"; }'"
+    ]
+  },
+  "setup_cmds": [
+    "java -version &amp;&amp; ./gradlew --version  (exit code: 2)",
+    "java -version; ./gradlew --version  (exit code: 0)",
+    "git status --short; git diff --stat  (exit code: 0)",
+    "./gradlew test --no-daemon --max-workers=2 -Ptests.jvms=1  (exit code: 0)",
+    "java -version &amp;&amp; ./gradlew --version  (exit code: 2)",
+    "java -version; ./gradlew --version  (exit code: 0)",
+    "git status --short; git diff --stat  (exit code: 0)",
+    "./gradlew test --no-daemon --max-workers=2 -Ptests.jvms=1  (exit code: 0)"
+  ],
+  "test_cmds": [
+    "./gradlew test --no-daemon --max-workers=2 -Ptests.jvms=1 --info",
+    "python3 -c 'import glob,xml.etree.ElementTree as E,collections; c=collections.Counter(); files=glob.glob(\"**/build/test-results/test/TEST-*.xml\",recursive=True); [(lambda r:[(lambda s:(c.update([s]),print(f\"{s} {t.get(chr(99)+chr(108)+chr(97)+chr(115)+chr(115)+chr(110)+chr(97)+chr(109)+chr(101),r.get(chr(110)+chr(97)+chr(109)+chr(101),chr(63)))}::{t.get(chr(110)+chr(97)+chr(109)+chr(101),chr(63))}\")))(chr(70)+chr(65)+chr(73)+chr(76)+chr(69)+chr(68) if t.find(chr(102)+chr(97)+chr(105)+chr(108)+chr(117)+chr(114)+chr(101)) is not None or t.find(chr(101)+chr(114)+chr(114)+chr(111)+chr(114)) is not None else chr(83)+chr(75)+chr(73)+chr(80)+chr(80)+chr(69)+chr(68) if t.find(chr(115)+chr(107)+chr(105)+chr(112)+chr(112)+chr(101)+chr(100)) is not None else chr(80)+chr(65)+chr(83)+chr(83)+chr(69)+chr(68)) for t in r.findall(chr(116)+chr(101)+chr(115)+chr(116)+chr(99)+chr(97)+chr(115)+chr(101))])(E.parse(f).getroot()) for f in files]; print(\"REPORT_FILES\",len(files)); print(\"TOTALS\",dict(c))'",
+    "f=$(find . -path '*/build/test-results/test/TEST-*.xml' -type f | head -n 1); printf 'FILE %s\\n' \"$f\"; head -n 20 \"$f\"; command -v perl || true",
+    "find . -path '*/build/test-results/test/TEST-*.xml' -type f -print0 | sort -z | xargs -0 perl -0777 -ne 'while (m{&lt;testcase\\s+([^&gt;]*?)(?:\\s*/&gt;|&gt;(.*?)&lt;/testcase&gt;)}sg) { my ($a,$b)=($1,$2//q{}); my ($n)=$a=~/\\bname=\"([^\"]*)\"/; my ($c)=$a=~/\\bclassname=\"([^\"]*)\"/; my $s=$b=~m{&lt;(?:failure|error)\\b}s ? \"FAILED\" : $b=~m{&lt;skipped\\b}s ? \"SKIPPED\" : \"PASSED\"; $count{$s}++; print \"$s $c\\::$n\\n\"; } END { print \"TOTALS PASSED=$count{PASSED} SKIPPED=$count{SKIPPED} FAILED=$count{FAILED}\\n\"; }'",
+    "find . -path '*/build/test-results/test/TEST-*.xml' -type f -print0 | sort -z | xargs -0 -r perl -0777 -ne 'while (m{<testcase\\s+([^>]*?)(?:\\s*/>|>(.*?)</testcase>)}sg) { my ($a,$b)=($1,$2//q{}); my ($n)=$a=~/\\bname=\"([^\"]*)\"/; my ($c)=$a=~/\\bclassname=\"([^\"]*)\"/; my $s=$b=~m{<(?:failure|error)\\b}s ? \"FAILED\" : $b=~m{<skipped\\b}s ? \"SKIPPED\" : \"PASSED\"; $count{$s}++; print \"$s $c\\::$n\\n\"; } END { print \"TOTALS PASSED=\".($count{PASSED}//0).\" SKIPPED=\".($count{SKIPPED}//0).\" FAILED=\".($count{FAILED}//0).\"\\n\"; }'"
+  ],
+  "print_cmds": [],
+  "log_parser": "pytest",
+  "docker_image": "repolaunch/dev:apache__lucene-11760_linux"
+}
